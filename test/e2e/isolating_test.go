@@ -51,7 +51,7 @@ func TestIsolatingSecrets(t *testing.T) {
 			tc.secret.TenantNamespace, tc.secret.StringData = tenantNS, map[string]string{"password": "hunter2"}
 			s := createSopsSecret(t, recipient, tc.secret)
 			waitForReason(t, s, tc.reason)
-			matchSnapshot(t, s, "rejected")
+			assertGolden(t, s, "rejected")
 			err := k8s.Get(context.Background(), client.ObjectKeyFromObject(s), &corev1.Secret{})
 			if !apierrors.IsNotFound(err) {
 				t.Fatalf("no Secret may be written: %v", err)

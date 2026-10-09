@@ -115,8 +115,8 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# e2e tests run the operator image on a Kind cluster and compare resources with committed snapshots
-# (test/e2e/__snapshots__). Update snapshots with: make test-e2e UPDATE_SNAPS=true
+# e2e tests run the operator image on a Kind cluster and compare resources with committed golden files
+# (test/e2e/testdata). Record or update them with: make test-e2e UPDATE_GOLDEN=true
 KIND_CLUSTER ?= sops-operator-test-e2e
 # Oldest node image published with KIND_VERSION; the 1.31 floor is covered by envtest.
 KIND_NODE_IMAGE ?= kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
@@ -136,7 +136,7 @@ setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests kustomize ## Run the e2e tests on the Kind cluster (kept for reruns; remove with cleanup-test-e2e).
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) KUSTOMIZE=$(KUSTOMIZE) E2E_IMG=$(E2E_IMG) \
-		go test ./test/e2e/ -v -count=1 -timeout 20m
+		go test ./test/e2e/ -v -count=1 -timeout 20m $(if $(filter true,$(UPDATE_GOLDEN)),-update)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests

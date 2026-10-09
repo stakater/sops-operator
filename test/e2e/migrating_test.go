@@ -33,7 +33,7 @@ func TestMigratingAnExistingSecret(t *testing.T) {
 			StringData: map[string]string{"password": "mine"},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonConflict)
-		matchSnapshot(t, s, "conflict")
+		assertGolden(t, s, "conflict")
 		if string(outputSecret(t, prod).Data["password"]) != "foreign" {
 			t.Fatal("the existing Secret was overwritten")
 		}

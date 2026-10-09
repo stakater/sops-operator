@@ -1,25 +1,20 @@
-
-[TestOnboardingATenant/shall_generate_a_post-quantum_key_when_onboarded - 1]
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
 metadata:
-  creationTimestamp: <Any value>
+  creationTimestamp: <timestamp>
   generation: 1
-  managedFields: <Any value>
   name: solar
   namespace: e2e-onboard-ready
-  resourceVersion: <Any value>
-  uid: <Any value>
+  resourceVersion: <resourceVersion>
+  uid: <uid>
 spec:
   generateKey: true
 status:
   conditions:
-  - lastTransitionTime: <Any value>
+  - lastTransitionTime: <timestamp>
     message: generated a post-quantum key
     observedGeneration: 1
     reason: KeyGenerated
     status: "True"
     type: Ready
   observedGeneration: 1
-
----

@@ -15,20 +15,21 @@ limitations under the License.
 */
 
 // Package e2e runs the operator image on a Kind cluster and compares the resources it produces
-// with committed snapshots. Run it with `make test-e2e`; it is skipped when KIND_CLUSTER is unset.
+// with committed golden files (testdata/). Run it with `make test-e2e`; it is skipped when KIND_CLUSTER is unset.
 package e2e
 
 import (
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/gkampitakis/go-snaps/snaps"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -59,9 +60,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	code := m.Run()
-	if _, err := snaps.Clean(m, snaps.CleanOpts{Sort: true}); err != nil {
-		fmt.Fprintln(os.Stderr, "cleaning obsolete snapshots:", err)
-		code = 1
+	if code == 0 && flag.Lookup("test.run").Value.String() == "" {
+		if obsolete := obsoleteGoldenFiles(); len(obsolete) > 0 {
+			fmt.Fprintf(os.Stderr, "golden files no test compares any more (delete them):\n  %s\n",
+				strings.Join(obsolete, "\n  "))
+			code = 1
+		}
 	}
 	os.Exit(code)
 }
@@ -137,6 +141,21 @@ func run(stdin string, name string, args ...string) (string, error) {
 		return out.String(), fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, out.String())
 	}
 	return out.String(), nil
+}
+
+// obsoleteGoldenFiles lists files under testdata that no test compared in this run.
+func obsoleteGoldenFiles() []string {
+	var obsolete []string
+	_ = filepath.WalkDir("testdata", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if name, _ := filepath.Rel("testdata", path); !usedGolden[name] {
+			obsolete = append(obsolete, path)
+		}
+		return nil
+	})
+	return obsolete
 }
 
 func envOr(key, fallback string) string {

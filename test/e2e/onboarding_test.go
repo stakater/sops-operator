@@ -35,7 +35,7 @@ func TestOnboardingATenant(t *testing.T) {
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNS}}
 		// The tenant reports KeyGenerated until the next resync.
 		waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
-		matchSnapshot(t, tenant, "ready")
+		assertGolden(t, tenant, "ready")
 	})
 
 	t.Run("shall report AccessDenied until onboarded", func(t *testing.T) {
@@ -43,6 +43,6 @@ func TestOnboardingATenant(t *testing.T) {
 		apply(t, render(t, "sopstenant.yaml", map[string]any{"Name": tenantName, "Namespace": ns}))
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: ns}}
 		waitForReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
-		matchSnapshot(t, tenant, "not onboarded")
+		assertGolden(t, tenant, "not onboarded")
 	})
 }

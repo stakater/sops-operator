@@ -33,14 +33,14 @@ func TestDeliveringASecret(t *testing.T) {
 			StringData: map[string]string{"password": "hunter2", "username": "app"},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
-		matchSnapshot(t, s, "decrypted")
+		assertGolden(t, s, "decrypted")
 
 		out := outputSecret(t, prod)
 		// Values are checked here; the snapshot only records which keys exist.
 		if string(out.Data["password"]) != "hunter2" || string(out.Data["username"]) != "app" {
 			t.Fatal("output Secret does not hold the decrypted values")
 		}
-		matchSnapshot(t, out, "output")
+		assertGolden(t, out, "output")
 	})
 
 	t.Run("shall update the Secret when the SopsSecret changes", func(t *testing.T) {
@@ -63,6 +63,6 @@ func TestDeliveringASecret(t *testing.T) {
 		poll(t, "the Secret to hold the new value", func() (bool, error) {
 			return string(outputSecret(t, prod).Data["password"]) == "v2", nil
 		})
-		matchSnapshot(t, outputSecret(t, prod), "updated")
+		assertGolden(t, outputSecret(t, prod), "updated")
 	})
 }

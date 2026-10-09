@@ -597,12 +597,14 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 - **Configuration**: ConfigMap `sops-operator-config` in the operator namespace and `Subscription.spec.config.env`.
 - **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** that
   deploys the operator image (`make test-e2e`) and compares `SopsTenant`, `SopsSecret` and output Secrets with
-  committed go-snaps snapshots (`test/e2e/__snapshots__`, update with `UPDATE_SNAPS=true`). Snapshots never hold
-  secret values: Secret data and encrypted values are replaced, and snapshotting an object with an age key fails.
+  committed golden files (`gotest.tools/v3/golden`, plain YAML; record or update with `UPDATE_GOLDEN=true`).
+  `test/snapshot` normalizes objects first: volatile values (UIDs, resourceVersion, timestamps after validating
+  them) become placeholders, Secret values and ciphertext are redacted, and an object with an age key is refused.
+  Golden files no test compares any more fail the run.
   e2e tests are organised by **use case**: one file and one top-level test per use case (`TestOnboardingATenant`,
   `TestDeliveringASecret`, `TestRemovingASecret`, `TestMigratingAnExistingSecret`, `TestIsolatingSecrets`), one
   subtest per expected behaviour named `shall …`, and snapshots stored as
-  `test/e2e/__snapshots__/<Test>/<shall_…>/<kind>-<label>.snap.yaml`.
+  `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token

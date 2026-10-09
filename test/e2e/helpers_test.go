@@ -27,8 +27,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/gkampitakis/go-snaps/match"
-	"github.com/gkampitakis/go-snaps/snaps"
+	"gotest.tools/v3/golden"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -42,6 +41,7 @@ import (
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
+	"github.com/stakater/sops-operator/test/snapshot"
 )
 
 const (
@@ -237,58 +237,23 @@ func poll(t *testing.T, what string, cond func() (bool, error), detail ...func()
 	}
 }
 
-// volatile lists fields that change on every run.
-var volatile = []string{
-	"$.metadata.uid",
-	"$.metadata.resourceVersion",
-	"$.metadata.creationTimestamp",
-	"$.metadata.managedFields",
-	"$.metadata.ownerReferences[*].uid",
-	"$.status.lastSyncTime",
-	"$.status.secretUID",
-	"$.status.conditions[*].lastTransitionTime",
-	// Ciphertext and SOPS metadata differ on every encryption.
-	"$.spec.scope",
-	"$.sops",
-}
+// usedGolden records the golden files compared in this run, to find obsolete ones.
+var usedGolden = map[string]bool{}
 
-// matchSnapshot compares obj with its committed snapshot. Secret values and encrypted values are
-// replaced before the snapshot is written, and the test fails if key material would be committed.
-func matchSnapshot(t *testing.T, obj client.Object, label string) {
+// assertGolden compares obj, normalized by test/snapshot, with
+// testdata/<test>/<kind>-<label>.yaml. Record or update the files with `make test-e2e UPDATE_GOLDEN=true`.
+func assertGolden(t *testing.T, obj client.Object, label string) {
 	t.Helper()
 	gvk, err := apiutil.GVKForObject(obj, scheme)
 	if err != nil {
 		t.Fatal(err)
 	}
-	obj = obj.DeepCopyObject().(client.Object)
-	obj.GetObjectKind().SetGroupVersionKind(gvk)
-	out, err := yaml.Marshal(obj)
+	out, err := snapshot.YAML(obj, scheme)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("snapshot %s: %v", gvk.Kind, err)
 	}
-	if bytes.Contains(out, []byte("AGE-SECRET-KEY")) {
-		t.Fatal("refusing to snapshot an object containing an age private key")
-	}
-	// One directory per test (subtests nest), one file per snapshot:
-	// __snapshots__/<test>/<kind>-<label>.snap.yaml
-	snaps.WithConfig(
-		snaps.Dir(filepath.Join("__snapshots__", t.Name())),
-		snaps.Filename(strings.ToLower(gvk.Kind)+"-"+strings.ReplaceAll(strings.ToLower(label), " ", "-")),
-		snaps.Ext(".yaml"),
-	).MatchYAML(t, out,
-		match.Any(volatile...).ErrOnMissingPath(false),
-		match.Custom("$.data", redactValues).ErrOnMissingPath(false),
-		match.Custom("$.spec.data", redactValues).ErrOnMissingPath(false),
-		match.Custom("$.spec.stringData", redactValues).ErrOnMissingPath(false),
-	)
-}
-
-// redactValues keeps the keys of a map and replaces every value.
-func redactValues(val any) (any, error) {
-	if m, ok := val.(map[string]any); ok {
-		for k := range m {
-			m[k] = "<redacted>"
-		}
-	}
-	return val, nil
+	file := strings.ToLower(gvk.Kind) + "-" + strings.ReplaceAll(strings.ToLower(label), " ", "-") + ".yaml"
+	name := filepath.Join(t.Name(), file)
+	usedGolden[name] = true
+	golden.Assert(t, string(out), name)
 }

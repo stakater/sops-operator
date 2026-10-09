@@ -107,8 +107,8 @@ jobs:
           name: image
           path: ${{ runner.temp }}
 
-      # Tests the image built above; snapshots must match the committed ones (go-snaps fails on
-      # missing or changed snapshots when CI=true).
+      # Tests the image built above; resources must match the committed golden files in
+      # test/e2e/testdata (nothing is written without -update).
       - name: Run e2e tests
         run: |
           docker load -i "${RUNNER_TEMP}/image.tar"

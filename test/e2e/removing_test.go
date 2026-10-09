@@ -52,6 +52,6 @@ func TestRemovingASecret(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitUntilDeleted(t, "the SopsSecret", s)
-		matchSnapshot(t, outputSecret(t, prod), "retained")
+		assertGolden(t, outputSecret(t, prod), "retained")
 	})
 }
