@@ -582,9 +582,16 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 - **Configuration**: ConfigMap `sops-operator-config` in the operator namespace and `Subscription.spec.config.env`.
 - **Testing**: unit tests; envtest with the RBAC authorizer enabled; e2e on **kind** with OLM installed, including
   the attack scenarios of §7.1 and bundle upgrade tests.
-- **CI**: GitHub Actions on `pull_request` (lint, tests, bundle validation, scorecard, e2e; no push, no secrets) and
-  `push` to `main` / tags `v*` (same checks, then multi-arch build, push to GHCR, cosign keyless signing, SBOM and
-  provenance, catalog update).
+- **CI**: the shared Stakater operator workflows, as used by `stakater/Hestia`:
+  `stakater/.github/.github/workflows/operator_pull_request.yaml` on `pull_request` (lint, unit tests, image, bundle
+  and catalog build; kind e2e when the PR carries the `e2e/on-build` label) and `operator_push.yaml` on `push` to
+  `main` (same, then push to `ghcr.io/stakater` and catalog update), with `GO_VERSION: 1.25.8` and
+  `OPM_VERSION: v1.74.0`. A separate job signs the pushed images with cosign (keyless) and attaches SBOM and
+  provenance.
+- **Conventions** (from Stakater operators): project/module name `sops-operator`; images
+  `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` tagged `vX.Y.Z`; Makefile variables `VERSION`,
+  `OPERATOR_NAME`, `DOCKER_REPO_BASE`, `CATALOG_DIR_PATH`; file-based catalog in `catalog/`; CSV provider
+  "Stakater AB", `maturity: alpha`, SVG icon in Stakater style (black outline, `#fecd07`).
 
 ---
 
@@ -620,6 +627,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D26 | Several `SopsTenant`s may share a namespace; they share its `sops` identity and grants | Separate key namespaces when reach must differ. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
 | D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every patch (`404` → recreate, `409` → `Conflict`). Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D34 | CI uses the shared Stakater operator workflows plus a signing job (cosign, SBOM, provenance) | Consistency with other Stakater operators; supply-chain guarantees the shared workflows do not provide yet. |
 
 ---
 
