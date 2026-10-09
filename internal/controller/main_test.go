@@ -58,7 +58,7 @@ func startManager(ctx context.Context) error {
 		return err
 	}
 	if err := (&controller.SopsSecretReconciler{
-		Client: mgr.GetClient(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

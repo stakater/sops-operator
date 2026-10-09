@@ -225,6 +225,7 @@ func main() {
 	}
 	if err := (&controller.SopsSecretReconciler{
 		Client:         mgr.GetClient(),
+		APIReader:      mgr.GetAPIReader(),
 		Identities:     identities,
 		Recorder:       recorder,
 		ResyncInterval: resyncInterval,

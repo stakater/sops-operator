@@ -50,6 +50,9 @@ var trackingPrefixes = []string{"argocd.argoproj.io/", "kustomize.toolkit.fluxcd
 // SopsSecretReconciler decrypts SopsSecrets into Secrets, acting as the referenced tenant identity.
 type SopsSecretReconciler struct {
 	client.Client
+	// APIReader reads SopsSecrets uncached, so status.secretUID written by the previous reconcile
+	// is always seen; a stale cache would otherwise report Conflict for the operator's own Secret.
+	APIReader      client.Reader
 	Identities     *identity.Factory
 	Recorder       record.EventRecorder
 	ResyncInterval time.Duration
@@ -71,8 +74,12 @@ func (r *SopsSecretReconciler) now() time.Time {
 
 // Reconcile implements reconcile.Reconciler.
 func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
 	var s sopsv1alpha1.SopsSecret
-	if err := r.Get(ctx, req.NamespacedName, &s); err != nil {
+	if err := reader.Get(ctx, req.NamespacedName, &s); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !s.DeletionTimestamp.IsZero() {

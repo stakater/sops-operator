@@ -9,11 +9,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/controller"
 	"github.com/stakater/sops-operator/internal/crypto"
+	"github.com/stakater/sops-operator/internal/identity"
 )
 
 func create(t *testing.T, s *sopsv1alpha1.SopsSecret) {
@@ -239,5 +243,47 @@ func TestSecretUIDIsRecordedFromAStaleCopy(t *testing.T) {
 	}
 	if got.Status.SecretUID != "uid-from-write" {
 		t.Fatalf("status.secretUID = %q, want uid-from-write", got.Status.SecretUID)
+	}
+}
+
+func TestStaleCachedSopsSecretDoesNotCauseConflict(t *testing.T) {
+	ctx := context.Background()
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+	create(t, s)
+	eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+
+	// A cache that has not yet seen the status write that recorded secretUID.
+	stale := s.DeepCopy()
+	stale.Status = sopsv1alpha1.SopsSecretStatus{}
+	cached, err := client.NewWithWatch(env.OperatorConfig, client.Options{Scheme: env.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleClient := interceptor.NewClient(cached, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if out, ok := obj.(*sopsv1alpha1.SopsSecret); ok && key == client.ObjectKeyFromObject(s) {
+				stale.DeepCopyInto(out)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	r := &controller.SopsSecretReconciler{
+		Client:     staleClient,
+		APIReader:  env.Operator,
+		Identities: identity.NewFactory(env.OperatorConfig, env.Scheme),
+		Recorder:   record.NewFakeRecorder(10),
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(s)}); err != nil {
+		t.Fatal(err)
+	}
+	var got sopsv1alpha1.SopsSecret
+	if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(s), &got); err != nil {
+		t.Fatal(err)
+	}
+	if c := readyCondition(&got); c == nil || c.Reason != sopsv1alpha1.ReasonDecrypted {
+		t.Fatalf("Ready = %+v, want Decrypted", c)
 	}
 }
