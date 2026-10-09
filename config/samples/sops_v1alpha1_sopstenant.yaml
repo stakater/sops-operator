@@ -1,0 +1,9 @@
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsTenant
+metadata:
+  labels:
+    app.kubernetes.io/name: sops-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: sopstenant-sample
+spec:
+  # TODO(user): Add fields here
