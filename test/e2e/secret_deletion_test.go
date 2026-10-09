@@ -24,7 +24,7 @@ import (
 )
 
 // Use case: a developer removes a SopsSecret from Git and the GitOps tool prunes it.
-func TestRemovingASecret(t *testing.T) {
+func TestSecretDeletion(t *testing.T) {
 	t.Run("shall delete the Secret with the SopsSecret", func(t *testing.T) {
 		prod := namespace(t, "e2e-remove-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-remove-tenant", prod)

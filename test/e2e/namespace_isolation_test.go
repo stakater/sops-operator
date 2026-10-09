@@ -28,7 +28,7 @@ import (
 )
 
 // Use case: secrets stay inside the namespaces the cluster admin granted to their tenant (DESIGN.md §7.1).
-func TestIsolatingSecrets(t *testing.T) {
+func TestNamespaceIsolation(t *testing.T) {
 	prod := namespace(t, "e2e-isolate-prod")
 	dev := namespace(t, "e2e-isolate-dev")
 	other := namespace(t, "e2e-isolate-other")

@@ -24,7 +24,7 @@ import (
 )
 
 // Use case: a developer commits an encrypted SopsSecret and the application gets a Secret (DESIGN.md §8.2).
-func TestDeliveringASecret(t *testing.T) {
+func TestSecretDecryption(t *testing.T) {
 	t.Run("shall decrypt into a Secret", func(t *testing.T) {
 		prod := namespace(t, "e2e-deliver-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-deliver-tenant", prod)

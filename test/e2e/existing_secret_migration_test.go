@@ -23,7 +23,7 @@ import (
 )
 
 // Use case: a team moves an existing Secret to a SopsSecret (DESIGN.md §8.4).
-func TestMigratingAnExistingSecret(t *testing.T) {
+func TestExistingSecretMigration(t *testing.T) {
 	t.Run("shall not overwrite a Secret it did not create", func(t *testing.T) {
 		prod := namespace(t, "e2e-migrate-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-migrate-tenant", prod)

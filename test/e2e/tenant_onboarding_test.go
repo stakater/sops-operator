@@ -26,7 +26,7 @@ import (
 )
 
 // Use case: a tenant admin creates a SopsTenant after the cluster admin onboarded the tenant (DESIGN.md §8.1).
-func TestOnboardingATenant(t *testing.T) {
+func TestTenantOnboarding(t *testing.T) {
 	t.Run("shall generate a post-quantum key when onboarded", func(t *testing.T) {
 		tenantNS, recipient := onboardedTenant(t, "e2e-onboard-ready")
 		if !strings.HasPrefix(recipient, "age1pq1") {
