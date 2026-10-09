@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -100,8 +101,14 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	err = tc.Get(ctx, client.ObjectKeyFromObject(t), &key)
 	switch {
 	case err == nil:
-		if _, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField]); err != nil {
+		keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
+		if err != nil {
 			return sopsv1alpha1.ReasonKeyInvalid, err.Error(), nil
+		}
+		// A public key that does not match would make developers encrypt for a key nobody holds.
+		if pub, ok := key.Data[crypto.PublicKeyField]; ok && strings.TrimSpace(string(pub)) != keys.Recipients[0] {
+			return sopsv1alpha1.ReasonKeyInvalid, fmt.Sprintf("%s does not match the primary key in %s",
+				crypto.PublicKeyField, crypto.KeyFileField), nil
 		}
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
@@ -114,7 +121,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	if !t.ShouldGenerateKey() {
 		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, t.Name), nil
 	}
-	keyFile, _, err := crypto.GenerateKeyFile(r.now())
+	keyFile, recipient, err := crypto.GenerateKeyFile(r.now())
 	if err != nil {
 		return "", "", err
 	}
@@ -125,7 +132,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 			Labels:    map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{crypto.KeyFileField: keyFile},
+		Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
 	}
 	if err := tc.Create(ctx, secret); err != nil {
 		if apierrors.IsForbidden(err) {

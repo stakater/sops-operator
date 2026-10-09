@@ -31,6 +31,10 @@ import (
 // KeyFileField is the field of a tenant key Secret that holds the age identities.
 const KeyFileField = "age.agekey"
 
+// PublicKeyField is the field of a tenant key Secret that holds the primary public key (recipient),
+// written when the operator generates the key. When present it must match the primary identity.
+const PublicKeyField = "age.pub"
+
 // ErrKeyInvalid reports a key file that is empty or contains an unsupported or corrupt identity.
 var ErrKeyInvalid = errors.New("invalid key file")
 

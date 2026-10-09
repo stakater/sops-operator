@@ -59,6 +59,9 @@ func TestTenantKey(t *testing.T) {
 		if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
 			t.Fatal("generated key is not post-quantum")
 		}
+		if got := strings.TrimSpace(string(key.Data[crypto.PublicKeyField])); got != ks.Recipients[0] {
+			t.Fatal("the generated Secret does not hold the matching public key")
+		}
 		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
 			t.Fatal("generated key is missing the managed-by label")
 		}
@@ -98,6 +101,29 @@ func TestTenantKey(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns)
 		if err := env.Admin.Create(ctx, keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
+	})
+
+	t.Run("shall report an invalid key when the public key does not match", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		other, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, x.String()+"\n")
+		key.Data[crypto.PublicKeyField] = []byte(other.Recipient().String())
+		if err := env.Admin.Create(ctx, key); err != nil {
 			t.Fatal(err)
 		}
 		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {

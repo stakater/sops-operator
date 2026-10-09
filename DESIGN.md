@@ -261,6 +261,7 @@ stringData:
   age.agekey: |
     # public key: age1pq1...
     AGE-SECRET-KEY-PQ-1...
+  age.pub: age1pq1...      # primary public key; written when the operator generates the key
 ```
 
 - `age.agekey` holds one or more identities; the **first** is primary. Several identities allow rotation.
@@ -269,7 +270,10 @@ stringData:
 - The operator **creates the key only when it is missing and never modifies, overwrites or deletes it** (the tenant identity has only `get` and `create`). An invalid key is reported,
   not replaced.
 - **No ownerReference**: deleting the tenant never deletes the key.
-- No public key is published by the CR; it is derived from the key Secret. A separate public object can be added later.
+- `age.pub` holds the primary public key. The operator writes it when it generates the key (no extra permission:
+  the Secret is created with both fields). It is optional for bring-your-own keys; when present it must match the
+  primary identity, otherwise the tenant reports `KeyInvalid`. The tenant admin copies it into the team's
+  `.sops.yaml`; reading it requires reading the key Secret, so it is not distributed to developers by the cluster.
 
 ### 4.3 `SopsSecret`
 
@@ -539,7 +543,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 
 1. Cluster admin applies the onboarding template for the tenant (§5.2).
 2. Tenant admin creates `SopsTenant` → operator generates the key → `Ready/KeyGenerated`.
-3. Tenant admin derives the public key (`age-keygen -y`) and shares it, e.g. in the team's `.sops.yaml`.
+3. Tenant admin reads `age.pub` from the key Secret and commits it to the team's `.sops.yaml`.
 
 ### 8.2 Developer: create or change a secret
 
@@ -662,6 +666,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
 | D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
 | D38 | The SopsSecret reconciler reads SopsSecrets uncached (API reader) | A cache that has not seen the last status write would report `Conflict` for the operator's own Secret (found by e2e). |
+| D39 | The primary public key is stored as `age.pub` in the key Secret at generation; no separate public object | The tenant admin needs it once to set up `.sops.yaml`; no extra RBAC, and the operator still cannot modify the key. A mismatching `age.pub` is `KeyInvalid`. |
 
 ---
 
@@ -675,4 +680,4 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |
-| Q10 | Public key distribution object for developers (e.g. a ConfigMap) — needed in v1? |
+| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:sops` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: age key Secret + public-key ConfigMap. |
