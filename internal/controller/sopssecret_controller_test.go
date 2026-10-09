@@ -22,10 +22,11 @@ func create(t *testing.T, s *sopsv1alpha1.SopsSecret) {
 	}
 }
 
-func outputSecret(t *testing.T, ns, name string) *corev1.Secret {
+// outputSecret returns the Secret "db" in ns, the name every test SopsSecret here produces.
+func outputSecret(t *testing.T, ns string) *corev1.Secret {
 	t.Helper()
 	var s corev1.Secret
-	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &s); err != nil {
+	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "db"}, &s); err != nil {
 		t.Fatalf("get output Secret: %v", err)
 	}
 	return &s
@@ -47,7 +48,7 @@ func TestSopsSecretDecrypts(t *testing.T) {
 	create(t, s)
 	eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 
-	out := outputSecret(t, prod, "db")
+	out := outputSecret(t, prod)
 	if string(out.Data["password"]) != "hunter2" {
 		t.Fatal("output Secret has the wrong value")
 	}
@@ -80,16 +81,16 @@ func TestSopsSecretUpdatePropagatesAndDriftIsRepaired(t *testing.T) {
 		t.Fatal(err)
 	}
 	NewWithT(t).Eventually(func(g Gomega) {
-		g.Expect(string(outputSecret(t, prod, "db").Data["password"])).To(Equal("v2"))
+		g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 	}).WithTimeout(20 * time.Second).Should(Succeed())
 
-	drifted := outputSecret(t, prod, "db")
+	drifted := outputSecret(t, prod)
 	drifted.Data["password"] = []byte("tampered")
 	if err := env.Admin.Update(ctx, drifted); err != nil {
 		t.Fatal(err)
 	}
 	NewWithT(t).Eventually(func(g Gomega) {
-		g.Expect(string(outputSecret(t, prod, "db").Data["password"])).To(Equal("v2"))
+		g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 	}).WithTimeout(20 * time.Second).Should(Succeed())
 }
 
@@ -165,7 +166,7 @@ func TestSopsSecretDoesNotTouchForeignSecret(t *testing.T) {
 	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "mine"})
 	create(t, s)
 	eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
-	if string(outputSecret(t, prod, "db").Data["password"]) != "foreign" {
+	if string(outputSecret(t, prod).Data["password"]) != "foreign" {
 		t.Fatal("foreign Secret was overwritten")
 	}
 }
@@ -182,7 +183,7 @@ func TestRetainedSecretIsNotReclaimedByRecreatedSopsSecret(t *testing.T) {
 	first := build()
 	create(t, first)
 	eventuallyReason(t, first, sopsv1alpha1.ReasonDecrypted)
-	if refs := outputSecret(t, prod, "db").OwnerReferences; len(refs) != 0 {
+	if refs := outputSecret(t, prod).OwnerReferences; len(refs) != 0 {
 		t.Fatalf("Retain must not set ownerReferences, got %+v", refs)
 	}
 
