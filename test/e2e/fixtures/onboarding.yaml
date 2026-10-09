@@ -1,0 +1,37 @@
+# What the cluster admin applies for a tenant (DESIGN.md §5.2).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sops
+  namespace: {{ .TenantNamespace }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sops-key-owner
+  namespace: {{ .TenantNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-key-owner
+subjects:
+  - kind: ServiceAccount
+    name: sops
+    namespace: {{ .TenantNamespace }}
+{{- range .WriteNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sops-{{ $.TenantNamespace }}
+  namespace: {{ . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-secret-writer
+subjects:
+  - kind: ServiceAccount
+    name: sops
+    namespace: {{ $.TenantNamespace }}
+{{- end }}

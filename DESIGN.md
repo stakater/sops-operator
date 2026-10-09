@@ -595,8 +595,10 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   `AllNamespaces`; no webhooks and no OLM dependencies (compatible with OLM v0 `Subscription` and OLM v1
   `ClusterExtension`). Validation with CEL in the CRDs.
 - **Configuration**: ConfigMap `sops-operator-config` in the operator namespace and `Subscription.spec.config.env`.
-- **Testing**: unit tests; envtest with the RBAC authorizer enabled; e2e on **kind** with OLM installed, including
-  the attack scenarios of §7.1 and bundle upgrade tests.
+- **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** that
+  deploys the operator image (`make test-e2e`) and compares `SopsTenant`, `SopsSecret` and output Secrets with
+  committed go-snaps snapshots (`test/e2e/__snapshots__`, update with `UPDATE_SNAPS=true`). Snapshots never hold
+  secret values: Secret data and encrypted values are replaced, and snapshotting an object with an age key fails.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
@@ -651,6 +653,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D35 | The scope is verified before any other value is decrypted; decryption errors carry fixed messages | Copied ciphertext with a tampered type tag must not leak plaintext through error messages. |
 | D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
 | D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
+| D38 | The SopsSecret reconciler reads SopsSecrets uncached (API reader) | A cache that has not seen the last status write would report `Conflict` for the operator's own Secret (found by e2e). |
 
 ---
 
