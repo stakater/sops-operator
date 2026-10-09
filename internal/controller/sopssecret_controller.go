@@ -33,9 +33,6 @@ type SopsSecretReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopssecrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopssecrets/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopssecrets/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
