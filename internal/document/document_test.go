@@ -26,7 +26,8 @@ func encryptedSopsSecret(t *testing.T, spec map[string]any) (*sopsv1alpha1.SopsS
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := yaml.Marshal(map[string]any{
+	// JSON output is valid YAML with keys sorted byte-wise, like `yq -i 'sort_keys(..)'`.
+	plain, err := json.Marshal(map[string]any{
 		"apiVersion": "sops.stakater.com/v1alpha1",
 		"kind":       "SopsSecret",
 		"metadata":   map[string]any{"name": "db-creds", "namespace": "solar-prod"},
@@ -61,7 +62,7 @@ func decrypt(t *testing.T, s *sopsv1alpha1.SopsSecret, ks *crypto.KeySet) (*docu
 	if err != nil {
 		t.Fatalf("Canonical: %v", err)
 	}
-	plain, err := crypto.Decrypt(doc, ks)
+	plain, err := crypto.Decrypt(doc, ks, document.ScopeFor("solar-prod", "db-creds"))
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -87,20 +88,20 @@ func TestCanonicalDecryptsAfterAPIRoundTrip(t *testing.T) {
 	}
 }
 
-func TestParsePlainConvertsScalarsToStrings(t *testing.T) {
-	s, ks := encryptedSopsSecret(t, map[string]any{
-		"tenantRef":  map[string]any{"name": "solar", "namespace": "solar-system"},
-		"scope":      "solar-prod/db-creds",
-		"stringData": map[string]any{"enabled": true, "port": 5432, "ratio": 0.5},
-	})
-	p, err := decrypt(t, s, ks)
-	if err != nil {
-		t.Fatalf("ParsePlain: %v", err)
-	}
-	for k, want := range map[string]string{"enabled": "true", "port": "5432", "ratio": "0.5"} {
-		if got := string(p.Data[k]); got != want {
-			t.Fatalf("%s = %q, want %q", k, got, want)
-		}
+func TestParsePlainRejectsUnquotedScalars(t *testing.T) {
+	// SOPS parses unquoted scalars before encrypting, so 0123 would become 83: refuse them.
+	for name, value := range map[string]any{"port": 5432, "pin": 0o123, "enabled": true} {
+		t.Run(name, func(t *testing.T) {
+			s, ks := encryptedSopsSecret(t, map[string]any{
+				"tenantRef":  map[string]any{"name": "solar", "namespace": "solar-system"},
+				"scope":      "solar-prod/db-creds",
+				"stringData": map[string]any{name: value},
+			})
+			_, err := decrypt(t, s, ks)
+			if err == nil || !strings.Contains(err.Error(), "stringData."+name) || !strings.Contains(err.Error(), "quoted") {
+				t.Fatalf("want an error asking to quote stringData.%s, got %v", name, err)
+			}
+		})
 	}
 }
 
@@ -119,5 +120,24 @@ func TestParsePlainRejectsNestedValues(t *testing.T) {
 	_, err := document.ParsePlain([]byte("spec:\n  scope: a/b\n  stringData:\n    nested:\n      x: y\n"))
 	if err == nil || !strings.Contains(err.Error(), "nested") {
 		t.Fatalf("want error naming the nested key, got %v", err)
+	}
+}
+
+func TestCanonicalKeepsByteOrderOfKeys(t *testing.T) {
+	// Natural ordering (digit runs, punctuation first) differs from byte order for these keys.
+	s, ks := encryptedSopsSecret(t, map[string]any{
+		"tenantRef": map[string]any{"name": "solar", "namespace": "solar-system"},
+		"scope":     "solar-prod/db-creds",
+		"stringData": map[string]any{
+			"key2": "a", "key10": "b", "APIKEY": "c", "API_KEY": "d", "Z": "e", "_a": "f",
+			"PG_HOST": "g", "PGPASSWORD": "h",
+		},
+	})
+	p, err := decrypt(t, s, ks)
+	if err != nil {
+		t.Fatalf("ParsePlain: %v", err)
+	}
+	if string(p.Data["key10"]) != "b" || string(p.Data["PGPASSWORD"]) != "h" {
+		t.Fatal("payload values do not match the plaintext")
 	}
 }

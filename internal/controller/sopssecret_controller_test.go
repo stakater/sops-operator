@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
+	"github.com/stakater/sops-operator/internal/controller"
 	"github.com/stakater/sops-operator/internal/crypto"
 )
 
@@ -210,4 +211,33 @@ func TestSuspendedSopsSecretIsNotApplied(t *testing.T) {
 		t.Fatalf("suspended Ready status = %s, want Unknown", c.Status)
 	}
 	assertNoSecret(t, prod, "db")
+}
+
+func TestSecretUIDIsRecordedFromAStaleCopy(t *testing.T) {
+	ctx := context.Background()
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+	s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
+	create(t, s)
+	eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
+
+	stale := s.DeepCopy()
+	// A concurrent metadata change (e.g. from GitOps) makes the copy's resourceVersion stale.
+	s.Labels = map[string]string{"touched": "true"}
+	if err := env.Admin.Update(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &controller.SopsSecretReconciler{Client: env.Operator}
+	if err := r.RecordDecryptedForTest(ctx, stale, "uid-from-write"); err != nil {
+		t.Fatalf("recording the Secret UID from a stale copy: %v", err)
+	}
+	var got sopsv1alpha1.SopsSecret
+	if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(s), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.SecretUID != "uid-from-write" {
+		t.Fatalf("status.secretUID = %q, want uid-from-write", got.Status.SecretUID)
+	}
 }

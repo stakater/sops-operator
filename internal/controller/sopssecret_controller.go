@@ -137,8 +137,11 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	if err != nil {
 		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
 	}
-	plain, err := crypto.Decrypt(doc, keys)
+	want := document.ScopeFor(s.Namespace, s.Name)
+	plain, err := crypto.Decrypt(doc, keys, want)
 	switch {
+	case errors.Is(err, crypto.ErrScopeMismatch):
+		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: err.Error()}, nil
 	case errors.Is(err, crypto.ErrNotRecipient):
 		return outcome{reason: sopsv1alpha1.ReasonNotRecipient,
 			message: fmt.Sprintf("the document is not encrypted for the key of tenant %s", tenantName)}, nil
@@ -149,7 +152,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	if err != nil {
 		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
 	}
-	if want := document.ScopeFor(s.Namespace, s.Name); payload.Scope != want {
+	if payload.Scope != want {
 		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch,
 			message: fmt.Sprintf("the document is scoped to %q, not %q", payload.Scope, want)}, nil
 	}
@@ -218,7 +221,11 @@ func withoutTracking(in map[string]string) map[string]string {
 	return out
 }
 
+// updateStatus writes the outcome with a merge patch without optimistic locking, so a stale
+// resourceVersion cannot lose status.secretUID: without it the operator could no longer update
+// the Secret it created (D28).
 func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1.SopsSecret, o outcome) error {
+	base := s.DeepCopy()
 	status := metav1.ConditionFalse
 	switch o.reason {
 	case sopsv1alpha1.ReasonDecrypted:
@@ -237,7 +244,7 @@ func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1
 		ObservedGeneration: s.Generation,
 	})
 	s.Status.ObservedGeneration = s.Generation
-	return r.Status().Update(ctx, s)
+	return r.Status().Patch(ctx, s, client.MergeFrom(base))
 }
 
 // SetupWithManager registers the controller. Status updates do not retrigger reconciliation;

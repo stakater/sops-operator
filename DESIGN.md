@@ -345,8 +345,11 @@ Behaviour:
    If not → `AccessDenied`. Done before any decryption.
 3. Read the key Secret **impersonating** `solar-system:sops`.
 4. Verify the file's recipients include the tenant key → else `NotRecipient`.
-5. Decrypt. Verify the decrypted `scope` equals `X/<name>` → else `ScopeMismatch`.
-6. Server-side apply the Secret into X **impersonating** `solar-system:sops`. The API server enforces the cluster
+5. Decrypt **only** the encrypted `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No other value of
+   a document scoped elsewhere is decrypted. Then decrypt the values and verify the MAC → else `DecryptFailed`.
+   Error messages never contain decrypted values (SOPS does not authenticate a value's type tag, and its parse
+   errors quote the plaintext).
+6. Create or update the Secret in X **impersonating** `solar-system:sops` (D28). The API server enforces the cluster
    admin's RoleBinding again.
 
 ### 5.2 RBAC objects
@@ -560,8 +563,10 @@ git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
 ```
 
 - If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "solar-prod/db-creds"'`.
-- Keys must be sorted before encryption. The SOPS MAC depends on key order and the Kubernetes API returns objects with
-  keys sorted; an unsorted file fails with `DecryptFailed`.
+- Keys must be sorted byte-wise before encryption (`yq sort_keys` does this). The SOPS MAC depends on key order and
+  the Kubernetes API returns objects with keys sorted byte-wise; an unsorted file fails with `DecryptFailed`.
+- `stringData` values must be quoted strings. SOPS parses unquoted scalars before encrypting (`0123` would become
+  `83`), so the operator rejects them with `DecryptFailed` instead of writing a changed value.
 - Developers cannot `sops edit` (requires the private key). To change a value, rewrite and re-encrypt the file.
 - Pre-commit: `sops filestatus <file>` must report `{"encrypted":true}`.
 
@@ -637,12 +642,15 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D26 | Several `SopsTenant`s may share a namespace; they share its `sops` identity and grants | Separate key namespaces when reach must differ. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
 | D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update; a rejected update falls back to create, and `AlreadyExists` → `Conflict`. Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
-| D29 | Files are key-sorted (`yq 'sort_keys(..)'`) before encryption | The SOPS MAC is order-dependent and the API server returns keys sorted. |
+| D29 | Files are key-sorted byte-wise (`yq 'sort_keys(..)'`) before encryption; the operator rebuilds the document as byte-sorted JSON | The SOPS MAC is order-dependent and the API server returns keys sorted byte-wise. |
 | D30 | `Retain` means "no ownerReference"; no finalizer on `SopsSecret` | Deletion needs no Secret access and no extra verbs. |
 | D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
 | D32 | Tenant-facing ClusterRoles shipped from `config/tenant-rbac/` with fixed names | Onboarding templates reference stable names. |
 | D33 | operator-sdk and opm are pinned and installed per project into `bin/` with checksum verification | Reproducible builds locally and in CI; no reliance on globally installed tools. |
 | D34 | CI uses the shared Stakater operator workflows plus a signing job (cosign, SBOM, provenance) | Consistency with other Stakater operators; supply-chain guarantees the shared workflows do not provide yet. |
+| D35 | The scope is verified before any other value is decrypted; decryption errors carry fixed messages | Copied ciphertext with a tampered type tag must not leak plaintext through error messages. |
+| D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
+| D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
 
 ---
 

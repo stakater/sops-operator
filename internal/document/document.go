@@ -18,21 +18,19 @@ limitations under the License.
 package document
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"sigs.k8s.io/yaml"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
 
-// Canonical renders the encrypted part of a SopsSecret (spec and sops) as the YAML document
-// SOPS decrypts. Keys are sorted at every level, matching the Kubernetes API's JSON encoding
-// and files prepared with `yq 'sort_keys(..)'`. Encrypted values keep their paths (spec:…),
-// which SOPS uses as authenticated data.
+// Canonical renders the encrypted part of a SopsSecret (spec and sops) as the JSON document
+// SOPS decrypts. JSON encoding sorts keys byte-wise at every level, matching the Kubernetes
+// API and files prepared with `yq 'sort_keys(..)'`; the SOPS MAC depends on that order.
+// Encrypted values keep their paths (spec:…), which SOPS uses as authenticated data.
 func Canonical(s *sopsv1alpha1.SopsSecret) ([]byte, error) {
 	spec, err := toMap(s.Spec)
 	if err != nil {
@@ -42,7 +40,7 @@ func Canonical(s *sopsv1alpha1.SopsSecret) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("render sops metadata: %w", err)
 	}
-	return yaml.Marshal(map[string]any{"spec": spec, "sops": meta})
+	return json.Marshal(map[string]any{"spec": spec, "sops": meta})
 }
 
 func toMap(v any) (map[string]any, error) {
@@ -66,8 +64,9 @@ type Payload struct {
 // ScopeFor returns the scope value a SopsSecret named name in namespace must carry.
 func ScopeFor(namespace, name string) string { return namespace + "/" + name }
 
-// ParsePlain extracts the scope and values from a decrypted document. stringData scalars are
-// converted to strings the way kubectl does. Errors name keys but never values.
+// ParsePlain extracts the scope and values from a decrypted document. stringData values must be
+// quoted strings: SOPS parses unquoted scalars before encrypting (0123 becomes 83), so they are
+// refused instead of being converted. Errors name keys but never values.
 func ParsePlain(plain []byte) (*Payload, error) {
 	raw, err := yaml.YAMLToJSON(plain)
 	if err != nil {
@@ -80,9 +79,7 @@ func ParsePlain(plain []byte) (*Payload, error) {
 			StringData map[string]any `json:"stringData"`
 		} `json:"spec"`
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&doc); err != nil {
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("decrypted document does not match the SopsSecret schema")
 	}
 	p := &Payload{Scope: doc.Spec.Scope, Data: map[string][]byte{}}
@@ -98,9 +95,9 @@ func ParsePlain(plain []byte) (*Payload, error) {
 		p.Data[k] = b
 	}
 	for k, v := range doc.Spec.StringData {
-		s, ok := scalar(v)
+		s, ok := v.(string)
 		if !ok {
-			return nil, fmt.Errorf("stringData.%s must be a string, number or boolean", k)
+			return nil, fmt.Errorf("stringData.%s must be a quoted string", k)
 		}
 		if _, dup := p.Data[k]; dup {
 			return nil, fmt.Errorf("key %s appears in both data and stringData", k)
@@ -108,19 +105,4 @@ func ParsePlain(plain []byte) (*Payload, error) {
 		p.Data[k] = []byte(s)
 	}
 	return p, nil
-}
-
-func scalar(v any) (string, bool) {
-	switch x := v.(type) {
-	case string:
-		return x, true
-	case json.Number:
-		return x.String(), true
-	case bool:
-		return strconv.FormatBool(x), true
-	case nil:
-		return "", true
-	default:
-		return "", false
-	}
 }

@@ -20,13 +20,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/aes"
 	sopsage "github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/config"
-	"github.com/getsops/sops/v3/stores/yaml"
+	"github.com/getsops/sops/v3/stores/json"
 )
 
 // EncryptedRegex is the only SOPS encrypted_regex the operator accepts.
@@ -41,9 +42,11 @@ var (
 	ErrNotRecipient = errors.New("document is not encrypted for this key")
 	// ErrDecrypt reports a document that fails decryption or MAC verification.
 	ErrDecrypt = errors.New("decryption failed")
+	// ErrScopeMismatch reports a document whose encrypted scope is not the expected one.
+	ErrScopeMismatch = errors.New("scope mismatch")
 )
 
-func newStore() *yaml.Store { return yaml.NewStore(&config.YAMLStoreConfig{}) }
+func newStore() *json.Store { return json.NewStore(&config.JSONStoreConfig{}) }
 
 func load(doc []byte) (sops.Tree, error) {
 	tree, err := newStore().LoadEncryptedFile(doc)
@@ -89,9 +92,18 @@ func Recipients(doc []byte) ([]string, error) {
 	return out, nil
 }
 
-// Decrypt decrypts a SOPS-encrypted YAML document with the given keys, verifies its MAC and
-// returns the plaintext document. Identities are applied in memory to this document only.
-func Decrypt(doc []byte, keys *KeySet) ([]byte, error) {
+// scopePath is where the encrypted scope lives; SOPS authenticates each value with its path.
+var scopePath = []string{"spec", "scope"}
+
+// Decrypt decrypts a SOPS-encrypted JSON document (as returned by the Kubernetes API, keys
+// sorted byte-wise) with the given keys and returns the plaintext JSON document. Identities are
+// applied in memory to this document only.
+//
+// The encrypted scope is decrypted and compared with wantScope before any other value, so a
+// document copied elsewhere is rejected without decrypting its values. Errors never contain
+// decrypted values: SOPS does not authenticate a value's type tag, and its parse errors quote
+// the plaintext.
+func Decrypt(doc []byte, keys *KeySet, wantScope string) ([]byte, error) {
 	tree, err := load(doc)
 	if err != nil {
 		return nil, err
@@ -122,9 +134,12 @@ func Decrypt(doc []byte, keys *KeySet) ([]byte, error) {
 	}
 
 	cipher := aes.NewCipher()
+	if err := checkScope(tree, cipher, dataKey, wantScope); err != nil {
+		return nil, err
+	}
 	computed, err := tree.Decrypt(dataKey, cipher)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return nil, fmt.Errorf("%w: a value could not be decrypted", ErrDecrypt)
 	}
 	stored, err := cipher.Decrypt(tree.Metadata.MessageAuthenticationCode, dataKey,
 		tree.Metadata.LastModified.Format(time.RFC3339))
@@ -134,7 +149,50 @@ func Decrypt(doc []byte, keys *KeySet) ([]byte, error) {
 	}
 	plain, err := newStore().EmitPlainFile(tree.Branches)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return nil, fmt.Errorf("%w: the decrypted document could not be rendered", ErrDecrypt)
 	}
 	return plain, nil
+}
+
+// checkScope decrypts only the scope value and compares it with want.
+func checkScope(tree sops.Tree, cipher sops.Cipher, dataKey []byte, want string) error {
+	raw, ok := lookup(tree.Branches, scopePath)
+	ciphertext, isString := raw.(string)
+	if !ok || !isString {
+		return fmt.Errorf("%w: the document has no encrypted scope", ErrDecrypt)
+	}
+	v, err := cipher.Decrypt(ciphertext, dataKey, strings.Join(scopePath, ":")+":")
+	got, isString := v.(string)
+	if err != nil || !isString {
+		return fmt.Errorf("%w: the scope could not be decrypted as a string", ErrDecrypt)
+	}
+	if got != want {
+		return fmt.Errorf("%w: the document is scoped to %q, not %q", ErrScopeMismatch, got, want)
+	}
+	return nil
+}
+
+// lookup returns the value at path in the first branch of a tree.
+func lookup(branches sops.TreeBranches, path []string) (any, bool) {
+	if len(branches) == 0 {
+		return nil, false
+	}
+	var current any = branches[0]
+	for _, key := range path {
+		branch, ok := current.(sops.TreeBranch)
+		if !ok {
+			return nil, false
+		}
+		found := false
+		for _, item := range branch {
+			if k, ok := item.Key.(string); ok && k == key {
+				current, found = item.Value, true
+				break
+			}
+		}
+		if !found {
+			return nil, false
+		}
+	}
+	return current, true
 }

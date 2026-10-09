@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -71,7 +72,8 @@ func onboardedTenant(t *testing.T, writeNS ...string) (string, string) {
 // encryptedSopsSecret builds a SopsSecret named name in ns, encrypted for recipient with the given scope.
 func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope string, stringData map[string]any) *sopsv1alpha1.SopsSecret {
 	t.Helper()
-	plain, err := yaml.Marshal(map[string]any{
+	// JSON output is valid YAML with keys sorted byte-wise, like `yq -i 'sort_keys(..)'`.
+	plain, err := json.Marshal(map[string]any{
 		"apiVersion": "sops.stakater.com/v1alpha1",
 		"kind":       "SopsSecret",
 		"metadata":   map[string]any{"name": name, "namespace": ns},
