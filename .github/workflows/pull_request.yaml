@@ -68,6 +68,19 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: go.mod
+          # setup-go keeps one cache per go.sum, saved by the lint/test job whose builds use other
+          # flags; this job keeps its own cache for the static manager build below.
+          cache: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: manager-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            manager-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            manager-build-${{ runner.os }}-
 
       # Compile with the Go build cache restored above; inside Docker every dependency would be
       # compiled from scratch. The image only adds the binary to the distroless base.
