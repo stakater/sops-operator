@@ -300,6 +300,7 @@ sops: { ... }                        # written by `sops encrypt`
 status:
   observedGeneration: 1
   lastSyncTime: "2026-10-09T10:00:00Z"
+  secretUID: 6f1c2b8e-0d1a-4c5e-9b7f-2a3d4e5f6a7b   # UID of the Secret this SopsSecret created
   conditions:
     - type: Ready
       status: "True"
@@ -310,11 +311,11 @@ status:
 |---|---|---|
 | `spec.tenantRef` | yes | Tenant whose key decrypts this file. |
 | `spec.scope` | yes | **Encrypted** `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
-| `spec.deletionPolicy` | no | `Delete`: remove the Secret with the `SopsSecret`. `Retain`: keep it and drop management markers. |
+| `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
 | `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels are not copied. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
 | `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
-| `sops` | yes | SOPS metadata. Must contain `mac`, `lastmodified`, `version` and at least one `age` recipient. |
+| `sops` | yes | SOPS metadata written by `sops encrypt`. Must contain `mac`, `lastmodified`, `version`, at least one `age` recipient, `encrypted_regex: ^(data|stringData|scope)$` and `mac_only_encrypted: true`. Only age recipients in a single key group are supported; other key types are rejected by the schema. |
 
 Status reasons: `Decrypted`, `Suspended`, `TenantNotFound`, `TenantNotReady`, `AccessDenied`, `NotRecipient`,
 `ScopeMismatch`, `DecryptFailed`, `Conflict`, `ApplyFailed` (e.g. type validation, size limit).
@@ -324,9 +325,12 @@ Printer columns: `TENANT`, `READY`, `REASON`, `AGE`.
 Behaviour:
 
 - The operator manages only Secrets **it created**. A pre-existing Secret with the same name is a `Conflict`.
-- Output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as children) and never carry GitOps
-  tracking labels or annotations (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not
-  prune them.
+- With `deletionPolicy: Delete`, output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as
+  children; `blockOwnerDeletion` is not set). Output Secrets never carry GitOps tracking labels or annotations
+  (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not prune them.
+- `status.secretUID` records the Secret the operator created. Every later write is an update with that UID as a
+  precondition: `404` → recreate, `409` → `Conflict`. A `SopsSecret` without `status.secretUID` whose Secret already
+  exists is a `Conflict`.
 - Drift on the output Secret is corrected on the next periodic resync.
 
 ---
@@ -351,10 +355,12 @@ Shipped as static objects in the OLM bundle:
 | ClusterRole | Rules | Bound by | Where |
 |---|---|---|---|
 | `sops-key-owner` | `secrets`: `get`, `create` | Cluster admin | Tenant namespace |
-| `sops-secret-writer` | `secrets`: `create`, `patch`, `delete` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
+| `sops-secret-writer` | `secrets`: `create`, `update` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
 | `sops-tenant-admin` | full access to `sopstenants`; aggregated to `admin` | — | — |
 | `sops-secret-editor` | full access to `sopssecrets`; aggregated to `edit` | — | — |
 | `sops-viewer` | read `sopstenants`, `sopssecrets`; aggregated to `view` | — | — |
+
+The tenant-facing ClusterRoles are shipped from `config/tenant-rbac/` with exactly these names (not prefixed).
 
 Cluster admin onboarding template (per tenant; can be applied automatically by Stakater Tenant Operator or Capsule):
 
@@ -384,7 +390,7 @@ subjects: [{ kind: ServiceAccount, name: sops, namespace: solar-system }]
 # clusterPermissions
 - apiGroups: [sops.stakater.com]
   resources: [sopstenants, sopssecrets]
-  verbs: [get, list, watch, update, patch]
+  verbs: [get, list, watch]
 - apiGroups: [sops.stakater.com]
   resources: [sopstenants/status, sopssecrets/status]
   verbs: [get, update, patch]
@@ -547,11 +553,14 @@ creation_rules:
 ```bash
 # write plaintext SopsSecret (never commit this state), then:
 yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' prod/db-creds.sops.yaml
+yq -i 'sort_keys(..)' prod/db-creds.sops.yaml
 sops encrypt -i prod/db-creds.sops.yaml
 git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
 ```
 
 - If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "solar-prod/db-creds"'`.
+- Keys must be sorted before encryption. The SOPS MAC depends on key order and the Kubernetes API returns objects with
+  keys sorted; an unsorted file fails with `DecryptFailed`.
 - Developers cannot `sops edit` (requires the private key). To change a value, rewrite and re-encrypt the file.
 - Pre-commit: `sops filestatus <file>` must report `{"encrypted":true}`.
 
@@ -575,7 +584,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 
 ## 9. Delivery
 
-- **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `getsops/sops/v3`, `filippo.io/age`.
+- **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `getsops/sops/v3`, `filippo.io/age`. Tools pinned and checksum-verified by `hack/bootstrap-tools.sh`: operator-sdk v1.42.3, opm v1.74.0.
 - **Distribution**: OLM only. Bundle + file-based catalog images; channels `alpha` → `stable`; install mode
   `AllNamespaces`; no webhooks and no OLM dependencies (compatible with OLM v0 `Subscription` and OLM v1
   `ClusterExtension`). Validation with CEL in the CRDs.
@@ -626,7 +635,12 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D25 | Module `github.com/stakater/sops-operator`; images `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` | Stakater organization. |
 | D26 | Several `SopsTenant`s may share a namespace; they share its `sops` identity and grants | Separate key namespaces when reach must differ. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
-| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every patch (`404` → recreate, `409` → `Conflict`). Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update (`404` → recreate, `409` → `Conflict`). Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D29 | Files are key-sorted (`yq 'sort_keys(..)'`) before encryption | The SOPS MAC is order-dependent and the API server returns keys sorted. |
+| D30 | `Retain` means "no ownerReference"; no finalizer on `SopsSecret` | Deletion needs no Secret access and no extra verbs. |
+| D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
+| D32 | Tenant-facing ClusterRoles shipped from `config/tenant-rbac/` with fixed names | Onboarding templates reference stable names. |
+| D33 | operator-sdk and opm are pinned and installed per project into `bin/` with checksum verification | Reproducible builds locally and in CI; no reliance on globally installed tools. |
 | D34 | CI uses the shared Stakater operator workflows plus a signing job (cosign, SBOM, provenance) | Consistency with other Stakater operators; supply-chain guarantees the shared workflows do not provide yet. |
 
 ---
