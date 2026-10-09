@@ -65,20 +65,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
-
-      # Layers come from the GitHub Actions cache: the dependency download is reused while go.mod
-      # and go.sum are unchanged. The image is exported as a tarball, not pushed.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          context: .
-          tags: sops-operator:pr
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
-          outputs: type=docker,dest=${{ runner.temp }}/image.tar
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          go-version-file: go.mod
+
+      # Compile with the Go build cache restored above; inside Docker every dependency would be
+      # compiled from scratch. The image only adds the binary to the distroless base.
+      - name: Build
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager cmd/main.go
+          docker build --target prebuilt \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${HEAD_SHA}" \
+            -t sops-operator:pr .
+          docker save sops-operator:pr -o "${RUNNER_TEMP}/image.tar"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
