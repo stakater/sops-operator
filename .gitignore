@@ -1,0 +1,24 @@
+# Binaries and build output
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# Go
+cover.out
+coverage.*
+vendor/
+
+# Plaintext secrets must never be committed
+*.dec.yaml
+*.plain.yaml
+*.agekey
+age.key
+key.txt
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
