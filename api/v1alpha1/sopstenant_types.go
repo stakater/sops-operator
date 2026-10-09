@@ -20,34 +20,49 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// SopsTenantSpec defines the desired state of SopsTenant.
+// SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+// tenant's namespace.
 type SopsTenantSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of SopsTenant. Edit sopstenant_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// GenerateKey generates a post-quantum age key when the key Secret does not exist.
+	// +kubebuilder:default=true
+	// +optional
+	GenerateKey *bool `json:"generateKey,omitempty"`
 }
 
-// SopsTenantStatus defines the observed state of SopsTenant.
+// SopsTenantStatus reports the state of the tenant key.
 type SopsTenantStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// UsedBy is the number of SopsSecrets referencing this tenant.
+	// +optional
+	UsedBy int32 `json:"usedBy,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Used By",type=integer,JSONPath=`.status.usedBy`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// SopsTenant is the Schema for the sopstenants API.
+// SopsTenant is a tenant key used to decrypt SopsSecrets.
 type SopsTenant struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SopsTenantSpec   `json:"spec,omitempty"`
+	// +optional
+	Spec SopsTenantSpec `json:"spec,omitempty"`
+	// +optional
 	Status SopsTenantStatus `json:"status,omitempty"`
+}
+
+// ShouldGenerateKey reports whether a missing key Secret should be generated.
+func (t *SopsTenant) ShouldGenerateKey() bool {
+	return t.Spec.GenerateKey == nil || *t.Spec.GenerateKey
 }
 
 // +kubebuilder:object:root=true
