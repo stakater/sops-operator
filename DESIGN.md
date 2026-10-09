@@ -329,8 +329,9 @@ Behaviour:
   children; `blockOwnerDeletion` is not set). Output Secrets never carry GitOps tracking labels or annotations
   (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not prune them.
 - `status.secretUID` records the Secret the operator created. Every later write is an update with that UID as a
-  precondition: `404` → recreate, `409` → `Conflict`. A `SopsSecret` without `status.secretUID` whose Secret already
-  exists is a `Conflict`.
+  precondition. The API server rejects it (`409`) when the Secret is gone or was replaced; the operator then creates
+  the Secret, which succeeds if it was deleted and fails with `AlreadyExists` → `Conflict` if someone else's Secret
+  holds the name. A `SopsSecret` without `status.secretUID` whose Secret already exists is a `Conflict`.
 - Drift on the output Secret is corrected on the next periodic resync.
 
 ---
@@ -635,7 +636,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D25 | Module `github.com/stakater/sops-operator`; images `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` | Stakater organization. |
 | D26 | Several `SopsTenant`s may share a namespace; they share its `sops` identity and grants | Separate key namespaces when reach must differ. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
-| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update (`404` → recreate, `409` → `Conflict`). Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update; a rejected update falls back to create, and `AlreadyExists` → `Conflict`. Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
 | D29 | Files are key-sorted (`yq 'sort_keys(..)'`) before encryption | The SOPS MAC is order-dependent and the API server returns keys sorted. |
 | D30 | `Retain` means "no ownerReference"; no finalizer on `SopsSecret` | Deletion needs no Secret access and no extra verbs. |
 | D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
