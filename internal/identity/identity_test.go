@@ -28,47 +28,49 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestUserName(t *testing.T) {
-	if got := identity.UserName("solar-system"); got != "system:serviceaccount:solar-system:sops" {
-		t.Fatalf("UserName = %q", got)
-	}
-}
+func TestTenantIdentity(t *testing.T) {
+	t.Run("shall act as the sops ServiceAccount", func(t *testing.T) {
+		if got := identity.UserName("solar-system"); got != "system:serviceaccount:solar-system:sops" {
+			t.Fatalf("UserName = %q", got)
+		}
+	})
 
-func TestTenantReadsKeyOnlyWhenOnboarded(t *testing.T) {
-	ctx := context.Background()
-	tenantNS := env.Namespace(t, "tenant")
-	key := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "solar", Namespace: tenantNS}}
-	if err := env.Admin.Create(ctx, key); err != nil {
-		t.Fatal(err)
-	}
-	f := identity.NewFactory(env.OperatorConfig, env.Scheme)
-	c, err := f.ClientFor(tenantNS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(key), &corev1.Secret{}); !apierrors.IsForbidden(err) {
-		t.Fatalf("before onboarding: got %v, want Forbidden", err)
-	}
-	env.Onboard(t, tenantNS)
-	if err := c.Get(ctx, client.ObjectKeyFromObject(key), &corev1.Secret{}); err != nil {
-		t.Fatalf("after onboarding: %v", err)
-	}
-}
-
-func TestCanWriteSecretsFollowsGrants(t *testing.T) {
-	ctx := context.Background()
-	tenantNS := env.Namespace(t, "tenant")
-	granted := env.Namespace(t, "granted")
-	other := env.Namespace(t, "other")
-	env.Onboard(t, tenantNS, granted)
-
-	for ns, want := range map[string]bool{granted: true, other: false} {
-		got, err := identity.CanWriteSecrets(ctx, env.Operator, tenantNS, ns)
+	t.Run("shall read the key only when onboarded", func(t *testing.T) {
+		ctx := context.Background()
+		tenantNS := env.Namespace(t, "tenant")
+		key := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "solar", Namespace: tenantNS}}
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		f := identity.NewFactory(env.OperatorConfig, env.Scheme)
+		c, err := f.ClientFor(tenantNS)
 		if err != nil {
-			t.Fatalf("CanWriteSecrets(%s): %v", ns, err)
+			t.Fatal(err)
 		}
-		if got != want {
-			t.Fatalf("CanWriteSecrets(%s) = %v, want %v", ns, got, want)
+		if err := c.Get(ctx, client.ObjectKeyFromObject(key), &corev1.Secret{}); !apierrors.IsForbidden(err) {
+			t.Fatalf("before onboarding: got %v, want Forbidden", err)
 		}
-	}
+		env.Onboard(t, tenantNS)
+		if err := c.Get(ctx, client.ObjectKeyFromObject(key), &corev1.Secret{}); err != nil {
+			t.Fatalf("after onboarding: %v", err)
+		}
+	})
+
+	t.Run("shall report Secret write only in granted namespaces", func(t *testing.T) {
+		ctx := context.Background()
+		tenantNS := env.Namespace(t, "tenant")
+		granted := env.Namespace(t, "granted")
+		other := env.Namespace(t, "other")
+		env.Onboard(t, tenantNS, granted)
+
+		for ns, want := range map[string]bool{granted: true, other: false} {
+			got, err := identity.CanWriteSecrets(ctx, env.Operator, tenantNS, ns)
+			if err != nil {
+				t.Fatalf("CanWriteSecrets(%s): %v", ns, err)
+			}
+			if got != want {
+				t.Fatalf("CanWriteSecrets(%s) = %v, want %v", ns, got, want)
+			}
+		}
+	})
 }

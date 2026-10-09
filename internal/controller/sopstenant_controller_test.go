@@ -32,119 +32,121 @@ func keySecret(ns string, keyFile string) *corev1.Secret {
 	}
 }
 
-func TestTenantGeneratesPostQuantumKey(t *testing.T) {
-	ctx := context.Background()
-	ns := env.Namespace(t, "tenant")
-	env.Onboard(t, ns)
-	tenant := newTenant(ns, nil)
-	if err := env.Admin.Create(ctx, tenant); err != nil {
-		t.Fatal(err)
-	}
-	NewWithT(t).Eventually(func(g Gomega) {
-		g.Expect(env.Admin.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
-		c := readyCondition(tenant)
-		g.Expect(c).NotTo(BeNil())
-		g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
-	}).WithTimeout(20 * time.Second).Should(Succeed())
-
-	var key corev1.Secret
-	if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &key); err != nil {
-		t.Fatal(err)
-	}
-	ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
-		t.Fatal("generated key is not post-quantum")
-	}
-	if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
-		t.Fatal("generated key is missing the managed-by label")
-	}
-	if len(key.OwnerReferences) != 0 {
-		t.Fatal("key Secret must not have an ownerReference")
-	}
-}
-
-func TestTenantLoadsExistingKeyWithoutChangingIt(t *testing.T) {
-	ctx := context.Background()
-	ns := env.Namespace(t, "tenant")
-	env.Onboard(t, ns)
-	x, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := keySecret(ns, x.String()+"\n")
-	if err := env.Admin.Create(ctx, key); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
-		t.Fatal(err)
-	}
-	eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyLoaded)
-
-	var after corev1.Secret
-	if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
-		t.Fatal(err)
-	}
-	if after.ResourceVersion != key.ResourceVersion {
-		t.Fatal("existing key Secret was modified")
-	}
-}
-
-func TestTenantReportsInvalidKey(t *testing.T) {
-	ctx := context.Background()
-	ns := env.Namespace(t, "tenant")
-	env.Onboard(t, ns)
-	if err := env.Admin.Create(ctx, keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
-		t.Fatal(err)
-	}
-	eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
-}
-
-func TestTenantWithoutGenerationReportsMissingKey(t *testing.T) {
-	ctx := context.Background()
-	ns := env.Namespace(t, "tenant")
-	env.Onboard(t, ns)
-	if err := env.Admin.Create(ctx, newTenant(ns, ptr.To(false))); err != nil {
-		t.Fatal(err)
-	}
-	eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyMissing)
-	err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &corev1.Secret{})
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("key Secret must not be created: %v", err)
-	}
-}
-
-func TestTenantNotOnboardedIsAccessDenied(t *testing.T) {
-	ctx := context.Background()
-	ns := env.Namespace(t, "tenant")
-	if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
-		t.Fatal(err)
-	}
-	eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonAccessDenied)
-	err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &corev1.Secret{})
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("key Secret must not be created: %v", err)
-	}
-}
-
-func TestTenantCountsSopsSecrets(t *testing.T) {
-	ctx := context.Background()
-	target := env.Namespace(t, "target")
-	tenantNS, recipient := onboardedTenant(t, target)
-	for _, name := range []string{"a", "b"} {
-		s := encryptedSopsSecret(t, recipient, tenantNS, target, name, target+"/"+name, map[string]any{"k": "v"})
-		if err := env.Admin.Create(ctx, s); err != nil {
+func TestTenantKey(t *testing.T) {
+	t.Run("shall generate a post-quantum key", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
 			t.Fatal(err)
 		}
-	}
-	tenant := newTenant(tenantNS, nil)
-	NewWithT(t).Eventually(func(g Gomega) {
-		g.Expect(env.Admin.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
-		g.Expect(tenant.Status.UsedBy).To(Equal(int32(2)))
-	}).WithTimeout(20 * time.Second).Should(Succeed())
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			c := readyCondition(tenant)
+			g.Expect(c).NotTo(BeNil())
+			g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+
+		var key corev1.Secret
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &key); err != nil {
+			t.Fatal(err)
+		}
+		ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
+			t.Fatal("generated key is not post-quantum")
+		}
+		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+			t.Fatal("generated key is missing the managed-by label")
+		}
+		if len(key.OwnerReferences) != 0 {
+			t.Fatal("key Secret must not have an ownerReference")
+		}
+	})
+
+	t.Run("shall load an existing key without changing it", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, x.String()+"\n")
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyLoaded)
+
+		var after corev1.Secret
+		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
+			t.Fatal(err)
+		}
+		if after.ResourceVersion != key.ResourceVersion {
+			t.Fatal("existing key Secret was modified")
+		}
+	})
+
+	t.Run("shall report an invalid key", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		if err := env.Admin.Create(ctx, keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
+	})
+
+	t.Run("shall report a missing key when generation is disabled", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		if err := env.Admin.Create(ctx, newTenant(ns, ptr.To(false))); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyMissing)
+		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &corev1.Secret{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("key Secret must not be created: %v", err)
+		}
+	})
+
+	t.Run("shall report AccessDenied when not onboarded", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonAccessDenied)
+		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &corev1.Secret{})
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("key Secret must not be created: %v", err)
+		}
+	})
+
+	t.Run("shall count the SopsSecrets using it", func(t *testing.T) {
+		ctx := context.Background()
+		target := env.Namespace(t, "target")
+		tenantNS, recipient := onboardedTenant(t, target)
+		for _, name := range []string{"a", "b"} {
+			s := encryptedSopsSecret(t, recipient, tenantNS, target, name, target+"/"+name, map[string]any{"k": "v"})
+			if err := env.Admin.Create(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tenant := newTenant(tenantNS, nil)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			g.Expect(tenant.Status.UsedBy).To(Equal(int32(2)))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
 }

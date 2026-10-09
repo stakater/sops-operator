@@ -59,80 +59,82 @@ func adminRead(t *testing.T, ns string) *corev1.Secret {
 	return &s
 }
 
-func TestCreateThenUpdate(t *testing.T) {
-	ctx := context.Background()
-	c, ns := setup(t)
-	uid, err := secretwriter.Write(ctx, c, secret(ns, "v1"), "")
-	if err != nil || uid == "" {
-		t.Fatalf("create: uid=%q err=%v", uid, err)
-	}
-	uid2, err := secretwriter.Write(ctx, c, secret(ns, "v2"), uid)
-	if err != nil || uid2 != uid {
-		t.Fatalf("update: uid=%q err=%v", uid2, err)
-	}
-	if got := string(adminRead(t, ns).Data["password"]); got != "v2" {
-		t.Fatalf("password = %q, want v2", got)
-	}
-}
+func TestSecretWriter(t *testing.T) {
+	t.Run("shall create and then update its Secret", func(t *testing.T) {
+		ctx := context.Background()
+		c, ns := setup(t)
+		uid, err := secretwriter.Write(ctx, c, secret(ns, "v1"), "")
+		if err != nil || uid == "" {
+			t.Fatalf("create: uid=%q err=%v", uid, err)
+		}
+		uid2, err := secretwriter.Write(ctx, c, secret(ns, "v2"), uid)
+		if err != nil || uid2 != uid {
+			t.Fatalf("update: uid=%q err=%v", uid2, err)
+		}
+		if got := string(adminRead(t, ns).Data["password"]); got != "v2" {
+			t.Fatalf("password = %q, want v2", got)
+		}
+	})
 
-func TestExistingForeignSecretIsConflict(t *testing.T) {
-	ctx := context.Background()
-	c, ns := setup(t)
-	if err := env.Admin.Create(ctx, secret(ns, "foreign")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := secretwriter.Write(ctx, c, secret(ns, "mine"), ""); !errors.Is(err, secretwriter.ErrConflict) {
-		t.Fatalf("got %v, want ErrConflict", err)
-	}
-	if got := string(adminRead(t, ns).Data["password"]); got != "foreign" {
-		t.Fatal("foreign Secret was modified")
-	}
-}
+	t.Run("shall not overwrite an existing Secret", func(t *testing.T) {
+		ctx := context.Background()
+		c, ns := setup(t)
+		if err := env.Admin.Create(ctx, secret(ns, "foreign")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := secretwriter.Write(ctx, c, secret(ns, "mine"), ""); !errors.Is(err, secretwriter.ErrConflict) {
+			t.Fatalf("got %v, want ErrConflict", err)
+		}
+		if got := string(adminRead(t, ns).Data["password"]); got != "foreign" {
+			t.Fatal("foreign Secret was modified")
+		}
+	})
 
-func TestDeletedSecretIsRecreated(t *testing.T) {
-	ctx := context.Background()
-	c, ns := setup(t)
-	uid, err := secretwriter.Write(ctx, c, secret(ns, "v1"), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.Admin.Delete(ctx, secret(ns, "")); err != nil {
-		t.Fatal(err)
-	}
-	uid2, err := secretwriter.Write(ctx, c, secret(ns, "v2"), uid)
-	if err != nil || uid2 == "" || uid2 == uid {
-		t.Fatalf("recreate: uid=%q (old %q) err=%v", uid2, uid, err)
-	}
-}
+	t.Run("shall recreate a deleted Secret", func(t *testing.T) {
+		ctx := context.Background()
+		c, ns := setup(t)
+		uid, err := secretwriter.Write(ctx, c, secret(ns, "v1"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Delete(ctx, secret(ns, "")); err != nil {
+			t.Fatal(err)
+		}
+		uid2, err := secretwriter.Write(ctx, c, secret(ns, "v2"), uid)
+		if err != nil || uid2 == "" || uid2 == uid {
+			t.Fatalf("recreate: uid=%q (old %q) err=%v", uid2, uid, err)
+		}
+	})
 
-func TestForeignReplacementIsNeverOverwritten(t *testing.T) {
-	ctx := context.Background()
-	c, ns := setup(t)
-	uid, err := secretwriter.Write(ctx, c, secret(ns, "v1"), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.Admin.Delete(ctx, secret(ns, "")); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.Admin.Create(ctx, secret(ns, "foreign")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := secretwriter.Write(ctx, c, secret(ns, "v2"), uid); !errors.Is(err, secretwriter.ErrConflict) {
-		t.Fatalf("got %v, want ErrConflict", err)
-	}
-	if got := string(adminRead(t, ns).Data["password"]); got != "foreign" {
-		t.Fatal("foreign replacement was overwritten")
-	}
-}
+	t.Run("shall not overwrite a Secret that replaced its own", func(t *testing.T) {
+		ctx := context.Background()
+		c, ns := setup(t)
+		uid, err := secretwriter.Write(ctx, c, secret(ns, "v1"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Delete(ctx, secret(ns, "")); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(ctx, secret(ns, "foreign")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := secretwriter.Write(ctx, c, secret(ns, "v2"), uid); !errors.Is(err, secretwriter.ErrConflict) {
+			t.Fatalf("got %v, want ErrConflict", err)
+		}
+		if got := string(adminRead(t, ns).Data["password"]); got != "foreign" {
+			t.Fatal("foreign replacement was overwritten")
+		}
+	})
 
-func TestTenantCannotReadSecrets(t *testing.T) {
-	c, ns := setup(t)
-	if err := env.Admin.Create(context.Background(), secret(ns, "x")); err != nil {
-		t.Fatal(err)
-	}
-	err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "db"}, &corev1.Secret{})
-	if !apierrors.IsForbidden(err) {
-		t.Fatalf("got %v, want Forbidden", err)
-	}
+	t.Run("shall not read Secrets", func(t *testing.T) {
+		c, ns := setup(t)
+		if err := env.Admin.Create(context.Background(), secret(ns, "x")); err != nil {
+			t.Fatal(err)
+		}
+		err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "db"}, &corev1.Secret{})
+		if !apierrors.IsForbidden(err) {
+			t.Fatalf("got %v, want Forbidden", err)
+		}
+	})
 }

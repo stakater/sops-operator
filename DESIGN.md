@@ -605,6 +605,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   or rule it checks (`TestTenantOnboarding` in `tenant_onboarding_test.go`, `TestSecretDecryption`,
   `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`), one subtest per expected
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
+  Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
+  `TestSecretOwnership`, …) with `shall …` subtests.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token

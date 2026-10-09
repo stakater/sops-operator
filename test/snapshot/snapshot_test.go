@@ -81,7 +81,7 @@ func mustNotContain(t *testing.T, out string, unwanted ...string) {
 	}
 }
 
-func TestYAML(t *testing.T) {
+func TestSnapshotNormalization(t *testing.T) {
 	t.Run("shall replace values that change on every run", func(t *testing.T) {
 		out := render(t, &corev1.Secret{ObjectMeta: meta("db"), Type: corev1.SecretTypeOpaque})
 		mustContain(t, out,

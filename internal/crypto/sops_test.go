@@ -64,97 +64,6 @@ func viaAPI(t *testing.T, doc []byte, mutate func(m map[string]any)) []byte {
 	return out
 }
 
-func TestDecryptRoundTrip(t *testing.T) {
-	ks := newKeys(t)
-	doc := viaAPI(t, encrypt(t, sortedPlain, ks.Recipients[0]), nil)
-
-	recipients, err := crypto.Recipients(doc)
-	if err != nil {
-		t.Fatalf("Recipients: %v", err)
-	}
-	if len(recipients) != 1 || recipients[0] != ks.Recipients[0] {
-		t.Fatal("Recipients does not return the encryption recipient")
-	}
-
-	plain, err := crypto.Decrypt(doc, ks, wantScope)
-	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
-	}
-	var got struct {
-		Spec struct {
-			Scope      string            `json:"scope"`
-			StringData map[string]string `json:"stringData"`
-		} `json:"spec"`
-	}
-	if err := yaml.Unmarshal(plain, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Spec.Scope != "solar-prod/db-creds" || got.Spec.StringData["a"] != "one" || got.Spec.StringData["b"] != "two" {
-		t.Fatal("decrypted values do not match the plaintext")
-	}
-}
-
-func TestDecryptNotRecipient(t *testing.T) {
-	owner, other := newKeys(t), newKeys(t)
-	doc := viaAPI(t, encrypt(t, sortedPlain, other.Recipients[0]), nil)
-	if _, err := crypto.Decrypt(doc, owner, wantScope); !errors.Is(err, crypto.ErrNotRecipient) {
-		t.Fatalf("got %v, want ErrNotRecipient", err)
-	}
-}
-
-func TestDecryptDetectsTampering(t *testing.T) {
-	ks := newKeys(t)
-	enc := encrypt(t, sortedPlain, ks.Recipients[0])
-	cases := map[string]func(m map[string]any){
-		"lastmodified changed": func(m map[string]any) {
-			m["sops"].(map[string]any)["lastmodified"] = "2020-01-01T00:00:00Z"
-		},
-		"values swapped": func(m map[string]any) {
-			sd := m["spec"].(map[string]any)["stringData"].(map[string]any)
-			sd["a"], sd["b"] = sd["b"], sd["a"]
-		},
-	}
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			_, err := crypto.Decrypt(viaAPI(t, enc, mutate), ks, wantScope)
-			if !errors.Is(err, crypto.ErrDecrypt) {
-				t.Fatalf("got %v, want ErrDecrypt", err)
-			}
-		})
-	}
-}
-
-func TestDecryptUnsortedFileFailsWithHint(t *testing.T) {
-	ks := newKeys(t)
-	unsorted := "spec:\n  scope: solar-prod/db-creds\n  stringData:\n    b: two\n    a: one\n"
-	doc := viaAPI(t, encrypt(t, unsorted, ks.Recipients[0]), nil)
-	_, err := crypto.Decrypt(doc, ks, wantScope)
-	if !errors.Is(err, crypto.ErrDecrypt) {
-		t.Fatalf("got %v, want ErrDecrypt", err)
-	}
-	if !strings.Contains(err.Error(), "sort_keys") {
-		t.Fatalf("error %q does not tell the user to sort keys", err)
-	}
-}
-
-func TestDecryptRejectsNonAgeKeys(t *testing.T) {
-	ks := newKeys(t)
-	doc := viaAPI(t, encrypt(t, sortedPlain, ks.Recipients[0]), func(m map[string]any) {
-		m["sops"].(map[string]any)["pgp"] = []any{map[string]any{
-			"fp": "0000000000000000000000000000000000000000", "enc": "x", "created_at": "2026-01-01T00:00:00Z",
-		}}
-	})
-	if _, err := crypto.Decrypt(doc, ks, wantScope); !errors.Is(err, crypto.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported", err)
-	}
-}
-
-func TestDecryptRejectsPlaintext(t *testing.T) {
-	if _, err := crypto.Decrypt([]byte(sortedPlain), newKeys(t), wantScope); !errors.Is(err, crypto.ErrMalformed) {
-		t.Fatalf("got %v, want ErrMalformed", err)
-	}
-}
-
 // flipType changes the unauthenticated type tag of an encrypted value at spec.<field>[.<key>].
 func flipType(field, key string) func(m map[string]any) {
 	return func(m map[string]any) {
@@ -174,36 +83,129 @@ const leakPlain = `spec:
     password: hunter2-SECRET
 `
 
-func TestDecryptFlippedTypeTagDoesNotLeakPlaintext(t *testing.T) {
-	ks := newKeys(t)
-	doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("stringData", "password"))
-	_, err := crypto.Decrypt(doc, ks, wantScope)
-	if !errors.Is(err, crypto.ErrDecrypt) {
-		t.Fatalf("got %v, want ErrDecrypt", err)
-	}
-	if strings.Contains(err.Error(), "hunter2") {
-		t.Fatalf("error leaks plaintext: %q", err)
-	}
-}
+func TestDecryption(t *testing.T) {
+	t.Run("shall decrypt a document from the Kubernetes API", func(t *testing.T) {
+		ks := newKeys(t)
+		doc := viaAPI(t, encrypt(t, sortedPlain, ks.Recipients[0]), nil)
 
-func TestDecryptChecksScopeBeforeOtherValues(t *testing.T) {
-	ks := newKeys(t)
-	// A copied file with a tampered value must be rejected by scope, before the value is decrypted.
-	doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("stringData", "password"))
-	_, err := crypto.Decrypt(doc, ks, "solar-dev/db-creds")
-	if !errors.Is(err, crypto.ErrScopeMismatch) {
-		t.Fatalf("got %v, want ErrScopeMismatch", err)
-	}
-}
+		recipients, err := crypto.Recipients(doc)
+		if err != nil {
+			t.Fatalf("Recipients: %v", err)
+		}
+		if len(recipients) != 1 || recipients[0] != ks.Recipients[0] {
+			t.Fatal("Recipients does not return the encryption recipient")
+		}
 
-func TestDecryptRejectsNonStringScopeWithoutLeaking(t *testing.T) {
-	ks := newKeys(t)
-	doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("scope", ""))
-	_, err := crypto.Decrypt(doc, ks, wantScope)
-	if !errors.Is(err, crypto.ErrDecrypt) {
-		t.Fatalf("got %v, want ErrDecrypt", err)
-	}
-	if strings.Contains(err.Error(), "solar-prod") {
-		t.Fatalf("error leaks the scope plaintext: %q", err)
-	}
+		plain, err := crypto.Decrypt(doc, ks, wantScope)
+		if err != nil {
+			t.Fatalf("Decrypt: %v", err)
+		}
+		var got struct {
+			Spec struct {
+				Scope      string            `json:"scope"`
+				StringData map[string]string `json:"stringData"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal(plain, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Spec.Scope != "solar-prod/db-creds" || got.Spec.StringData["a"] != "one" || got.Spec.StringData["b"] != "two" {
+			t.Fatal("decrypted values do not match the plaintext")
+		}
+	})
+
+	t.Run("shall reject a document not encrypted for the key", func(t *testing.T) {
+		owner, other := newKeys(t), newKeys(t)
+		doc := viaAPI(t, encrypt(t, sortedPlain, other.Recipients[0]), nil)
+		if _, err := crypto.Decrypt(doc, owner, wantScope); !errors.Is(err, crypto.ErrNotRecipient) {
+			t.Fatalf("got %v, want ErrNotRecipient", err)
+		}
+	})
+
+	t.Run("shall detect tampering", func(t *testing.T) {
+		ks := newKeys(t)
+		enc := encrypt(t, sortedPlain, ks.Recipients[0])
+		cases := map[string]func(m map[string]any){
+			"when lastmodified changed": func(m map[string]any) {
+				m["sops"].(map[string]any)["lastmodified"] = "2020-01-01T00:00:00Z"
+			},
+			"when values were swapped": func(m map[string]any) {
+				sd := m["spec"].(map[string]any)["stringData"].(map[string]any)
+				sd["a"], sd["b"] = sd["b"], sd["a"]
+			},
+		}
+		for name, mutate := range cases {
+			t.Run(name, func(t *testing.T) {
+				_, err := crypto.Decrypt(viaAPI(t, enc, mutate), ks, wantScope)
+				if !errors.Is(err, crypto.ErrDecrypt) {
+					t.Fatalf("got %v, want ErrDecrypt", err)
+				}
+			})
+		}
+	})
+
+	t.Run("shall ask to sort keys when the MAC does not match", func(t *testing.T) {
+		ks := newKeys(t)
+		unsorted := "spec:\n  scope: solar-prod/db-creds\n  stringData:\n    b: two\n    a: one\n"
+		doc := viaAPI(t, encrypt(t, unsorted, ks.Recipients[0]), nil)
+		_, err := crypto.Decrypt(doc, ks, wantScope)
+		if !errors.Is(err, crypto.ErrDecrypt) {
+			t.Fatalf("got %v, want ErrDecrypt", err)
+		}
+		if !strings.Contains(err.Error(), "sort_keys") {
+			t.Fatalf("error %q does not tell the user to sort keys", err)
+		}
+	})
+
+	t.Run("shall reject non-age keys", func(t *testing.T) {
+		ks := newKeys(t)
+		doc := viaAPI(t, encrypt(t, sortedPlain, ks.Recipients[0]), func(m map[string]any) {
+			m["sops"].(map[string]any)["pgp"] = []any{map[string]any{
+				"fp": "0000000000000000000000000000000000000000", "enc": "x", "created_at": "2026-01-01T00:00:00Z",
+			}}
+		})
+		if _, err := crypto.Decrypt(doc, ks, wantScope); !errors.Is(err, crypto.ErrUnsupported) {
+			t.Fatalf("got %v, want ErrUnsupported", err)
+		}
+	})
+
+	t.Run("shall reject plaintext", func(t *testing.T) {
+		if _, err := crypto.Decrypt([]byte(sortedPlain), newKeys(t), wantScope); !errors.Is(err, crypto.ErrMalformed) {
+			t.Fatalf("got %v, want ErrMalformed", err)
+		}
+	})
+
+	t.Run("shall not leak plaintext through a tampered type tag", func(t *testing.T) {
+		ks := newKeys(t)
+		doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("stringData", "password"))
+		_, err := crypto.Decrypt(doc, ks, wantScope)
+		if !errors.Is(err, crypto.ErrDecrypt) {
+			t.Fatalf("got %v, want ErrDecrypt", err)
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Fatalf("error leaks plaintext: %q", err)
+		}
+	})
+
+	t.Run("shall check the scope before other values", func(t *testing.T) {
+		ks := newKeys(t)
+		// A copied file with a tampered value must be rejected by scope, before the value is decrypted.
+		doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("stringData", "password"))
+		_, err := crypto.Decrypt(doc, ks, "solar-dev/db-creds")
+		if !errors.Is(err, crypto.ErrScopeMismatch) {
+			t.Fatalf("got %v, want ErrScopeMismatch", err)
+		}
+	})
+
+	t.Run("shall reject a non-string scope without leaking it", func(t *testing.T) {
+		ks := newKeys(t)
+		doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("scope", ""))
+		_, err := crypto.Decrypt(doc, ks, wantScope)
+		if !errors.Is(err, crypto.ErrDecrypt) {
+			t.Fatalf("got %v, want ErrDecrypt", err)
+		}
+		if strings.Contains(err.Error(), "solar-prod") {
+			t.Fatalf("error leaks the scope plaintext: %q", err)
+		}
+	})
 }
