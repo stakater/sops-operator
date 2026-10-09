@@ -22,7 +22,6 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"text/template"
@@ -136,7 +135,8 @@ type sopsSecret struct {
 	StringData                             map[string]string
 }
 
-func createSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha1.SopsSecret {
+// encryptSopsSecret renders and encrypts the sopssecret.yaml fixture for recipient, as a developer would.
+func encryptSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha1.SopsSecret {
 	t.Helper()
 	if s.DeletionPolicy == "" {
 		s.DeletionPolicy = string(sopsv1alpha1.DeletionPolicyDelete)
@@ -149,8 +149,39 @@ func createSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha
 	if err != nil {
 		t.Fatal(err)
 	}
-	apply(t, encrypted)
-	return &sopsv1alpha1.SopsSecret{ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace}}
+	var out sopsv1alpha1.SopsSecret
+	if err := yaml.Unmarshal(encrypted, &out); err != nil {
+		t.Fatal(err)
+	}
+	return &out
+}
+
+// createSopsSecret encrypts the fixture and applies it, as the GitOps tool would.
+func createSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha1.SopsSecret {
+	t.Helper()
+	obj := encryptSopsSecret(t, recipient, s)
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatalf("create SopsSecret %s/%s: %v", obj.Namespace, obj.Name, err)
+	}
+	return obj
+}
+
+// outputSecret returns the Secret "db-creds" in namespace, the name the use cases deliver.
+func outputSecret(t *testing.T, namespace string) *corev1.Secret {
+	t.Helper()
+	var s corev1.Secret
+	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: "db-creds"}, &s); err != nil {
+		t.Fatalf("get Secret %s/db-creds: %v", namespace, err)
+	}
+	return &s
+}
+
+func waitUntilDeleted(t *testing.T, what string, obj client.Object) {
+	t.Helper()
+	poll(t, what+" to be deleted", func() (bool, error) {
+		err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), obj)
+		return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
+	})
 }
 
 // waitForReason waits until the Ready condition of obj has one of reasons; obj is refreshed in place.
@@ -238,12 +269,10 @@ func matchSnapshot(t *testing.T, obj client.Object, label string) {
 	if bytes.Contains(out, []byte("AGE-SECRET-KEY")) {
 		t.Fatal("refusing to snapshot an object containing an age private key")
 	}
-	// One snapshot file per test file, like the tests themselves.
-	_, caller, _, _ := runtime.Caller(1)
-	file := strings.TrimSuffix(filepath.Base(caller), "_test.go")
+	// One directory per test (subtests nest), one file per snapshot: __snapshots__/<test>/<kind>-<label>.snap
 	snaps.WithConfig(
-		snaps.Filename(file),
-		snaps.Label("["+strings.ToLower(gvk.Kind)+"] "+label),
+		snaps.Dir(filepath.Join("__snapshots__", t.Name())),
+		snaps.Filename(strings.ToLower(gvk.Kind)+"-"+strings.ReplaceAll(strings.ToLower(label), " ", "-")),
 	).MatchYAML(t, out,
 		match.Any(volatile...).ErrOnMissingPath(false),
 		match.Custom("$.data", redactValues).ErrOnMissingPath(false),
