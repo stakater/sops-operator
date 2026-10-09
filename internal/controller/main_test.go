@@ -57,6 +57,11 @@ func startManager(ctx context.Context) error {
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
+	if err := (&controller.SopsSecretReconciler{
+		Client: mgr.GetClient(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
 	go func() {
 		if err := mgr.Start(ctx); err != nil {
 			panic(err)

@@ -1,0 +1,212 @@
+package controller_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
+	"github.com/stakater/sops-operator/internal/crypto"
+)
+
+func create(t *testing.T, s *sopsv1alpha1.SopsSecret) {
+	t.Helper()
+	if err := env.Admin.Create(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func outputSecret(t *testing.T, ns, name string) *corev1.Secret {
+	t.Helper()
+	var s corev1.Secret
+	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &s); err != nil {
+		t.Fatalf("get output Secret: %v", err)
+	}
+	return &s
+}
+
+func assertNoSecret(t *testing.T, ns, name string) {
+	t.Helper()
+	err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &corev1.Secret{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("Secret %s/%s must not exist: %v", ns, name, err)
+	}
+}
+
+func TestSopsSecretDecrypts(t *testing.T) {
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "hunter2"})
+	s.Spec.Template.Metadata.Labels = map[string]string{"app": "billing", "argocd.argoproj.io/instance": "x"}
+	create(t, s)
+	eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+
+	out := outputSecret(t, prod, "db")
+	if string(out.Data["password"]) != "hunter2" {
+		t.Fatal("output Secret has the wrong value")
+	}
+	if out.Labels["app"] != "billing" || out.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+		t.Fatalf("labels = %v", out.Labels)
+	}
+	if _, ok := out.Labels["argocd.argoproj.io/instance"]; ok {
+		t.Fatal("GitOps tracking label was copied")
+	}
+	if len(out.OwnerReferences) != 1 || out.OwnerReferences[0].UID != s.UID ||
+		out.OwnerReferences[0].BlockOwnerDeletion == nil || *out.OwnerReferences[0].BlockOwnerDeletion {
+		t.Fatalf("ownerReferences = %+v", out.OwnerReferences)
+	}
+	if s.Status.SecretUID != out.UID {
+		t.Fatal("status.secretUID does not match the output Secret")
+	}
+}
+
+func TestSopsSecretUpdatePropagatesAndDriftIsRepaired(t *testing.T) {
+	ctx := context.Background()
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+	create(t, s)
+	eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+
+	next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
+	s.Spec, s.Sops = next.Spec, next.Sops
+	if err := env.Admin.Update(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(string(outputSecret(t, prod, "db").Data["password"])).To(Equal("v2"))
+	}).WithTimeout(20 * time.Second).Should(Succeed())
+
+	drifted := outputSecret(t, prod, "db")
+	drifted.Data["password"] = []byte("tampered")
+	if err := env.Admin.Update(ctx, drifted); err != nil {
+		t.Fatal(err)
+	}
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(string(outputSecret(t, prod, "db").Data["password"])).To(Equal("v2"))
+	}).WithTimeout(20 * time.Second).Should(Succeed())
+}
+
+func TestSopsSecretFailures(t *testing.T) {
+	prod := env.Namespace(t, "prod")
+	dev := env.Namespace(t, "dev")
+	ungranted := env.Namespace(t, "ungranted")
+	tenantNS, recipient := onboardedTenant(t, prod, dev)
+	_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := map[string]any{"password": "hunter2"}
+
+	cases := []struct {
+		name   string
+		build  func() *sopsv1alpha1.SopsSecret
+		reason string
+	}{
+		{"tenant not found", func() *sopsv1alpha1.SopsSecret {
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "nf", prod+"/nf", value)
+			s.Spec.TenantRef.Name = "missing"
+			return s
+		}, sopsv1alpha1.ReasonTenantNotFound},
+		{"namespace not granted", func() *sopsv1alpha1.SopsSecret {
+			return encryptedSopsSecret(t, recipient, tenantNS, ungranted, "ad", ungranted+"/ad", value)
+		}, sopsv1alpha1.ReasonAccessDenied},
+		{"not a recipient", func() *sopsv1alpha1.SopsSecret {
+			return encryptedSopsSecret(t, otherRecipient, tenantNS, prod, "nr", prod+"/nr", value)
+		}, sopsv1alpha1.ReasonNotRecipient},
+		{"tampered", func() *sopsv1alpha1.SopsSecret {
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "tp", prod+"/tp", value)
+			s.Sops.LastModified = "2020-01-01T00:00:00Z"
+			return s
+		}, sopsv1alpha1.ReasonDecryptFailed},
+		{"copied to another namespace", func() *sopsv1alpha1.SopsSecret {
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "cp", prod+"/cp", value)
+			s.Namespace = dev
+			return s
+		}, sopsv1alpha1.ReasonScopeMismatch},
+		{"copied under another name", func() *sopsv1alpha1.SopsSecret {
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "orig", prod+"/orig", value)
+			s.Name = "renamed"
+			return s
+		}, sopsv1alpha1.ReasonScopeMismatch},
+		{"tls without required keys", func() *sopsv1alpha1.SopsSecret {
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "tls", prod+"/tls", value)
+			s.Spec.Type = corev1.SecretTypeTLS
+			return s
+		}, sopsv1alpha1.ReasonApplyFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.build()
+			create(t, s)
+			eventuallyReason(t, s, tc.reason)
+			assertNoSecret(t, s.Namespace, s.Name)
+		})
+	}
+}
+
+func TestSopsSecretDoesNotTouchForeignSecret(t *testing.T) {
+	ctx := context.Background()
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	foreign := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: prod},
+		Data:       map[string][]byte{"password": []byte("foreign")},
+	}
+	if err := env.Admin.Create(ctx, foreign); err != nil {
+		t.Fatal(err)
+	}
+	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "mine"})
+	create(t, s)
+	eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
+	if string(outputSecret(t, prod, "db").Data["password"]) != "foreign" {
+		t.Fatal("foreign Secret was overwritten")
+	}
+}
+
+func TestRetainedSecretIsNotReclaimedByRecreatedSopsSecret(t *testing.T) {
+	ctx := context.Background()
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	build := func() *sopsv1alpha1.SopsSecret {
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.DeletionPolicy = sopsv1alpha1.DeletionPolicyRetain
+		return s
+	}
+	first := build()
+	create(t, first)
+	eventuallyReason(t, first, sopsv1alpha1.ReasonDecrypted)
+	if refs := outputSecret(t, prod, "db").OwnerReferences; len(refs) != 0 {
+		t.Fatalf("Retain must not set ownerReferences, got %+v", refs)
+	}
+
+	if err := env.Admin.Delete(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	NewWithT(t).Eventually(func() bool {
+		return apierrors.IsNotFound(env.Admin.Get(ctx, client.ObjectKeyFromObject(first), &sopsv1alpha1.SopsSecret{}))
+	}).WithTimeout(20 * time.Second).Should(BeTrue())
+
+	second := build()
+	create(t, second)
+	eventuallyReason(t, second, sopsv1alpha1.ReasonConflict)
+}
+
+func TestSuspendedSopsSecretIsNotApplied(t *testing.T) {
+	prod := env.Namespace(t, "prod")
+	tenantNS, recipient := onboardedTenant(t, prod)
+	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+	s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
+	create(t, s)
+	eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
+	if c := readyCondition(s); c.Status != metav1.ConditionUnknown {
+		t.Fatalf("suspended Ready status = %s, want Unknown", c.Status)
+	}
+	assertNoSecret(t, prod, "db")
+}

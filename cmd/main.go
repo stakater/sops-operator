@@ -224,8 +224,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.SopsSecretReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Identities:     identities,
+		Recorder:       recorder,
+		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsSecret")
 		os.Exit(1)
