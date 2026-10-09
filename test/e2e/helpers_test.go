@@ -269,10 +269,12 @@ func matchSnapshot(t *testing.T, obj client.Object, label string) {
 	if bytes.Contains(out, []byte("AGE-SECRET-KEY")) {
 		t.Fatal("refusing to snapshot an object containing an age private key")
 	}
-	// One directory per test (subtests nest), one file per snapshot: __snapshots__/<test>/<kind>-<label>.snap
+	// One directory per test (subtests nest), one file per snapshot:
+	// __snapshots__/<test>/<kind>-<label>.snap.yaml
 	snaps.WithConfig(
 		snaps.Dir(filepath.Join("__snapshots__", t.Name())),
 		snaps.Filename(strings.ToLower(gvk.Kind)+"-"+strings.ReplaceAll(strings.ToLower(label), " ", "-")),
+		snaps.Ext(".yaml"),
 	).MatchYAML(t, out,
 		match.Any(volatile...).ErrOnMissingPath(false),
 		match.Custom("$.data", redactValues).ErrOnMissingPath(false),

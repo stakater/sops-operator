@@ -602,7 +602,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   e2e tests are organised by **use case**: one file and one top-level test per use case (`TestOnboardingATenant`,
   `TestDeliveringASecret`, `TestRemovingASecret`, `TestMigratingAnExistingSecret`, `TestIsolatingSecrets`), one
   subtest per expected behaviour named `shall …`, and snapshots stored as
-  `test/e2e/__snapshots__/<Test>/<shall_…>/<kind>-<label>.snap`.
+  `test/e2e/__snapshots__/<Test>/<shall_…>/<kind>-<label>.snap.yaml`.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
