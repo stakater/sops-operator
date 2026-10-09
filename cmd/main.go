@@ -17,10 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -39,6 +41,7 @@ import (
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/controller"
+	"github.com/stakater/sops-operator/internal/identity"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -66,6 +69,9 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	var resyncInterval time.Duration
+	flag.DurationVar(&resyncInterval, "resync-interval", 10*time.Minute,
+		"How often tenants and SopsSecrets are re-checked (key changes, revoked grants, drift).")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -202,9 +208,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := controller.SetupIndexes(context.Background(), mgr); err != nil {
+		setupLog.Error(err, "unable to set up field indexes")
+		os.Exit(1)
+	}
+	identities := identity.NewFactory(mgr.GetConfig(), mgr.GetScheme())
+	recorder := mgr.GetEventRecorderFor("sops-operator")
 	if err := (&controller.SopsTenantReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Identities:     identities,
+		Recorder:       recorder,
+		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsTenant")
 		os.Exit(1)
