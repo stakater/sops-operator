@@ -1,0 +1,34 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'hack/**'
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  operator-pull-request:
+    name: Operator Pull Request
+    # Shared Stakater operator CI (as used by stakater/Hestia). Pinned to the commit of main on 2026-10-09;
+    # the actions it calls internally still follow @main.
+    uses: stakater/.github/.github/workflows/operator_pull_request.yaml@0486d3650b39fb82000f8a2536361beb8b8fb379  # main
+    permissions:
+      contents: read
+      pull-requests: write  # build summary comment on the PR
+    secrets:
+      CONTAINER_REGISTRY_URL: ghcr.io/stakater
+      CONTAINER_REGISTRY_USERNAME: stakater-user
+      CONTAINER_REGISTRY_PASSWORD: ${{ secrets.GHCR_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.STAKATER_DELIVERY_SLACK_WEBHOOK }}
+    with:
+      ENABLE_LINTING: true
+      ENABLE_UNIT_TESTS: true
+      GO_VERSION: "1.25.8"
+      OPM_VERSION: v1.74.0
