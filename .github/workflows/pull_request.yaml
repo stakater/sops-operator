@@ -69,11 +69,38 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  e2e:
+    name: E2E on kind
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}
+
+      # Tests the image built above; snapshots must match the committed ones (go-snaps fails on
+      # missing or changed snapshots when CI=true).
+      - name: Run e2e tests
+        run: |
+          docker load -i "${RUNNER_TEMP}/image.tar"
+          make test-e2e E2E_IMG=sops-operator:pr E2E_SKIP_BUILD=true
+
   # The only job with a write token. It runs no code from the pull request: it re-tags the tested
   # image under a tag computed here and pushes only that tag.
   push:
     name: Push image
-    needs: build
+    needs: e2e
     runs-on: ubuntu-latest
     permissions:
       packages: write
