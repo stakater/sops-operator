@@ -597,12 +597,12 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 - **Configuration**: ConfigMap `sops-operator-config` in the operator namespace and `Subscription.spec.config.env`.
 - **Testing**: unit tests; envtest with the RBAC authorizer enabled; e2e on **kind** with OLM installed, including
   the attack scenarios of §7.1 and bundle upgrade tests.
-- **CI**: the shared Stakater operator workflows, as used by `stakater/Hestia`:
-  `stakater/.github/.github/workflows/operator_pull_request.yaml` on `pull_request` (lint, unit tests, image, bundle
-  and catalog build; kind e2e when the PR carries the `e2e/on-build` label) and `operator_push.yaml` on `push` to
-  `main` (same, then push to `ghcr.io/stakater` and catalog update), with `GO_VERSION: 1.25.8` and
-  `OPM_VERSION: v1.74.0`. A separate job signs the pushed images with cosign (keyless) and attaches SBOM and
-  provenance.
+- **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
+  generated files are current, builds the image without any write token, and pushes it to
+  `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
+  (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request code. Actions are
+  pinned by commit SHA and kept current by Dependabot. Push and release workflows (signing, SBOM, bundle and catalog)
+  follow in plan 3.
 - **Conventions** (from Stakater operators): project/module name `sops-operator`; images
   `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` tagged `vX.Y.Z`; Makefile variables `VERSION`,
   `OPERATOR_NAME`, `DOCKER_REPO_BASE`, `CATALOG_DIR_PATH`; file-based catalog in `catalog/`; CSV provider
@@ -647,7 +647,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
 | D32 | Tenant-facing ClusterRoles shipped from `config/tenant-rbac/` with fixed names | Onboarding templates reference stable names. |
 | D33 | operator-sdk and opm are pinned and installed per project into `bin/` with checksum verification | Reproducible builds locally and in CI; no reliance on globally installed tools. |
-| D34 | CI uses the shared Stakater operator workflows plus a signing job (cosign, SBOM, provenance) | Consistency with other Stakater operators; supply-chain guarantees the shared workflows do not provide yet. |
+| D34 | Own CI workflows instead of the shared Stakater pipeline; PR images pushed with `GITHUB_TOKEN` from an isolated job | Pull-request code never runs with a write token and no long-lived registry secret is needed; the shared pipeline exposed its registry token to PR code. |
 | D35 | The scope is verified before any other value is decrypted; decryption errors carry fixed messages | Copied ciphertext with a tampered type tag must not leak plaintext through error messages. |
 | D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
 | D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
