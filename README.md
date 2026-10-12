@@ -399,8 +399,7 @@ yq, golangci-lint) are pinned in the Makefile and installed into `bin/`.
 ```bash
 make test               # unit and envtest tests with the RBAC authorizer
 make lint
-make test-e2e           # end-to-end tests on kind, compared with golden files
-make test-e2e-olm       # the same tests against an install by OLM from a freshly built catalog
+make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
 make scorecard          # operator-sdk scorecard against the bundle
 make test-catalog       # catalog promotion tests
 ```

@@ -14,8 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package e2e runs the operator image on a Kind cluster and compares the resources it produces
-// with committed golden files (testdata/). Run it with `make test-e2e`; it is skipped when KIND_CLUSTER is unset.
+// Package e2e installs the operator with OLM from a catalog built from this tree, the way customers install
+// it, and compares the resources it produces with committed golden files (testdata/). Run it with
+// `make test-e2e`; it is skipped when KIND_CLUSTER is unset.
 package e2e
 
 import (
@@ -62,7 +63,7 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	kubeContext = "kind-" + cluster
-	if err := setup(cluster); err != nil {
+	if err := setup(); err != nil {
 		fmt.Fprintln(os.Stderr, "e2e setup failed:", err)
 		os.Exit(1)
 	}
@@ -77,9 +78,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// setup installs the operator as E2E_INSTALL says (kustomize, the default, or olm) and creates
-// the client the tests use.
-func setup(cluster string) error {
+// setup creates the client the tests use and installs the operator with OLM.
+func setup() error {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err
 	}
@@ -97,73 +97,20 @@ func setup(cluster string) error {
 	if err != nil {
 		return err
 	}
-	switch install := envOr("E2E_INSTALL", "kustomize"); install {
-	case "kustomize":
-		err = installWithKustomize(cluster)
-	case "olm":
-		err = installWithOLM()
-	default:
-		err = fmt.Errorf("E2E_INSTALL=%q: want kustomize or olm", install)
-	}
-	if err != nil {
+	if err := installWithOLM(); err != nil {
 		return err
 	}
 	// Fail early if the context points at the wrong cluster.
 	return k8s.List(context.Background(), &sopsv1alpha1.SopsTenantList{})
 }
 
-// installWithKustomize builds the operator image, loads it into Kind and deploys the operator with
-// its CRDs and the tenant-facing ClusterRoles from config/.
-func installWithKustomize(cluster string) error {
-	image := envOr("E2E_IMG", "sops-operator:e2e")
-	if os.Getenv("E2E_SKIP_BUILD") != "true" {
-		if _, err := run("", "docker", "build", "-t", image, "."); err != nil {
-			return err
-		}
-	}
-	if _, err := run("", envOr("KIND", "kind"), "load", "docker-image", image, "--name", cluster); err != nil {
-		return err
-	}
-	manifests, err := run("", envOr("KUSTOMIZE", "kustomize"), "build", "config/default")
-	if err != nil {
-		return err
-	}
-	if !strings.Contains(manifests, "image: controller:latest") {
-		return fmt.Errorf("config/default no longer uses the controller:latest image placeholder")
-	}
-	manifests = strings.ReplaceAll(manifests, "image: controller:latest", "image: "+image)
-	// Resync in seconds so self-healing, rotation and revocation are observable within a test.
-	const probeArg = "        - --health-probe-bind-address=:8081\n"
-	if !strings.Contains(manifests, probeArg) {
-		return fmt.Errorf("config/default no longer has the health-probe argument to anchor --resync-interval")
-	}
-	manifests = strings.Replace(manifests, probeArg, probeArg+"        - --resync-interval="+resyncInterval+"\n", 1)
-	if _, err := run(manifests, "kubectl", "--context", kubeContext, "apply", "--server-side", "-f", "-"); err != nil {
-		return err
-	}
-	if _, err := run("", "kubectl", "--context", kubeContext,
-		"apply", "--server-side", "-k", "config/tenant-rbac"); err != nil {
-		return err
-	}
-	// The image tag does not change between runs, so restart to pick up a freshly loaded image.
-	if _, err := run("", "kubectl", "--context", kubeContext, "-n", operatorNamespace,
-		"rollout", "restart", "deployment/sops-operator-controller-manager"); err != nil {
-		return err
-	}
-	if _, err := run("", "kubectl", "--context", kubeContext, "-n", operatorNamespace,
-		"rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"); err != nil {
-		return err
-	}
-	return nil
-}
-
 // installWithOLM installs the operator from the catalog image E2E_CATALOG_IMG, published by
-// `make test-e2e-olm`, through a Subscription, as a customer does. The tenant ClusterRoles come
+// `make test-e2e`, through a Subscription, as a customer does. The tenant ClusterRoles come
 // from the bundle; nothing from config/ is applied.
 func installWithOLM() error {
 	catalog := os.Getenv("E2E_CATALOG_IMG")
 	if catalog == "" {
-		return fmt.Errorf("E2E_CATALOG_IMG is not set (run make test-e2e-olm)")
+		return fmt.Errorf("E2E_CATALOG_IMG is not set (run make test-e2e)")
 	}
 	kubectl := func(stdin string, args ...string) (string, error) {
 		return run(stdin, "kubectl", append([]string{"--context", kubeContext}, args...)...)

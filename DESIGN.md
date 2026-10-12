@@ -610,8 +610,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
 - **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
   `RESYNC_INTERVAL` (Go duration, default `10m`). An invalid value stops the operator at startup.
-- **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** that
-  deploys the operator image (`make test-e2e`) and compares `SopsTenant`, `SopsSecret` and output Secrets with
+- **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** with the
+  operator installed by **OLM** (`make test-e2e`, below) that compares `SopsTenant`, `SopsSecret` and output Secrets with
   committed golden files (`gotest.tools/v3/golden`, plain YAML; record or update with `UPDATE_GOLDEN=true`).
   `test/snapshot` normalizes objects first: volatile values (UIDs, resourceVersion, timestamps after validating
   them) become placeholders, Secret values and ciphertext are redacted, and an object with an age key is refused.
@@ -620,11 +620,11 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   or rule it checks (`TestTenantOnboarding` in `tenant_onboarding_test.go`, `TestSecretDecryption`,
   `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestSopsCLIWorkflow` with the
   pinned `sops` and `yq` CLIs, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
-  `TestOperatorRestart`; the operator runs with `--resync-interval=10s` during e2e), one subtest per expected
+  `TestOperatorRestart`; the operator runs with a 10s resync interval during e2e), one subtest per expected
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
   `TestSecretOwnership`, …) with `shall …` subtests.
-  `make test-e2e-olm` runs the same suite and golden files against an install by OLM: it builds the operator and
+  There is one e2e flow, the way customers install: `make test-e2e` builds the operator and
   bundle images and a catalog that lists only that bundle (a fresh install; the promotion graph is tested by
   `make test-catalog`), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
   cluster and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`.

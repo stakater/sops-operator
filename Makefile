@@ -115,81 +115,57 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# e2e tests run the operator image on a Kind cluster and compare resources with committed golden files
-# (test/e2e/testdata). Record or update them with: make test-e2e UPDATE_GOLDEN=true
-KIND_CLUSTER ?= sops-operator-test-e2e
+# e2e tests install the operator the way customers do: OLM installs it from a catalog built from this tree, on a
+# Kind cluster with a local registry. Resources are compared with committed golden files (test/e2e/testdata).
+# Record or update them with: make test-e2e UPDATE_GOLDEN=true
+KIND_CLUSTER ?= sops-operator-e2e
 # Oldest node image published with KIND_VERSION; the 1.31 floor is covered by envtest.
 KIND_NODE_IMAGE ?= kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
-# Image built and loaded into Kind; set E2E_SKIP_BUILD=true to use an image that already exists locally.
-E2E_IMG ?= sops-operator:e2e
-
-.PHONY: setup-test-e2e
-setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) --image $(KIND_NODE_IMAGE) ;; \
-	esac
-
-KIND_CLUSTER_OLM ?= sops-operator-test-e2e-olm
 OLM_VERSION ?= 0.46.0
 REGISTRY_IMAGE ?= registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
-# Local registry for OLM e2e images; its own name and port, so other projects' kind registries are untouched.
+# Local registry for e2e images; its own name and port, so other projects' kind registries are untouched.
 REGISTRY_NAME ?= sops-operator-registry
 REGISTRY_PORT ?= 5011
-OLM_KUBECONFIG = $(LOCALBIN)/kubeconfig-$(KIND_CLUSTER_OLM)
-
-.PHONY: setup-test-e2e-olm
-setup-test-e2e-olm: kind operator-sdk ## Kind cluster with a local registry (localhost:$(REGISTRY_PORT)) and OLM, for OLM e2e tests and scorecard.
-	hack/kind-with-registry.sh $(KIND) $(KIND_CLUSTER_OLM) $(KIND_NODE_IMAGE) $(REGISTRY_IMAGE) $(REGISTRY_NAME) $(REGISTRY_PORT)
-	$(KIND) get kubeconfig --name $(KIND_CLUSTER_OLM) > $(OLM_KUBECONFIG)
-	KUBECONFIG=$(OLM_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
-		|| KUBECONFIG=$(OLM_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
-
+E2E_KUBECONFIG = $(LOCALBIN)/kubeconfig-$(KIND_CLUSTER)
 E2E_REGISTRY ?= localhost:$(REGISTRY_PORT)
 # A new tag per run so OLM never reuses a cached catalog or bundle.
-E2E_OLM_TAG := e2e-$(shell date +%s)
+E2E_TAG := e2e-$(shell date +%s)
 # Set to an operator image that already exists locally (e.g. built in CI) to skip the build.
-E2E_OLM_OPERATOR_IMG ?=
+E2E_OPERATOR_IMG ?=
 
-.PHONY: e2e-olm-images
-e2e-olm-images: opm yq kustomize operator-sdk ## Build and push the operator, bundle and catalog images for the OLM e2e run to E2E_REGISTRY.
-ifeq ($(E2E_OLM_OPERATOR_IMG),)
-	$(CONTAINER_TOOL) build -t $(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG) .
+.PHONY: setup-test-e2e
+setup-test-e2e: kind operator-sdk ## Kind cluster with a local registry (localhost:$(REGISTRY_PORT)) and OLM, for e2e tests and scorecard.
+	hack/kind-with-registry.sh $(KIND) $(KIND_CLUSTER) $(KIND_NODE_IMAGE) $(REGISTRY_IMAGE) $(REGISTRY_NAME) $(REGISTRY_PORT)
+	$(KIND) get kubeconfig --name $(KIND_CLUSTER) > $(E2E_KUBECONFIG)
+	KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
+		|| KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
+
+.PHONY: e2e-images
+e2e-images: opm yq kustomize operator-sdk ## Build and push the operator, bundle and catalog images for the e2e run to E2E_REGISTRY.
+ifeq ($(E2E_OPERATOR_IMG),)
+	$(CONTAINER_TOOL) build -t $(E2E_REGISTRY)/sops-operator:$(E2E_TAG) .
 else
-	$(CONTAINER_TOOL) tag $(E2E_OLM_OPERATOR_IMG) $(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG)
+	$(CONTAINER_TOOL) tag $(E2E_OPERATOR_IMG) $(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
 endif
-	$(CONTAINER_TOOL) push $(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG)
-	$(MAKE) bundle IMG=$(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG)
-	$(MAKE) bundle-build bundle-push BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_OLM_TAG)
+	$(CONTAINER_TOOL) push $(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
+	$(MAKE) bundle IMG=$(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
+	$(MAKE) bundle-build bundle-push BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG)
 	@# The e2e run is a fresh install of this build: its catalog lists only this bundle, whatever
 	@# catalog/channels.yaml promotes (the promotion graph is tested by make test-catalog).
 	printf 'schema: olm.channel\npackage: $(OPERATOR_NAME)\nname: alpha\nentries:\n  - name: $(OPERATOR_NAME).v$(VERSION)\n' \
 		> $(LOCALBIN)/e2e-channels.yaml
 	$(MAKE) catalog-render CATALOG_CHANNELS=$(LOCALBIN)/e2e-channels.yaml \
-		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_OLM_TAG) OPM_RENDER_FLAGS=--use-http
-	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_OLM_TAG)
-
-.PHONY: test-e2e-olm
-test-e2e-olm: setup-test-e2e-olm sops e2e-olm-images ## Run the e2e tests against the operator installed by OLM from a freshly built catalog.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER_OLM) KUSTOMIZE=$(KUSTOMIZE) SOPS=$(SOPS) YQ=$(YQ) \
-		E2E_INSTALL=olm E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_OLM_TAG) \
-		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12
-
-.PHONY: cleanup-test-e2e-olm
-cleanup-test-e2e-olm: kind ## Tear down the OLM Kind cluster (the registry container is kept).
-	$(KIND) delete cluster --name $(KIND_CLUSTER_OLM)
+		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG) OPM_RENDER_FLAGS=--use-http
+	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG)
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests kustomize sops yq ## Run the e2e tests on the Kind cluster (kept for reruns; remove with cleanup-test-e2e).
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) KUSTOMIZE=$(KUSTOMIZE) SOPS=$(SOPS) YQ=$(YQ) E2E_IMG=$(E2E_IMG) \
-		go test ./test/e2e/ -v -count=1 -timeout 20m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update)
+test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the operator installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
+	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) \
+		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update)
 
 .PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+cleanup-test-e2e: kind ## Tear down the e2e Kind cluster (the registry container is kept).
+	$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
