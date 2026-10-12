@@ -22,14 +22,15 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
 )
 
-// Use case: a tenant admin rotates the tenant key (DESIGN.md §8.3): add a new primary key, re-encrypt
-// files, then remove the old key.
+// Use case: a tenant admin rotates the tenant key (DESIGN.md §8.3): add a new primary key, encrypt
+// new files for it, then remove the old key.
 func TestKeyRotation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -63,18 +64,24 @@ func TestKeyRotation(t *testing.T) {
 	})
 	waitForReason(t, existing, sopsv1alpha1.ReasonDecrypted)
 
+	var rotated *sopsv1alpha1.SopsSecret
 	t.Run("shall decrypt old and new files while both keys are present", func(t *testing.T) {
-		since := existing.Status.LastSyncTime
 		setKey(t, append(append(newKey, '\n'), oldKey...), newRecipient)
-		rotated := createSopsSecret(t, newRecipient, sopsSecret{
+		rotated = createSopsSecret(t, newRecipient, sopsSecret{
 			Name: "new-file", Namespace: prod, Scope: prod + "/new-file", TenantNamespace: tenantNS,
 			StringData: map[string]string{"password": "new"},
 		})
 		waitForReason(t, rotated, sopsv1alpha1.ReasonDecrypted)
-		waitForNewSync(t, existing, since)
+		// The new file decrypting proves the operator loaded both keys; a later sync of the old file
+		// proves the old key still works with them.
+		waitForNewSync(t, existing, rotated.Status.LastSyncTime)
 	})
 
 	t.Run("shall reject files for a removed key and keep their Secret", func(t *testing.T) {
+		if rotated == nil {
+			t.Skip("needs the new file from the previous subtest")
+		}
+		removed := metav1.Now()
 		setKey(t, newKey, newRecipient)
 		waitForReason(t, existing, sopsv1alpha1.ReasonNotRecipient)
 		assertGolden(t, existing, "retired key")
@@ -82,5 +89,9 @@ func TestKeyRotation(t *testing.T) {
 		if err := k8s.Get(ctx, client.ObjectKey{Namespace: prod, Name: "old-file"}, &kept); err != nil {
 			t.Fatalf("the Secret written with the old key must stay: %v", err)
 		}
+		if string(kept.Data["password"]) != "old" {
+			t.Fatal("the Secret written with the old key was changed")
+		}
+		waitForNewSync(t, rotated, &removed)
 	})
 }

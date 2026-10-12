@@ -40,4 +40,27 @@ func TestExistingSecretMigration(t *testing.T) {
 			t.Fatal("the existing Secret was overwritten")
 		}
 	})
+
+	t.Run("shall write the Secret once the existing one is deleted", func(t *testing.T) {
+		t.Parallel()
+		prod := namespace(t, "e2e-migrate-takeover-prod")
+		tenantNS, recipient := onboardedTenant(t, "e2e-migrate-takeover-tenant", prod)
+		apply(t, render(t, "secret.yaml", map[string]any{"Name": "db-creds", "Namespace": prod}))
+		s := createSopsSecret(t, recipient, sopsSecret{
+			Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
+			StringData: map[string]string{"password": "mine"},
+		})
+		waitForReason(t, s, sopsv1alpha1.ReasonConflict)
+		foreign := outputSecret(t, prod)
+		// The team removes the old Secret (DESIGN.md §8.4).
+		deleteObject(t, foreign)
+		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		out := outputSecret(t, prod)
+		if out.UID == foreign.UID || string(out.Data["password"]) != "mine" {
+			t.Fatal("the operator did not write its own Secret")
+		}
+		if s.Status.SecretUID != out.UID {
+			t.Fatal("status.secretUID does not name the new Secret")
+		}
+	})
 }

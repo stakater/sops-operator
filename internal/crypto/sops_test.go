@@ -114,6 +114,26 @@ func TestDecryption(t *testing.T) {
 		}
 	})
 
+	t.Run("shall decrypt with a key that is not the primary one", func(t *testing.T) {
+		oldFile, oldRecipient, err := crypto.GenerateKeyFile(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		newFile, _, err := crypto.GenerateKeyFile(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// During a rotation the new key is primary and the old one is still listed.
+		rotated, err := crypto.ParseKeyFile(append(append(newFile, '\n'), oldFile...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := viaAPI(t, encrypt(t, sortedPlain, oldRecipient), nil)
+		if _, err := crypto.Decrypt(doc, rotated, wantScope); err != nil {
+			t.Fatalf("decrypting with the second identity: %v", err)
+		}
+	})
+
 	t.Run("shall reject a document not encrypted for the key", func(t *testing.T) {
 		owner, other := newKeys(t), newKeys(t)
 		doc := viaAPI(t, encrypt(t, sortedPlain, other.Recipients[0]), nil)
@@ -194,6 +214,9 @@ func TestDecryption(t *testing.T) {
 		_, err := crypto.Decrypt(doc, ks, "solar-dev/db-creds")
 		if !errors.Is(err, crypto.ErrScopeMismatch) {
 			t.Fatalf("got %v, want ErrScopeMismatch", err)
+		}
+		if strings.Contains(err.Error(), "solar-prod") {
+			t.Fatalf("error reveals the decrypted scope: %q", err)
 		}
 	})
 

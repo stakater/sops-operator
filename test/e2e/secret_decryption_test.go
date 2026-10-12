@@ -20,6 +20,9 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
 
@@ -35,14 +38,16 @@ func TestSecretDecryption(t *testing.T) {
 			StringData: map[string]string{"password": password, "username": "app"},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
-		assertGolden(t, s, "decrypted")
-
 		out := outputSecret(t, prod)
-		// Values are checked here; the snapshot only records which keys exist.
+		// Values are checked here; the golden files record keys, ownership and status.
 		if string(out.Data["password"]) != password || string(out.Data["username"]) != "app" {
 			t.Fatal("output Secret does not hold the decrypted values")
 		}
-		assertGolden(t, out, "output")
+		if s.Status.SecretUID != out.UID {
+			t.Fatal("status.secretUID does not name the output Secret")
+		}
+		assertGolden(t, s, "decrypted", out)
+		assertGolden(t, out, "output", s)
 	})
 
 	t.Run("shall update the Secret when the SopsSecret changes", func(t *testing.T) {
@@ -55,17 +60,37 @@ func TestSecretDecryption(t *testing.T) {
 		}
 		s := createSopsSecret(t, recipient, secret)
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		before := outputSecret(t, prod)
 
 		// The developer re-encrypts the file with a new value and the GitOps tool applies it.
 		secret.StringData = map[string]string{"password": "v2"}
 		next := encryptSopsSecret(t, recipient, secret)
-		next.ResourceVersion = s.ResourceVersion
-		if err := k8s.Update(context.Background(), next); err != nil {
-			t.Fatal(err)
-		}
+		update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
 		poll(t, "the Secret to hold the new value", func() (bool, error) {
 			return string(outputSecret(t, prod).Data["password"]) == "v2", nil
 		})
-		assertGolden(t, outputSecret(t, prod), "updated")
+		after := outputSecret(t, prod)
+		if after.UID != before.UID {
+			t.Fatal("the Secret was recreated instead of updated")
+		}
+		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		if s.Generation != 2 || s.Status.ObservedGeneration != 2 {
+			t.Fatalf("generation=%d observedGeneration=%d, want 2 and 2", s.Generation, s.Status.ObservedGeneration)
+		}
+		assertGolden(t, after, "updated", s)
 	})
+}
+
+// outputSecretOrNil returns the Secret "db-creds" in namespace, or nil when it does not exist.
+func outputSecretOrNil(t *testing.T, namespace string) *corev1.Secret {
+	t.Helper()
+	var s corev1.Secret
+	err := k8s.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: "db-creds"}, &s)
+	if client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
+	}
+	if err != nil {
+		return nil
+	}
+	return &s
 }

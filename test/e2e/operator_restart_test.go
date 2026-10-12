@@ -20,6 +20,9 @@ import (
 	"context"
 	"testing"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
@@ -29,6 +32,7 @@ import (
 // Not parallel: Go runs it before the parallel tests start, so the restart disturbs no other test.
 func TestOperatorRestart(t *testing.T) {
 	t.Run("shall resume after a restart without reporting Conflict", func(t *testing.T) {
+		ctx := context.Background()
 		prod := namespace(t, "e2e-restart-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-restart-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
@@ -37,6 +41,12 @@ func TestOperatorRestart(t *testing.T) {
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		before := outputSecret(t, prod)
+		ready := *readyCondition(s)
+		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: leaderElectionID, Namespace: operatorNamespace}}
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(lease), lease); err != nil {
+			t.Fatal(err)
+		}
+		oldLeader := ptr.Deref(lease.Spec.HolderIdentity, "")
 
 		kubectl := []string{"--context", kubeContext, "-n", operatorNamespace}
 		for _, args := range [][]string{
@@ -47,14 +57,25 @@ func TestOperatorRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		// A sync after the rollout finished comes from the new pod, which must recognise the Secret
-		// created before the restart.
-		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(s), s); err != nil {
-			t.Fatal(err)
-		}
-		waitForNewSync(t, s, s.Status.LastSyncTime)
+		// Only the leader reconciles: wait until the new pod leads, then for a sync it made. The
+		// leader identity includes a per-process ID, so any other holder is the new process.
+		poll(t, "a new operator process to lead", func() (bool, error) {
+			if err := k8s.Get(ctx, client.ObjectKeyFromObject(lease), lease); err != nil {
+				return false, err
+			}
+			holder := ptr.Deref(lease.Spec.HolderIdentity, "")
+			return holder != "" && holder != oldLeader, nil
+		})
+		waitForNewSync(t, s, &metav1.Time{Time: lease.Spec.AcquireTime.Time})
+
 		if after := outputSecret(t, prod); after.UID != before.UID {
 			t.Fatal("the Secret was recreated instead of updated")
+		}
+		if s.Status.SecretUID != before.UID {
+			t.Fatal("status.secretUID changed across the restart")
+		}
+		if c := readyCondition(s); !c.LastTransitionTime.Equal(&ready.LastTransitionTime) {
+			t.Fatalf("Ready changed across the restart: before %+v, after %+v", ready, *c)
 		}
 	})
 }

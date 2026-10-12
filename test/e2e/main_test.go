@@ -42,6 +42,8 @@ const (
 	operatorNamespace = "sops-operator-system"
 	// resyncInterval is the operator's resync interval during e2e tests.
 	resyncInterval = "10s"
+	// leaderElectionID names the operator's leader election Lease (cmd/main.go).
+	leaderElectionID = "c0af0ff6.stakater.com"
 )
 
 var (

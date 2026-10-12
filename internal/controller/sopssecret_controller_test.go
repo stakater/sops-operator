@@ -150,10 +150,7 @@ func TestSecretDecryption(t *testing.T) {
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 
 		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
-		s.Spec, s.Sops = next.Spec, next.Sops
-		if err := env.Admin.Update(ctx, s); err != nil {
-			t.Fatal(err)
-		}
+		update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
@@ -301,5 +298,29 @@ func TestSuspension(t *testing.T) {
 			t.Fatalf("suspended Ready status = %s, want Unknown", c.Status)
 		}
 		assertNoSecret(t, prod, "db")
+	})
+
+	t.Run("shall hold changes while suspended and apply them on resume", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+
+		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
+		update(t, s, func() {
+			s.Spec, s.Sops = next.Spec, next.Sops
+			s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
+		})
+		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
+		if got := string(outputSecret(t, prod).Data["password"]); got != "v1" {
+			t.Fatalf("suspended SopsSecret changed the Secret to %q", got)
+		}
+
+		update(t, s, func() { delete(s.Annotations, sopsv1alpha1.AnnotationSuspend) })
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		if got := string(outputSecret(t, prod).Data["password"]); got != "v2" {
+			t.Fatalf("resumed SopsSecret wrote %q, want v2", got)
+		}
 	})
 }

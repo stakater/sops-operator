@@ -6,7 +6,7 @@ metadata:
   name: solar
   namespace: e2e-onboard-missing
   resourceVersion: <resourceVersion>
-  uid: <uid>
+  uid: <uid:sopstenant/solar>
 spec:
   generateKey: true
 status:

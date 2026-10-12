@@ -56,7 +56,7 @@ func meta(name string) metav1.ObjectMeta {
 
 func render(t *testing.T, obj runtime.Object) string {
 	t.Helper()
-	out, err := snapshot.YAML(obj, scheme(t))
+	out, err := snapshot.YAML(obj, scheme(t), nil)
 	if err != nil {
 		t.Fatalf("YAML: %v", err)
 	}
@@ -90,6 +90,16 @@ func TestSnapshotNormalization(t *testing.T) {
 			"generation: 2", // deterministic, kept
 		)
 		mustNotContain(t, out, "1b4e28ba", "9f2c", "4711", "managedFields", "kubectl")
+	})
+
+	t.Run("shall name the UIDs of known objects", func(t *testing.T) {
+		out, err := snapshot.YAML(&corev1.Secret{ObjectMeta: meta("db")}, scheme(t), map[string]string{
+			"1b4e28ba-2fa1": "secret/db", "9f2c": "sopssecret/db",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustContain(t, string(out), "uid: <uid:secret/db>", "uid: <uid:sopssecret/db>")
 	})
 
 	t.Run("shall redact Secret values and keep their keys", func(t *testing.T) {
@@ -134,7 +144,7 @@ func TestSnapshotNormalization(t *testing.T) {
 			Status: sopsv1alpha1.SopsTenantStatus{
 				Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}},
 			},
-		}, scheme(t))
+		}, scheme(t), nil)
 		if err == nil || !strings.Contains(err.Error(), "lastTransitionTime") {
 			t.Fatalf("want an error about lastTransitionTime, got %v", err)
 		}
@@ -143,7 +153,7 @@ func TestSnapshotNormalization(t *testing.T) {
 	t.Run("shall refuse an object containing an age private key", func(t *testing.T) {
 		obj := &corev1.Secret{ObjectMeta: meta("db")}
 		obj.Annotations = map[string]string{"note": "AGE-SECRET-KEY-PQ-1QQQQ"}
-		if _, err := snapshot.YAML(obj, scheme(t)); err == nil {
+		if _, err := snapshot.YAML(obj, scheme(t), nil); err == nil {
 			t.Fatal("want an error for an age private key")
 		}
 	})

@@ -55,6 +55,10 @@ func TestSecretDeletion(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitUntilDeleted(t, "the SopsSecret", s)
-		assertGolden(t, outputSecret(t, prod), "retained")
+		kept := outputSecret(t, prod)
+		if len(kept.OwnerReferences) != 0 {
+			t.Fatalf("a retained Secret must have no owner, got %v", kept.OwnerReferences)
+		}
+		assertGolden(t, kept, "retained")
 	})
 }

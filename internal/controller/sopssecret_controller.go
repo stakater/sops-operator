@@ -161,7 +161,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	}
 	if payload.Scope != want {
 		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch,
-			message: fmt.Sprintf("the document is scoped to %q, not %q", payload.Scope, want)}, nil
+			message: fmt.Sprintf("the document is scoped to a different namespace or name than %q", want)}, nil
 	}
 
 	uid, err := secretwriter.Write(ctx, tc, desiredSecret(s, payload), s.Status.SecretUID)

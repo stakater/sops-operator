@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,23 +36,32 @@ func TestNamespaceIsolation(t *testing.T) {
 	other := namespace(t, "e2e-isolate-other")
 	tenantNS, recipient := onboardedTenant(t, "e2e-isolate-tenant", prod, dev)
 
+	// Each case encrypts a file for encryptedFor and applies it, unchanged but for its metadata, as
+	// appliedAs: what a developer gets by copying a committed file.
 	cases := []struct {
-		name   string
-		secret sopsSecret
-		reason string
+		name                    string
+		encryptedFor, appliedAs string
+		reason                  string
 	}{
 		{"shall reject a namespace not granted to the tenant",
-			sopsSecret{Name: "db", Namespace: other, Scope: other + "/db"}, sopsv1alpha1.ReasonAccessDenied},
+			other + "/db", other + "/db", sopsv1alpha1.ReasonAccessDenied},
 		{"shall reject ciphertext copied to another namespace",
-			sopsSecret{Name: "db", Namespace: dev, Scope: prod + "/db"}, sopsv1alpha1.ReasonScopeMismatch},
+			prod + "/db", dev + "/db", sopsv1alpha1.ReasonScopeMismatch},
 		{"shall reject ciphertext copied under another name",
-			sopsSecret{Name: "renamed", Namespace: prod, Scope: prod + "/db"}, sopsv1alpha1.ReasonScopeMismatch},
+			prod + "/db", prod + "/renamed", sopsv1alpha1.ReasonScopeMismatch},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tc.secret.TenantNamespace, tc.secret.StringData = tenantNS, map[string]string{"password": password}
-			s := createSopsSecret(t, recipient, tc.secret)
+			ns, name, _ := strings.Cut(tc.encryptedFor, "/")
+			s := encryptSopsSecret(t, recipient, sopsSecret{
+				Name: name, Namespace: ns, Scope: tc.encryptedFor, TenantNamespace: tenantNS,
+				StringData: map[string]string{"password": password},
+			})
+			s.Namespace, s.Name, _ = strings.Cut(tc.appliedAs, "/")
+			if err := k8s.Create(context.Background(), s); err != nil {
+				t.Fatal(err)
+			}
 			waitForReason(t, s, tc.reason)
 			assertGolden(t, s, "rejected")
 			err := k8s.Get(context.Background(), client.ObjectKeyFromObject(s), &corev1.Secret{})

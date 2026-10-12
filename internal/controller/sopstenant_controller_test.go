@@ -100,13 +100,15 @@ func TestTenantKey(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns)
-		if err := env.Admin.Create(ctx, keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")); err != nil {
+		key := keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")
+		if err := env.Admin.Create(ctx, key); err != nil {
 			t.Fatal(err)
 		}
 		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
+		assertUnchanged(t, key)
 	})
 
 	t.Run("shall report an invalid key when the public key does not match", func(t *testing.T) {
@@ -130,6 +132,7 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
+		assertUnchanged(t, key)
 	})
 
 	t.Run("shall report a missing key when generation is disabled", func(t *testing.T) {

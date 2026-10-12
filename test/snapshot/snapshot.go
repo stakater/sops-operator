@@ -38,8 +38,10 @@ const (
 	Encrypted       = "<encrypted>"
 )
 
-// YAML returns obj as normalized YAML with keys sorted.
-func YAML(obj runtime.Object, scheme *runtime.Scheme) ([]byte, error) {
+// YAML returns obj as normalized YAML with keys sorted. UIDs found in known (UID → label such as
+// "secret/db-creds") are written as <uid:label>, so a golden file shows which object a reference
+// points to; other UIDs become <uid>.
+func YAML(obj runtime.Object, scheme *runtime.Scheme, known map[string]string) ([]byte, error) {
 	gvk, err := apiutil.GVKForObject(obj, scheme)
 	if err != nil {
 		return nil, err
@@ -50,7 +52,7 @@ func YAML(obj runtime.Object, scheme *runtime.Scheme) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := normalize(u); err != nil {
+	if err := normalize(u, known); err != nil {
 		return nil, err
 	}
 	out, err := yaml.Marshal(u)
@@ -63,11 +65,22 @@ func YAML(obj runtime.Object, scheme *runtime.Scheme) ([]byte, error) {
 	return out, nil
 }
 
-func normalize(u map[string]any) error {
+func normalize(u map[string]any, known map[string]string) error {
+	uid := func(m map[string]any, key string) {
+		v, ok := m[key].(string)
+		if !ok {
+			return
+		}
+		if label, found := known[v]; found {
+			m[key] = "<uid:" + label + ">"
+			return
+		}
+		m[key] = UID
+	}
 	metadata, _ := u["metadata"].(map[string]any)
 	if metadata != nil {
 		delete(metadata, "managedFields")
-		setIfPresent(metadata, "uid", UID)
+		uid(metadata, "uid")
 		setIfPresent(metadata, "resourceVersion", ResourceVersion)
 		if err := timestamp(metadata, "creationTimestamp", "metadata.creationTimestamp", true); err != nil {
 			return err
@@ -75,7 +88,7 @@ func normalize(u map[string]any) error {
 		refs, _ := metadata["ownerReferences"].([]any)
 		for _, r := range refs {
 			if ref, ok := r.(map[string]any); ok {
-				setIfPresent(ref, "uid", UID)
+				uid(ref, "uid")
 			}
 		}
 	}
@@ -91,7 +104,7 @@ func normalize(u map[string]any) error {
 	setIfPresent(u, "sops", Encrypted)
 
 	if status, ok := u["status"].(map[string]any); ok {
-		setIfPresent(status, "secretUID", UID)
+		uid(status, "secretUID")
 		if err := timestamp(status, "lastSyncTime", "status.lastSyncTime", false); err != nil {
 			return err
 		}

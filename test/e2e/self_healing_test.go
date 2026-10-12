@@ -21,8 +21,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
@@ -40,15 +38,17 @@ func TestSelfHealing(t *testing.T) {
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		before := outputSecret(t, prod)
+		since := s.Status.LastSyncTime
 		deleteObject(t, before)
+		var after *corev1.Secret
 		poll(t, "the Secret to be recreated", func() (bool, error) {
-			var after corev1.Secret
-			err := k8s.Get(context.Background(), client.ObjectKeyFromObject(before), &after)
-			if apierrors.IsNotFound(err) {
-				return false, nil
-			}
-			return err == nil && after.UID != before.UID && string(after.Data["password"]) == password, err
+			after = outputSecretOrNil(t, prod)
+			return after != nil && after.UID != before.UID && string(after.Data["password"]) == password, nil
 		})
+		waitForNewSync(t, s, since)
+		if s.Status.SecretUID != after.UID {
+			t.Fatal("status.secretUID does not name the recreated Secret")
+		}
 	})
 
 	t.Run("shall restore a modified Secret", func(t *testing.T) {
@@ -68,5 +68,8 @@ func TestSelfHealing(t *testing.T) {
 		poll(t, "the Secret to be restored", func() (bool, error) {
 			return string(outputSecret(t, prod).Data["password"]) == password, nil
 		})
+		if restored := outputSecret(t, prod); restored.UID != edited.UID {
+			t.Fatal("the Secret was recreated instead of updated")
+		}
 	})
 }

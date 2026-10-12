@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -95,4 +96,31 @@ func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope stri
 		t.Fatal(err)
 	}
 	return &s
+}
+
+// update applies mutate to obj and updates it, retrying on conflicts with the operator's writes.
+func update(t *testing.T, obj client.Object, mutate func()) {
+	t.Helper()
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(obj), obj); err != nil {
+			return err
+		}
+		mutate()
+		return env.Admin.Update(context.Background(), obj)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertUnchanged fails when obj was written since the caller last read it.
+func assertUnchanged(t *testing.T, obj client.Object) {
+	t.Helper()
+	current := obj.DeepCopyObject().(client.Object)
+	if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(obj), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.GetResourceVersion() != obj.GetResourceVersion() {
+		t.Fatalf("%s was modified", client.ObjectKeyFromObject(obj))
+	}
 }

@@ -167,7 +167,8 @@ func checkScope(tree sops.Tree, cipher sops.Cipher, dataKey []byte, want string)
 		return fmt.Errorf("%w: the scope could not be decrypted as a string", ErrDecrypt)
 	}
 	if got != want {
-		return fmt.Errorf("%w: the document is scoped to %q, not %q", ErrScopeMismatch, got, want)
+		// The decrypted scope is not repeated: error messages never contain decrypted values.
+		return fmt.Errorf("%w: the document is scoped to a different namespace or name than %q", ErrScopeMismatch, want)
 	}
 	return nil
 }

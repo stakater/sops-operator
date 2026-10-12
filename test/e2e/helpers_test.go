@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/yaml"
@@ -209,6 +210,45 @@ func deleteObject(t *testing.T, obj client.Object) {
 	}
 }
 
+// waitForMessage waits until the Ready condition of obj has reason and a message containing text.
+func waitForMessage(t *testing.T, obj client.Object, reason, text string) {
+	t.Helper()
+	poll(t, "Ready "+reason+" with message containing "+text, func() (bool, error) {
+		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), obj); err != nil {
+			return false, client.IgnoreNotFound(err)
+		}
+		c := readyCondition(obj)
+		return c != nil && c.Reason == reason && strings.Contains(c.Message, text), nil
+	})
+}
+
+// readyCondition returns the Ready condition of a SopsTenant or SopsSecret.
+func readyCondition(obj client.Object) *metav1.Condition {
+	switch o := obj.(type) {
+	case *sopsv1alpha1.SopsTenant:
+		return meta.FindStatusCondition(o.Status.Conditions, sopsv1alpha1.ConditionReady)
+	case *sopsv1alpha1.SopsSecret:
+		return meta.FindStatusCondition(o.Status.Conditions, sopsv1alpha1.ConditionReady)
+	}
+	return nil
+}
+
+// update re-reads obj and applies mutate until the write is not rejected by a concurrent change
+// (the operator writes status, which changes the resourceVersion).
+func update(t *testing.T, obj client.Object, mutate func()) {
+	t.Helper()
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), obj); err != nil {
+			return err
+		}
+		mutate()
+		return k8s.Update(context.Background(), obj)
+	})
+	if err != nil {
+		t.Fatalf("update %s/%s: %v", obj.GetNamespace(), obj.GetName(), err)
+	}
+}
+
 // waitForReason waits until the Ready condition of obj has one of reasons; obj is refreshed in place.
 func waitForReason(t *testing.T, obj client.Object, reasons ...string) {
 	t.Helper()
@@ -269,14 +309,26 @@ var (
 )
 
 // assertGolden compares obj, normalized by test/snapshot, with
-// testdata/<test>/<kind>-<label>.yaml. Record or update the files with `make test-e2e UPDATE_GOLDEN=true`.
-func assertGolden(t *testing.T, obj client.Object, label string) {
+// testdata/<test>/<kind>-<label>.yaml. UIDs of obj and of related objects are written as
+// <uid:kind/name>, so the file shows what a reference points to. Record or update the files with
+// `make test-e2e UPDATE_GOLDEN=true`.
+func assertGolden(t *testing.T, obj client.Object, label string, related ...client.Object) {
 	t.Helper()
 	gvk, err := apiutil.GVKForObject(obj, scheme)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := snapshot.YAML(obj, scheme)
+	known := map[string]string{}
+	for _, o := range append([]client.Object{obj}, related...) {
+		k, err := apiutil.GVKForObject(o, scheme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.GetUID() != "" {
+			known[string(o.GetUID())] = strings.ToLower(k.Kind) + "/" + o.GetName()
+		}
+	}
+	out, err := snapshot.YAML(obj, scheme, known)
 	if err != nil {
 		t.Fatalf("snapshot %s: %v", gvk.Kind, err)
 	}
