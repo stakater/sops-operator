@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"flag"
 	"os"
 	"path/filepath"
@@ -69,9 +70,15 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	defaultResync, err := durationFromEnv("RESYNC_INTERVAL", 10*time.Minute)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	var resyncInterval time.Duration
-	flag.DurationVar(&resyncInterval, "resync-interval", 10*time.Minute,
-		"How often tenants and SopsSecrets are re-checked (key changes, revoked grants, drift).")
+	flag.DurationVar(&resyncInterval, "resync-interval", defaultResync,
+		"How often tenants and SopsSecrets are re-checked (key changes, revoked grants, drift). "+
+			"Defaults to RESYNC_INTERVAL if set.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -257,4 +264,18 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// durationFromEnv returns the positive duration in the environment variable name, or fallback
+// when it is unset. OLM installs set it through Subscription.spec.config.env.
+func durationFromEnv(name string, fallback time.Duration) (time.Duration, error) {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s=%q must be a positive duration such as 10m", name, v)
+	}
+	return d, nil
 }

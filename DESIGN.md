@@ -602,7 +602,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   tenant ClusterRoles of §5.2, samples, scorecard configuration) and validated with the `operatorframework` suite.
   `bundle/` is a build output and is not committed. The base CSV is regenerated from API markers by `make csv`,
   which also stamps `operator-icon.svg` (Hestia's icon) into it.
-- **Configuration**: ConfigMap `sops-operator-config` in the operator namespace and `Subscription.spec.config.env`.
+- **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
+  `RESYNC_INTERVAL` (Go duration, default `10m`). An invalid value stops the operator at startup.
 - **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** that
   deploys the operator image (`make test-e2e`) and compares `SopsTenant`, `SopsSecret` and output Secrets with
   committed golden files (`gotest.tools/v3/golden`, plain YAML; record or update with `UPDATE_GOLDEN=true`).
