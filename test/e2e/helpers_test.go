@@ -76,15 +76,24 @@ func namespace(t *testing.T, name string) string {
 // render fills a fixture template from test/e2e/fixtures.
 func render(t *testing.T, fixture string, data any) []byte {
 	t.Helper()
-	tmpl, err := template.ParseFiles(filepath.Join(repoRoot(), "test", "e2e", "fixtures", fixture))
+	out, err := renderFile(fixture, data)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return out
+}
+
+// renderFile renders test/e2e/fixtures/<fixture> with data; setup uses it outside a test.
+func renderFile(fixture string, data any) ([]byte, error) {
+	tmpl, err := template.ParseFiles(filepath.Join(repoRoot(), "test", "e2e", "fixtures", fixture))
+	if err != nil {
+		return nil, err
+	}
 	var out bytes.Buffer
 	if err := tmpl.Execute(&out, data); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 // apply creates every object of a YAML stream.

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,14 +49,10 @@ func TestOperatorRestart(t *testing.T) {
 		}
 		oldLeader := ptr.Deref(lease.Spec.HolderIdentity, "")
 
-		kubectl := []string{"--context", kubeContext, "-n", operatorNamespace}
-		for _, args := range [][]string{
-			{"rollout", "restart", "deployment/sops-operator-controller-manager"},
-			{"rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"},
-		} {
-			if _, err := run("", "kubectl", append(kubectl, args...)...); err != nil {
-				t.Fatal(err)
-			}
+		// Delete the pod rather than restarting the Deployment: under OLM the CSV owns the Deployment.
+		if err := k8s.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(operatorNamespace),
+			client.MatchingLabels{"control-plane": "controller-manager"}); err != nil {
+			t.Fatal(err)
 		}
 		// Only the leader reconciles: wait until the new pod leads, then for a sync it made. The
 		// leader identity includes a per-process ID, so any other holder is the new process.

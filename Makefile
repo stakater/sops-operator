@@ -148,6 +148,28 @@ setup-test-e2e-olm: kind operator-sdk ## Kind cluster with a local registry (loc
 	KUBECONFIG=$(OLM_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
 		|| KUBECONFIG=$(OLM_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
 
+E2E_REGISTRY ?= localhost:$(REGISTRY_PORT)
+# A new tag per run so OLM never reuses a cached catalog or bundle.
+E2E_OLM_TAG := e2e-$(shell date +%s)
+# Set to an operator image that already exists locally (e.g. built in CI) to skip the build.
+E2E_OLM_OPERATOR_IMG ?=
+
+.PHONY: test-e2e-olm
+test-e2e-olm: setup-test-e2e-olm opm yq sops kustomize operator-sdk ## Run the e2e tests against the operator installed by OLM from a freshly built catalog.
+ifeq ($(E2E_OLM_OPERATOR_IMG),)
+	$(CONTAINER_TOOL) build -t $(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG) .
+else
+	$(CONTAINER_TOOL) tag $(E2E_OLM_OPERATOR_IMG) $(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG)
+endif
+	$(CONTAINER_TOOL) push $(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG)
+	$(MAKE) bundle IMG=$(E2E_REGISTRY)/sops-operator:$(E2E_OLM_TAG)
+	$(MAKE) bundle-build bundle-push BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_OLM_TAG)
+	$(MAKE) catalog-render BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_OLM_TAG) OPM_RENDER_FLAGS=--use-http
+	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_OLM_TAG)
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER_OLM) KUSTOMIZE=$(KUSTOMIZE) SOPS=$(SOPS) YQ=$(YQ) \
+		E2E_INSTALL=olm E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_OLM_TAG) \
+		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12
+
 .PHONY: cleanup-test-e2e-olm
 cleanup-test-e2e-olm: kind ## Tear down the OLM Kind cluster (the registry container is kept).
 	$(KIND) delete cluster --name $(KIND_CLUSTER_OLM)
@@ -358,6 +380,8 @@ csv: manifests kustomize operator-sdk yq ## Regenerate the base CSV from API mar
 
 .PHONY: bundle
 bundle: csv ## Generate bundle manifests and metadata for IMG, then validate them. Committed files are not changed.
+	@# generate bundle does not remove manifests of an earlier run; start empty so nothing stale ships.
+	rm -rf bundle bundle.Dockerfile
 	$(KUSTOMIZE) build config/manifests | sed 's#image: controller:latest#image: $(IMG)#' \
 		| $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework

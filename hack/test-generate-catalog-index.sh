@@ -12,6 +12,9 @@ cat > "${work}/opm" <<'OPM'
 #!/usr/bin/env bash
 case "$1" in
   render)
+    # Like the real opm (containers/image), refuse to pull without a signature policy.
+    [ -f "${HOME}/.config/containers/policy.json" ] || [ -f /etc/containers/policy.json ] \
+      || { echo "no policy.json file found" >&2; exit 1; }
     tag=${2##*:}
     [[ "$tag" == *missing* ]] && { echo "unable to pull $2" >&2; exit 1; }
     # Like the real opm, the output starts with a document separator.

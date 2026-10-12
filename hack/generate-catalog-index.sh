@@ -27,6 +27,20 @@ if ! grep -qx "${PACKAGE}.v${VERSION}" <<<"${entries}"; then
   exit 0
 fi
 
+# opm pulls through containers/image, which refuses to pull without a signature policy. When the
+# system has none (e.g. macOS), give opm the default accept-all policy in a temporary HOME; an
+# existing user or system policy is never overridden. Registry credentials are passed through.
+opm_env=()
+if [ ! -f "${HOME}/.config/containers/policy.json" ] && [ ! -f /etc/containers/policy.json ]; then
+  opm_home=$(mktemp -d)
+  trap 'rm -rf "${opm_home}"' EXIT
+  mkdir -p "${opm_home}/.config/containers"
+  echo '{"default":[{"type":"insecureAcceptAnything"}]}' > "${opm_home}/.config/containers/policy.json"
+  opm_env=(HOME="${opm_home}")
+  docker_auth="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
+  [ -f "${docker_auth}" ] && opm_env+=(REGISTRY_AUTH_FILE="${REGISTRY_AUTH_FILE:-${docker_auth}}")
+fi
+
 for entry in ${entries}; do
   version=${entry#"${PACKAGE}.v"}
   ref="${BUNDLE_REPO}:v${version}"
@@ -34,7 +48,7 @@ for entry in ${entries}; do
   # One file per bundle: yq joins them as separate documents whether or not opm starts its
   # output with a separator; concatenated output would merge bundles or leave empty documents.
   # shellcheck disable=SC2086 # OPM_RENDER_FLAGS holds separate flags
-  "${OPM}" render "${ref}" --output=yaml ${OPM_RENDER_FLAGS:-} > "${bundles}/${entry}.yaml"
+  env ${opm_env[@]+"${opm_env[@]}"} "${OPM}" render "${ref}" --output=yaml ${OPM_RENDER_FLAGS:-} > "${bundles}/${entry}.yaml"
   echo "rendered ${ref}"
 done
 

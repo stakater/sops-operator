@@ -624,6 +624,13 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
   `TestSecretOwnership`, …) with `shall …` subtests.
+  `make test-e2e-olm` runs the same suite and golden files against an install by OLM: it builds the operator,
+  bundle and catalog images, pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated
+  kind cluster and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`.
+  Nothing from `config/` is applied, so the tenant ClusterRoles must come from the bundle. Each run uses a
+  CatalogSource named after its image tag (OLM caches catalog contents by name) and first removes the cluster
+  RBAC of the previous install (OLM keeps it after the CSV is deleted). `make scorecard` runs the operator-sdk
+  basic and OLM suites against the bundle.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
@@ -683,6 +690,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D40 | The source SopsSecret is recorded on the output Secret as the annotation `sops.stakater.com/sopssecret`, not a label | Object names can exceed the 63-character label value limit; a label made such Secrets invalid (found by testing ESO's long-name case). |
 | D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
 | D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
+| D43 | OLM e2e installs from the rendered catalog through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config), works with kind's standard local registry, and exercises the promotion flow on every pull request. |
 
 ---
 

@@ -30,6 +30,7 @@ import (
 	"strings"
 	"testing"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -76,8 +77,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// setup builds the operator image, loads it into Kind and deploys the operator with its CRDs
-// and the tenant-facing ClusterRoles.
+// setup installs the operator as E2E_INSTALL says (kustomize, the default, or olm) and creates
+// the client the tests use.
 func setup(cluster string) error {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err
@@ -85,6 +86,35 @@ func setup(cluster string) error {
 	if err := sopsv1alpha1.AddToScheme(scheme); err != nil {
 		return err
 	}
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{CurrentContext: kubeContext},
+	).ClientConfig()
+	if err != nil {
+		return err
+	}
+	k8s, err = client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return err
+	}
+	switch install := envOr("E2E_INSTALL", "kustomize"); install {
+	case "kustomize":
+		err = installWithKustomize(cluster)
+	case "olm":
+		err = installWithOLM()
+	default:
+		err = fmt.Errorf("E2E_INSTALL=%q: want kustomize or olm", install)
+	}
+	if err != nil {
+		return err
+	}
+	// Fail early if the context points at the wrong cluster.
+	return k8s.List(context.Background(), &sopsv1alpha1.SopsTenantList{})
+}
+
+// installWithKustomize builds the operator image, loads it into Kind and deploys the operator with
+// its CRDs and the tenant-facing ClusterRoles from config/.
+func installWithKustomize(cluster string) error {
 	image := envOr("E2E_IMG", "sops-operator:e2e")
 	if os.Getenv("E2E_SKIP_BUILD") != "true" {
 		if _, err := run("", "docker", "build", "-t", image, "."); err != nil {
@@ -124,19 +154,50 @@ func setup(cluster string) error {
 		"rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"); err != nil {
 		return err
 	}
-	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		&clientcmd.ConfigOverrides{CurrentContext: kubeContext},
-	).ClientConfig()
+	return nil
+}
+
+// installWithOLM installs the operator from the catalog image E2E_CATALOG_IMG, published by
+// `make test-e2e-olm`, through a Subscription, as a customer does. The tenant ClusterRoles come
+// from the bundle; nothing from config/ is applied.
+func installWithOLM() error {
+	catalog := os.Getenv("E2E_CATALOG_IMG")
+	if catalog == "" {
+		return fmt.Errorf("E2E_CATALOG_IMG is not set (run make test-e2e-olm)")
+	}
+	kubectl := func(stdin string, args ...string) (string, error) {
+		return run(stdin, "kubectl", append([]string{"--context", kubeContext}, args...)...)
+	}
+	// A rerun replaces the previous install so the new catalog image is used.
+	if _, err := kubectl("", "delete", "namespace", operatorNamespace, "--ignore-not-found", "--wait", "--timeout=180s"); err != nil {
+		return err
+	}
+	if err := deletePreviousClusterRBAC(context.Background()); err != nil {
+		return err
+	}
+	// OLM caches catalog contents by CatalogSource name; a name per catalog image keeps a rerun from
+	// resolving the previous run's bundle.
+	catalogName := "sops-operator-" + catalog[strings.LastIndex(catalog, ":")+1:]
+	manifests, err := renderFile("olm-install.yaml", map[string]any{
+		"Namespace": operatorNamespace, "CatalogName": catalogName, "CatalogImage": catalog,
+		"ResyncInterval": resyncInterval,
+	})
 	if err != nil {
 		return err
 	}
-	k8s, err = client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
+	if _, err := kubectl(string(manifests), "apply", "-f", "-"); err != nil {
 		return err
 	}
-	// Fail early if the context points at the wrong cluster.
-	return k8s.List(context.Background(), &sopsv1alpha1.SopsTenantList{})
+	for _, args := range [][]string{
+		{"-n", operatorNamespace, "wait", "subscription/sops-operator", "--for=jsonpath={.status.state}=AtLatestKnown", "--timeout=300s"},
+		{"-n", operatorNamespace, "wait", "csv", "--all", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=300s"},
+		{"-n", operatorNamespace, "rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"},
+	} {
+		if _, err := kubectl("", args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // run executes a command from the repository root, feeding stdin when given. Errors include
@@ -192,4 +253,36 @@ func repoRoot() string {
 		}
 		dir = parent
 	}
+}
+
+// deletePreviousClusterRBAC deletes the cluster-scoped RBAC a previous OLM install of this operator
+// created (labelled olm.managed and owned by a sops-operator CSV or OperatorGroup). OLM keeps these
+// objects when the CSV is deleted, and a leftover tenant ClusterRole would hide a bundle that no
+// longer ships it.
+func deletePreviousClusterRBAC(ctx context.Context) error {
+	managed := client.MatchingLabels{"olm.managed": "true"}
+	var roles rbacv1.ClusterRoleList
+	if err := k8s.List(ctx, &roles, managed); err != nil {
+		return err
+	}
+	var bindings rbacv1.ClusterRoleBindingList
+	if err := k8s.List(ctx, &bindings, managed); err != nil {
+		return err
+	}
+	var owned []client.Object
+	for i := range roles.Items {
+		owned = append(owned, &roles.Items[i])
+	}
+	for i := range bindings.Items {
+		owned = append(owned, &bindings.Items[i])
+	}
+	for _, obj := range owned {
+		if !strings.HasPrefix(obj.GetLabels()["olm.owner"], "sops-operator") {
+			continue
+		}
+		if err := client.IgnoreNotFound(k8s.Delete(ctx, obj)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
