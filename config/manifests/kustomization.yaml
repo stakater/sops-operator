@@ -1,0 +1,8 @@
+# Everything `make bundle` turns into the OLM bundle: the base CSV, the operator (config/default), the
+# tenant-facing ClusterRoles, the console samples and the scorecard configuration.
+resources:
+- bases/sops-operator.clusterserviceversion.yaml
+- ../default
+- ../tenant-rbac
+- ../samples
+- ../scorecard

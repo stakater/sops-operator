@@ -98,7 +98,7 @@ Kubernetes API: SopsSecret ──► operator: authorize → load key → decryp
 | **Developer** | Human | `SopsSecret` files in Git and objects in the namespaces they work in. Encrypting with the public key. | Read keys or tenants; decrypt or edit existing files; target a namespace other than the `SopsSecret`'s own. |
 | **GitOps tool** (Argo CD, Flux, CI) | Machine | Applying the still-encrypted `SopsSecret` from Git to the cluster. | See plaintext or keys. |
 | **Operator** | Machine | Decrypting and writing output Secrets — only by impersonating a tenant identity. | Access any Secret with its own identity. |
-| **Tenant identity** (`solar-system:sops`) | Machine (ServiceAccount) | The permissions the cluster admin granted: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
+| **Tenant identity** (`my-team-sops:sops`) | Machine (ServiceAccount) | The permissions the cluster admin granted: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
 
 ### 3.2 Boundaries
 
@@ -120,13 +120,13 @@ flowchart TB
         OP["sops-operator<br/>no Secret permissions"]
     end
 
-    subgraph TNS["Namespace solar-system — controlled by tenant admin"]
-        TEN["SopsTenant solar"]
-        KEY[("Secret solar<br/>private key")]
+    subgraph TNS["Namespace my-team-sops — controlled by tenant admin"]
+        TEN["SopsTenant my-team"]
+        KEY[("Secret my-team<br/>private key")]
         SA["ServiceAccount sops<br/>tenant identity"]
     end
 
-    subgraph PROD["Namespace solar-prod — controlled by developers"]
+    subgraph PROD["Namespace my-app-prod — controlled by developers"]
         SS["SopsSecret db-creds"]
         OUT[("Secret db-creds<br/>plaintext")]
     end
@@ -172,8 +172,8 @@ flowchart TB
 | Boundary | Separates | Enforced by |
 |---|---|---|
 | Tenant ↔ tenant | Different keys, different tenant identities | Kubernetes RBAC: each tenant identity is granted only its own namespaces |
-| Key namespace ↔ consumer namespaces | Private keys never leave `solar-system`; developers have no access there | Kubernetes RBAC |
-| Namespace ↔ namespace within a tenant | Ciphertext for `solar-prod` cannot be used in `solar-dev` | Cryptography: encrypted `scope`, checked after decryption |
+| Key namespace ↔ consumer namespaces | Private keys never leave `my-team-sops`; developers have no access there | Kubernetes RBAC |
+| Namespace ↔ namespace within a tenant | Ciphertext for `my-app-prod` cannot be used in `my-app-dev` | Cryptography: encrypted `scope`, checked after decryption |
 | Git ↔ cluster | Only ciphertext in Git and in the GitOps tool | SOPS encryption |
 | Humans ↔ plaintext | Developers encrypt but cannot decrypt | Public-key cryptography |
 | Operator ↔ Secrets | No standing access; every access is made as a tenant identity | Kubernetes RBAC + impersonation |
@@ -192,9 +192,9 @@ sequenceDiagram
     participant OP as Operator
 
     Note over CA,OP: Onboarding (once per tenant)
-    CA->>API: ServiceAccount solar-system/sops + RoleBindings
-    TA->>API: SopsTenant solar
-    OP->>API: create Secret solar (as solar-system:sops)
+    CA->>API: ServiceAccount my-team-sops/sops + RoleBindings
+    TA->>API: SopsTenant my-team
+    OP->>API: create Secret my-team (as my-team-sops:sops)
     TA->>DEV: public key (.sops.yaml)
 
     Note over CA,OP: Every secret change
@@ -202,10 +202,10 @@ sequenceDiagram
     DEV->>GIT: commit ciphertext
     GO->>GIT: pull
     GO->>API: apply SopsSecret (encrypted)
-    OP->>API: SubjectAccessReview: may solar-system:sops write here?
-    OP->>API: read key (as solar-system:sops)
-    OP->>OP: verify recipient, MAC, scope; decrypt
-    OP->>API: apply Secret (as solar-system:sops)
+    OP->>API: SubjectAccessReview: may my-team-sops:sops write here?
+    OP->>API: read key (as my-team-sops:sops)
+    OP->>OP: check recipient, decrypt and check scope, then values and MAC
+    OP->>API: apply Secret (as my-team-sops:sops)
     OP->>API: status Ready / Decrypted
 ```
 
@@ -223,8 +223,8 @@ A tenant is a **key**. It does not list namespaces; access is granted by the clu
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
 metadata:
-  name: solar                    # key Secret: solar-system/solar
-  namespace: solar-system        # tenant namespace (dedicated; holds keys only)
+  name: my-team                  # key Secret: my-team-sops/my-team
+  namespace: my-team-sops        # tenant namespace (dedicated; holds keys only)
 spec:
   generateKey: true              # default; generates a post-quantum key if the key Secret is missing
 status:
@@ -252,8 +252,8 @@ Same name and namespace as the `SopsTenant`.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: solar
-  namespace: solar-system
+  name: my-team
+  namespace: my-team-sops
   labels:
     app.kubernetes.io/managed-by: sops-operator   # only if generated by the operator
 type: Opaque
@@ -261,6 +261,7 @@ stringData:
   age.agekey: |
     # public key: age1pq1...
     AGE-SECRET-KEY-PQ-1...
+  age.pub: age1pq1...      # primary public key; written when the operator generates the key
 ```
 
 - `age.agekey` holds one or more identities; the **first** is primary. Several identities allow rotation.
@@ -269,7 +270,10 @@ stringData:
 - The operator **creates the key only when it is missing and never modifies, overwrites or deletes it** (the tenant identity has only `get` and `create`). An invalid key is reported,
   not replaced.
 - **No ownerReference**: deleting the tenant never deletes the key.
-- No public key is published by the CR; it is derived from the key Secret. A separate public object can be added later.
+- `age.pub` holds the primary public key. The operator writes it when it generates the key (no extra permission:
+  the Secret is created with both fields). It is optional for bring-your-own keys; when present it must match the
+  primary identity, otherwise the tenant reports `KeyInvalid`. The tenant admin copies it into the team's
+  `.sops.yaml`; reading it requires reading the key Secret, so it is not distributed to developers by the cluster.
 
 ### 4.3 `SopsSecret`
 
@@ -279,15 +283,15 @@ One `SopsSecret` produces **one** Secret with the **same name** in the **same na
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsSecret
 metadata:
-  name: db-creds                     # → Secret solar-prod/db-creds
-  namespace: solar-prod
+  name: db-creds                     # → Secret my-app-prod/db-creds
+  namespace: my-app-prod
   annotations:
     sops.stakater.com/suspend: "true"     # optional; pauses reconciliation
 spec:
   tenantRef:
-    name: solar
-    namespace: solar-system
-  scope: ENC[AES256_GCM,...]         # encrypted; decrypts to "solar-prod/db-creds"
+    name: my-team
+    namespace: my-team-sops
+  scope: ENC[AES256_GCM,...]         # encrypted; decrypts to "my-app-prod/db-creds"
   deletionPolicy: Delete             # Delete (default) | Retain
   template:                          # optional; metadata for the output Secret
     metadata:
@@ -300,6 +304,7 @@ sops: { ... }                        # written by `sops encrypt`
 status:
   observedGeneration: 1
   lastSyncTime: "2026-10-09T10:00:00Z"
+  secretUID: 6f1c2b8e-0d1a-4c5e-9b7f-2a3d4e5f6a7b   # UID of the Secret this SopsSecret created
   conditions:
     - type: Ready
       status: "True"
@@ -310,11 +315,11 @@ status:
 |---|---|---|
 | `spec.tenantRef` | yes | Tenant whose key decrypts this file. |
 | `spec.scope` | yes | **Encrypted** `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
-| `spec.deletionPolicy` | no | `Delete`: remove the Secret with the `SopsSecret`. `Retain`: keep it and drop management markers. |
+| `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
 | `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels are not copied. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
 | `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
-| `sops` | yes | SOPS metadata. Must contain `mac`, `lastmodified`, `version` and at least one `age` recipient. |
+| `sops` | yes | SOPS metadata written by `sops encrypt`. Must contain `mac`, `lastmodified`, `version`, at least one `age` recipient, `encrypted_regex: ^(data|stringData|scope)$` and `mac_only_encrypted: true`. Only age recipients in a single key group are supported; other key types are rejected by the schema. |
 
 Status reasons: `Decrypted`, `Suspended`, `TenantNotFound`, `TenantNotReady`, `AccessDenied`, `NotRecipient`,
 `ScopeMismatch`, `DecryptFailed`, `Conflict`, `ApplyFailed` (e.g. type validation, size limit).
@@ -324,9 +329,13 @@ Printer columns: `TENANT`, `READY`, `REASON`, `AGE`.
 Behaviour:
 
 - The operator manages only Secrets **it created**. A pre-existing Secret with the same name is a `Conflict`.
-- Output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as children) and never carry GitOps
-  tracking labels or annotations (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not
-  prune them.
+- With `deletionPolicy: Delete`, output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as
+  children; `blockOwnerDeletion` is not set). Output Secrets never carry GitOps tracking labels or annotations
+  (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not prune them.
+- `status.secretUID` records the Secret the operator created. Every later write is an update with that UID as a
+  precondition. The API server rejects it (`409`) when the Secret is gone or was replaced; the operator then creates
+  the Secret, which succeeds if it was deleted and fails with `AlreadyExists` → `Conflict` if someone else's Secret
+  holds the name. A `SopsSecret` without `status.secretUID` whose Secret already exists is a `Conflict`.
 - Drift on the output Secret is corrected on the next periodic resync.
 
 ---
@@ -335,13 +344,16 @@ Behaviour:
 
 ### 5.1 Flow for a `SopsSecret` in namespace X
 
-1. Resolve `tenantRef` → `solar-system/solar`.
-2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:solar-system:sops` create Secrets in X?
+1. Resolve `tenantRef` → `my-team-sops/my-team`.
+2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:my-team-sops:sops` create Secrets in X?
    If not → `AccessDenied`. Done before any decryption.
-3. Read the key Secret **impersonating** `solar-system:sops`.
+3. Read the key Secret **impersonating** `my-team-sops:sops`.
 4. Verify the file's recipients include the tenant key → else `NotRecipient`.
-5. Decrypt. Verify the decrypted `scope` equals `X/<name>` → else `ScopeMismatch`.
-6. Server-side apply the Secret into X **impersonating** `solar-system:sops`. The API server enforces the cluster
+5. Decrypt **only** the encrypted `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No other value of
+   a document scoped elsewhere is decrypted. Then decrypt the values and verify the MAC → else `DecryptFailed`.
+   Error messages never contain decrypted values (SOPS does not authenticate a value's type tag, and its parse
+   errors quote the plaintext).
+6. Create or update the Secret in X **impersonating** `my-team-sops:sops` (D28). The API server enforces the cluster
    admin's RoleBinding again.
 
 ### 5.2 RBAC objects
@@ -351,31 +363,33 @@ Shipped as static objects in the OLM bundle:
 | ClusterRole | Rules | Bound by | Where |
 |---|---|---|---|
 | `sops-key-owner` | `secrets`: `get`, `create` | Cluster admin | Tenant namespace |
-| `sops-secret-writer` | `secrets`: `create`, `patch`, `delete` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
+| `sops-secret-writer` | `secrets`: `create`, `update` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
 | `sops-tenant-admin` | full access to `sopstenants`; aggregated to `admin` | — | — |
 | `sops-secret-editor` | full access to `sopssecrets`; aggregated to `edit` | — | — |
 | `sops-viewer` | read `sopstenants`, `sopssecrets`; aggregated to `view` | — | — |
+
+The tenant-facing ClusterRoles are shipped from `config/tenant-rbac/` with exactly these names (not prefixed).
 
 Cluster admin onboarding template (per tenant; can be applied automatically by Stakater Tenant Operator or Capsule):
 
 ```yaml
 apiVersion: v1
 kind: ServiceAccount
-metadata: { name: sops, namespace: solar-system }
+metadata: { name: sops, namespace: my-team-sops }
 automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-key-owner, namespace: solar-system }
+metadata: { name: sops-key-owner, namespace: my-team-sops }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: solar-system }]
+subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
 ---
 # one per namespace the tenant may write to
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-solar, namespace: solar-prod }
+metadata: { name: sops-my-team, namespace: my-app-prod }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: solar-system }]
+subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
 ```
 
 ### 5.3 Operator permissions
@@ -384,7 +398,7 @@ subjects: [{ kind: ServiceAccount, name: sops, namespace: solar-system }]
 # clusterPermissions
 - apiGroups: [sops.stakater.com]
   resources: [sopstenants, sopssecrets]
-  verbs: [get, list, watch, update, patch]
+  verbs: [get, list, watch]
 - apiGroups: [sops.stakater.com]
   resources: [sopstenants/status, sopssecrets/status]
   verbs: [get, update, patch]
@@ -500,7 +514,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 |---|---|
 | Developer in `mallory-ns` references another tenant's key | No cluster admin grant in `mallory-ns` → `AccessDenied`; the write would be denied by the API server anyway. |
 | Tenant admin targets a namespace of another tenant | Tenants cannot grant themselves namespaces; only the cluster admin's RoleBinding does. |
-| Developer copies a prod `SopsSecret` into a dev namespace of the same tenant | Encrypted `scope` decrypts to `solar-prod/…` → `ScopeMismatch`. |
+| Developer copies a prod `SopsSecret` into a dev namespace of the same tenant | Encrypted `scope` decrypts to `my-app-prod/…` → `ScopeMismatch`. |
 | Developer edits `scope` or splices ciphertext between files | Requires the private key; per-file data keys, path-bound values and the MAC make splicing fail. |
 | Developer reads keys | Key Secrets live in the dedicated tenant namespace; developers have no access. |
 | Tenant SA token stolen from a consumer namespace | No SA exists in consumer namespaces; the tenant SA lives in the tenant namespace with `automountServiceAccountToken: false`. |
@@ -529,7 +543,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 
 1. Cluster admin applies the onboarding template for the tenant (§5.2).
 2. Tenant admin creates `SopsTenant` → operator generates the key → `Ready/KeyGenerated`.
-3. Tenant admin derives the public key (`age-keygen -y`) and shares it, e.g. in the team's `.sops.yaml`.
+3. Tenant admin reads `age.pub` from the key Secret and commits it to the team's `.sops.yaml`.
 
 ### 8.2 Developer: create or change a secret
 
@@ -540,18 +554,23 @@ creation_rules:
     encrypted_regex: ^(data|stringData|scope)$
     mac_only_encrypted: true
     age:
-      - age1pq1...solar          # tenant public key
+      - age1pq1...my-team          # tenant public key
       - age1pq1...breakglass     # platform break-glass recipient
 ```
 
 ```bash
 # write plaintext SopsSecret (never commit this state), then:
 yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' prod/db-creds.sops.yaml
+yq -i 'sort_keys(..)' prod/db-creds.sops.yaml
 sops encrypt -i prod/db-creds.sops.yaml
 git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
 ```
 
-- If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "solar-prod/db-creds"'`.
+- If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "my-app-prod/db-creds"'`.
+- Keys must be sorted byte-wise before encryption (`yq sort_keys` does this). The SOPS MAC depends on key order and
+  the Kubernetes API returns objects with keys sorted byte-wise; an unsorted file fails with `DecryptFailed`.
+- `stringData` values must be quoted strings. SOPS parses unquoted scalars before encrypting (`0123` would become
+  `83`), so the operator rejects them with `DecryptFailed` instead of writing a changed value.
 - Developers cannot `sops edit` (requires the private key). To change a value, rewrite and re-encrypt the file.
 - Pre-commit: `sops filestatus <file>` must report `{"encrypted":true}`.
 
@@ -575,16 +594,63 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 
 ## 9. Delivery
 
-- **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `getsops/sops/v3`, `filippo.io/age`.
+- **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `getsops/sops/v3`, `filippo.io/age`. Tools pinned and checksum-verified by `hack/bootstrap-tools.sh`: operator-sdk v1.42.3, opm v1.74.0.
 - **Distribution**: OLM only. Bundle + file-based catalog images; channels `alpha` → `stable`; install mode
   `AllNamespaces`; no webhooks and no OLM dependencies (compatible with OLM v0 `Subscription` and OLM v1
   `ClusterExtension`). Validation with CEL in the CRDs.
-- **Configuration**: ConfigMap `sops-operator-config` in the operator namespace and `Subscription.spec.config.env`.
-- **Testing**: unit tests; envtest with the RBAC authorizer enabled; e2e on **kind** with OLM installed, including
-  the attack scenarios of §7.1 and bundle upgrade tests.
-- **CI**: GitHub Actions on `pull_request` (lint, tests, bundle validation, scorecard, e2e; no push, no secrets) and
-  `push` to `main` / tags `v*` (same checks, then multi-arch build, push to GHCR, cosign keyless signing, SBOM and
-  provenance, catalog update).
+- **Bundle**: generated by `make bundle IMG=<image>` from `config/manifests` (base CSV, CRDs, operator RBAC, the
+  tenant ClusterRoles of §5.2, samples, scorecard configuration) and validated with the `operatorframework` suite.
+  `bundle/` is a build output and is not committed. The base CSV is regenerated from API markers by `make csv`,
+  which also stamps `operator-icon.svg` (Hestia's icon) into it.
+- **Catalog and promotion** (from Hestia): `catalog/package.yaml` and `catalog/channels.yaml` are committed;
+  `channels.yaml` is the upgrade graph. A version is released to a channel by adding `sops-operator.vX.Y.Z` to it
+  (with `replaces` or `skipRange`) in a reviewed change, so any number of channels and parallel version streams
+  can be maintained. `make catalog-render` renders every bundle the channels list (published ones from
+  `ghcr.io/stakater/sops-operator-bundle:vX.Y.Z`) into `catalog/release/index.yaml` and validates it; a version
+  listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
+- **Publishing** (`.github/workflows/push.yaml`): `catalog/channels.yaml` is the only source of truth. A push to
+  `main` that does not change `catalog/` publishes nothing. When it does, `hack/release-plan.sh` finds the one listed
+  version whose bundle is not published yet; the workflow builds the operator image for `linux/amd64` and
+  `linux/arm64`, the bundle referencing the operator by digest, and the catalog, tags them `vX.Y.Z`, attaches SBOM
+  and provenance, signs them with cosign (keyless, GitHub OIDC), verifies the signatures and that the images can
+  be pulled anonymously, then creates the git tag and GitHub release. When every listed version is already
+  published (e.g. promoting a version from `alpha` to `stable`), only the catalog is republished, tagged with the
+  highest listed version; a published operator or bundle version is never overwritten. More than one unpublished
+  version, or a registry that cannot be read, fails the release.
+- **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
+  `RESYNC_INTERVAL` (Go duration, default `10m`). An invalid value stops the operator at startup.
+- **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** with the
+  operator installed by **OLM** (`make test-e2e`, below) that compares `SopsTenant`, `SopsSecret` and output Secrets with
+  committed golden files (`gotest.tools/v3/golden`, plain YAML; record or update with `UPDATE_GOLDEN=true`).
+  `test/snapshot` normalizes objects first: volatile values (UIDs, resourceVersion, timestamps after validating
+  them) become placeholders, Secret values and ciphertext are redacted, and an object with an age key is refused.
+  Golden files no test compares any more fail the run.
+  e2e tests are organised by **use case**: one file and one top-level test per use case, named after the feature
+  or rule it checks (`TestTenantOnboarding` in `tenant_onboarding_test.go`, `TestSecretDecryption`,
+  `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestSopsCLIWorkflow` with the
+  pinned `sops` and `yq` CLIs, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
+  `TestOperatorRestart`; the operator runs with a 10s resync interval during e2e), one subtest per expected
+  behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
+  Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
+  `TestSecretOwnership`, …) with `shall …` subtests.
+  There is one e2e flow, the way customers install: `make test-e2e` builds the operator and
+  bundle images and a catalog that lists only that bundle (a fresh install; the promotion graph is tested by
+  `make test-catalog`), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
+  cluster and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`.
+  Nothing from `config/` is applied, so the tenant ClusterRoles must come from the bundle. Each run uses a
+  CatalogSource named after its image tag (OLM caches catalog contents by name) and first removes the cluster
+  RBAC of the previous install (OLM keeps it after the CSV is deleted). `make scorecard` runs the operator-sdk
+  basic and OLM suites against the bundle.
+- **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
+  generated files are current, builds the image without any write token, and pushes it to
+  `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
+  (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request code. Actions are
+  pinned by commit SHA and kept current by Dependabot. A `push` workflow on `main` publishes
+  releases (below).
+- **Conventions** (from Stakater operators): project/module name `sops-operator`; images
+  `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` tagged `vX.Y.Z`; Makefile variables `VERSION`,
+  `OPERATOR_NAME`, `DOCKER_REPO_BASE`, `CATALOG_DIR_PATH`; file-based catalog in `catalog/`; CSV provider
+  "Stakater AB", `maturity: alpha`, SVG icon in Stakater style (black outline, `#fecd07`).
 
 ---
 
@@ -619,7 +685,23 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D25 | Module `github.com/stakater/sops-operator`; images `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` | Stakater organization. |
 | D26 | Several `SopsTenant`s may share a namespace; they share its `sops` identity and grants | Separate key namespaces when reach must differ. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
-| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every patch (`404` → recreate, `409` → `Conflict`). Fallback to adding `get` only if the spike disproves this. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update; a rejected update falls back to create, and `AlreadyExists` → `Conflict`. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D29 | Files are key-sorted byte-wise (`yq 'sort_keys(..)'`) before encryption; the operator rebuilds the document as byte-sorted JSON | The SOPS MAC is order-dependent and the API server returns keys sorted byte-wise. |
+| D30 | `Retain` means "no ownerReference"; no finalizer on `SopsSecret` | Deletion needs no Secret access and no extra verbs. |
+| D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
+| D32 | Tenant-facing ClusterRoles shipped from `config/tenant-rbac/` with fixed names | Onboarding templates reference stable names. |
+| D33 | operator-sdk and opm are pinned and installed per project into `bin/` with checksum verification | Reproducible builds locally and in CI; no reliance on globally installed tools. |
+| D34 | Own CI workflows instead of the shared Stakater pipeline; PR images pushed with `GITHUB_TOKEN` from an isolated job | Pull-request code never runs with a write token and no long-lived registry secret is needed; the shared pipeline exposed its registry token to PR code. |
+| D35 | The scope is verified before any other value is decrypted; decryption errors carry fixed messages | Copied ciphertext with a tampered type tag must not leak plaintext through error messages. |
+| D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
+| D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
+| D38 | The SopsSecret reconciler reads SopsSecrets uncached (API reader) | A cache that has not seen the last status write would report `Conflict` for the operator's own Secret (found by e2e). |
+| D39 | The primary public key is stored as `age.pub` in the key Secret at generation; no separate public object | The tenant admin needs it once to set up `.sops.yaml`; no extra RBAC, and the operator still cannot modify the key. A mismatching `age.pub` is `KeyInvalid`. |
+| D40 | The source SopsSecret is recorded on the output Secret as the annotation `sops.stakater.com/sopssecret`, not a label | Object names can exceed the 63-character label value limit; a label made such Secrets invalid (found by testing ESO's long-name case). |
+| D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
+| D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
+| D43 | OLM e2e installs the pull request's bundle from a catalog that lists only that bundle, through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config) as a fresh install, independent of which versions `channels.yaml` promotes, and works with kind's standard local registry. The promotion graph is tested by `make test-catalog`. |
+| D44 | A push to `main` publishes only what `catalog/channels.yaml` lists, and only when `catalog/` changes; the version comes from the channels file, not from git tags or the Makefile | Version rollout is a reviewed change to one file; no image is pushed for unreleased code and no published version is overwritten (Hestia's flow pushes images on every merge under the next version's tag). |
 
 ---
 
@@ -628,9 +710,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | # | Question |
 |---|---|
 | Q2 | Minimum SOPS version that supports `age1pq1` recipients (needs age ≥ 1.3). |
-| Q4 | Default resync interval (proposed 10m). |
-| Q5 | Namespace-wide scope (`solar-prod/*`) for files reused under several names — v1 or later? |
+| Q5 | Namespace-wide scope (`my-app-prod/*`) for files reused under several names — v1 or later? |
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |
-| Q10 | Public key distribution object for developers (e.g. a ConfigMap) — needed in v1? |
+| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:sops` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `age.pub` (D39). |

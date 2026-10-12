@@ -1,0 +1,194 @@
+name: Push
+
+# Publishes what catalog/channels.yaml lists when a push to main changes catalog/ (hack/release-plan.sh):
+# a newly listed version gets operator and bundle images, the catalog is rebuilt, and a new version is
+# tagged and released. Any other push publishes nothing. Pull requests run the tests (pull_request.yaml).
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+# Releases queue instead of cancelling each other.
+concurrency:
+  group: push-main
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/stakater
+
+jobs:
+  plan:
+    name: Plan release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: bin
+          key: release-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Decide what to publish
+        id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            unknown=true changed=""
+          else
+            unknown=false changed=$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}")
+          fi
+          make yq
+          CHANGED_FILES="${changed}" BEFORE_UNKNOWN="${unknown}" CHANNELS=catalog/channels.yaml \
+            BUNDLE_REPO="${REGISTRY}/sops-operator-bundle" YQ=bin/yq \
+            hack/release-plan.sh | tee -a "${GITHUB_OUTPUT}"
+          docker logout ghcr.io
+
+  # Runs only code from main, which passed review and the pull request checks.
+  publish:
+    name: Publish
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # keyless signing with cosign
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      BUILD: ${{ needs.plan.outputs.build }}
+      PLATFORMS: linux/amd64,linux/arm64
+    steps:
+      # Registry credentials live in a per-run directory, used by docker and by opm (catalog-render).
+      - name: Isolate registry credentials
+        run: |
+          echo "DOCKER_CONFIG=${RUNNER_TEMP}/docker-config" >> "${GITHUB_ENV}"
+          echo "REGISTRY_AUTH_FILE=${RUNNER_TEMP}/docker-config/config.json" >> "${GITHUB_ENV}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: bin
+          key: release-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      # The catalog image runs opm during its build, once per platform.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Publish operator image
+        if: env.BUILD == 'true'
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build -trimpath -o "dist/manager-${arch}" cmd/main.go
+          done
+          docker buildx build --target prebuilt --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=v${VERSION}" \
+            --metadata-file "${RUNNER_TEMP}/operator.json" --push \
+            -t "${REGISTRY}/sops-operator:v${VERSION}" .
+          ref="${REGISTRY}/sops-operator@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/operator.json")"
+          cosign sign --yes "${ref}"
+          echo "OPERATOR_REF=${ref}" >> "${GITHUB_ENV}"
+
+      # The bundle references the operator image by digest.
+      - name: Publish bundle image
+        if: env.BUILD == 'true'
+        run: |
+          make bundle VERSION="${VERSION}" IMG="${OPERATOR_REF}"
+          docker buildx build -f bundle.Dockerfile --sbom=true --provenance=mode=max \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --metadata-file "${RUNNER_TEMP}/bundle.json" --push \
+            -t "${REGISTRY}/sops-operator-bundle:v${VERSION}" .
+          cosign sign --yes \
+            "${REGISTRY}/sops-operator-bundle@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/bundle.json")"
+
+      # Renders every bundle catalog/channels.yaml lists; any bundle that cannot be pulled fails here.
+      - name: Publish catalog image
+        run: |
+          make catalog-render VERSION="${VERSION}"
+          docker buildx build -f catalog.Dockerfile --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --metadata-file "${RUNNER_TEMP}/catalog.json" --push \
+            -t "${REGISTRY}/sops-operator-catalog:v${VERSION}" .
+          cosign sign --yes \
+            "${REGISTRY}/sops-operator-catalog@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/catalog.json")"
+
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+      # Clusters pull these images without credentials, and only images signed by this workflow on main
+      # are accepted as releases.
+      - name: Verify the published images are public and signed
+        run: |
+          images="sops-operator-catalog"
+          if [ "${BUILD}" = true ]; then images="sops-operator sops-operator-bundle ${images}"; fi
+          for image in ${images}; do
+            ref="${REGISTRY}/${image}:v${VERSION}"
+            DOCKER_CONFIG="$(mktemp -d)" docker manifest inspect "${ref}" > /dev/null \
+              || { echo "::error::${ref} cannot be pulled anonymously; make the package public"; exit 1; }
+            cosign verify "${ref}" \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/push.yaml@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          done
+
+  # Tags and releases a newly published version; catalog-only changes are not releases.
+  release:
+    name: Release
+    needs: [plan, publish]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          notes="Images, signed with cosign (keyless, by this repository's push workflow on main):
+
+          - \`${REGISTRY}/sops-operator:v${VERSION}\`
+          - \`${REGISTRY}/sops-operator-bundle:v${VERSION}\`
+          - \`${REGISTRY}/sops-operator-catalog:v${VERSION}\`"
+          gh release create "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+            --title "v${VERSION}" --generate-notes --notes "${notes}"

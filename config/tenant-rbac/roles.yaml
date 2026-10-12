@@ -1,0 +1,52 @@
+# Bound by the cluster admin to a tenant's "sops" ServiceAccount in the tenant namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sops-key-owner
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+---
+# Bound by the cluster admin to a tenant's "sops" ServiceAccount in each namespace the tenant may write to.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sops-secret-writer
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sops-tenant-admin
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+rules:
+  - apiGroups: [sops.stakater.com]
+    resources: [sopstenants]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sops-secret-editor
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+  - apiGroups: [sops.stakater.com]
+    resources: [sopssecrets]
+    verbs: [get, list, watch, create, update, patch, delete, deletecollection]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sops-viewer
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: [sops.stakater.com]
+    resources: [sopstenants, sopssecrets, sopstenants/status, sopssecrets/status]
+    verbs: [get, list, watch]

@@ -1,0 +1,172 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/stakater/sops-operator
+
+jobs:
+  verify:
+    name: Lint and test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Pinned tools (golangci-lint, controller-gen, kustomize, setup-envtest) and envtest binaries;
+      # all versions are set in the Makefile, so it is the cache key.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: bin
+          key: tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('go.sum', '.golangci.yml', 'Makefile') }}
+          restore-keys: golangci-lint-${{ runner.os }}-
+
+      - name: Check generated files are up to date
+        run: |
+          make manifests generate csv
+          go mod tidy
+          git diff --exit-code
+
+      - name: Test catalog promotion and release plan
+        run: make test-catalog test-release-plan
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+  build:
+    name: Build image
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          # setup-go keeps one cache per go.sum, saved by the lint/test job whose builds use other
+          # flags; this job keeps its own cache for the static manager build below.
+          cache: false
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: manager-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            manager-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            manager-build-${{ runner.os }}-
+
+      # Compile with the Go build cache restored above; inside Docker every dependency would be
+      # compiled from scratch. The image only adds the binary to the distroless base.
+      - name: Build
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager-amd64 cmd/main.go
+          docker build --target prebuilt \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${HEAD_SHA}" \
+            -t sops-operator:pr .
+          docker save sops-operator:pr -o "${RUNNER_TEMP}/image.tar"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e:
+    name: E2E on OLM
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # kind, kustomize, controller-gen, operator-sdk, opm, sops and yq; all pinned in the Makefile.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: bin
+          key: e2e-tools-${{ runner.os }}-${{ hashFiles('Makefile', 'hack/bootstrap-tools.sh') }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}
+
+      # Installs the image built above through OLM, from a catalog with only this build's bundle;
+      # all images go to a registry on the runner only. Resources must match the committed golden
+      # files in test/e2e/testdata (nothing is written without -update).
+      - name: Run e2e tests
+        run: |
+          docker load -i "${RUNNER_TEMP}/image.tar"
+          make test-e2e E2E_OPERATOR_IMG=sops-operator:pr
+
+      - name: Scorecard
+        run: make scorecard
+
+  # The only job with a write token. It runs no code from the pull request: it re-tags the tested
+  # image under a tag computed here and pushes only that tag.
+  push:
+    name: Push image
+    needs: e2e
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: image
+          path: ${{ runner.temp }}
+
+      - name: Push to GHCR
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          image="${IMAGE_REPOSITORY}:pr-${PR_NUMBER}-${HEAD_SHA::7}"
+          docker load -i "${RUNNER_TEMP}/image.tar"
+          docker tag sops-operator:pr "${image}"
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${image}"
+          docker logout ghcr.io
+          echo "Pushed ${image}" >> "${GITHUB_STEP_SUMMARY}"

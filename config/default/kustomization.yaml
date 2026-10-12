@@ -1,0 +1,13 @@
+# The operator: CRDs, its RBAC and the manager Deployment, with metrics served over HTTPS behind Kubernetes
+# authentication and authorization. The OLM bundle is generated from this (config/manifests).
+namespace: sops-operator-system
+namePrefix: sops-operator-
+resources:
+- ../crd
+- ../rbac
+- ../manager
+- metrics_service.yaml
+patches:
+- path: manager_metrics_patch.yaml
+  target:
+    kind: Deployment

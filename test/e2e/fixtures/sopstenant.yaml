@@ -1,0 +1,7 @@
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsTenant
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  generateKey: true

@@ -1,0 +1,39 @@
+# Installs the operator the way a customer does: catalog, OperatorGroup for all namespaces, Subscription.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Namespace }}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: {{ .CatalogName }}
+  namespace: {{ .Namespace }}
+spec:
+  sourceType: grpc
+  image: {{ .CatalogImage }}
+  displayName: SOPS Operator (e2e)
+  grpcPodConfig:
+    securityContextConfig: restricted
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: sops-operator
+  namespace: {{ .Namespace }}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: sops-operator
+  namespace: {{ .Namespace }}
+spec:
+  channel: alpha
+  name: sops-operator
+  source: {{ .CatalogName }}
+  sourceNamespace: {{ .Namespace }}
+  installPlanApproval: Automatic
+  config:
+    env:
+      - name: RESYNC_INTERVAL
+        value: {{ .ResyncInterval }}

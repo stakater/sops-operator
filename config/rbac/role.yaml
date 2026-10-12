@@ -1,0 +1,46 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - sops
+  resources:
+  - serviceaccounts
+  verbs:
+  - impersonate
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
+  - sops.stakater.com
+  resources:
+  - sopssecrets
+  - sopstenants
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sops.stakater.com
+  resources:
+  - sopssecrets/status
+  - sopstenants/status
+  verbs:
+  - get
+  - patch
+  - update

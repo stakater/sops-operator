@@ -1,0 +1,5 @@
+# Included by config/default.
+resources:
+- bases/sops.stakater.com_sopstenants.yaml
+- bases/sops.stakater.com_sopssecrets.yaml
+# +kubebuilder:scaffold:crdkustomizeresource
