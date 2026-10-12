@@ -49,6 +49,7 @@ const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	// ManagedByValue is the value of LabelManagedBy.
 	ManagedByValue = "sops-operator"
-	// LabelSopsSecret names the SopsSecret an output Secret was created from.
-	LabelSopsSecret = "sops.stakater.com/sopssecret"
+	// AnnotationSopsSecret names the SopsSecret an output Secret was created from. It is an
+	// annotation because object names can be longer than label values allow (63 characters).
+	AnnotationSopsSecret = "sops.stakater.com/sopssecret"
 )

@@ -183,7 +183,8 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
 	labels := withoutTracking(s.Spec.Template.Metadata.Labels)
 	labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
-	labels[sopsv1alpha1.LabelSopsSecret] = s.Name
+	annotations := withoutTracking(s.Spec.Template.Metadata.Annotations)
+	annotations[sopsv1alpha1.AnnotationSopsSecret] = s.Name
 	secretType := s.Spec.Type
 	if secretType == "" {
 		secretType = corev1.SecretTypeOpaque
@@ -193,7 +194,7 @@ func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secr
 			Name:        s.Name,
 			Namespace:   s.Namespace,
 			Labels:      labels,
-			Annotations: withoutTracking(s.Spec.Template.Metadata.Annotations),
+			Annotations: annotations,
 		},
 		Type: secretType,
 		Data: p.Data,

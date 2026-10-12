@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,15 @@ func TestSecretDecryption(t *testing.T) {
 		if s.Status.SecretUID != out.UID {
 			t.Fatal("status.secretUID does not match the output Secret")
 		}
+	})
+
+	t.Run("shall decrypt a SopsSecret whose name is longer than 63 characters", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		name := "db-" + strings.Repeat("x", 70) // valid object name, too long for a label value
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, name, prod+"/"+name, map[string]any{"password": "x"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 	})
 
 	t.Run("shall propagate updates and repair drift", func(t *testing.T) {
