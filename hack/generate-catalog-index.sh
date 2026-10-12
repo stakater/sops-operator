@@ -5,7 +5,7 @@
 # channel in a reviewed change. Every bundle any channel lists is rendered, so older versions stay
 # installable. When VERSION is listed in no channel, nothing is released and no index is written.
 #
-# Environment: CATALOG_DIR, VERSION, BUNDLE_REPO (published bundles, tagged vX.Y.Z), BUNDLE_IMG
+# Environment: CATALOG_DIR, CHANNELS (channels file; default $CATALOG_DIR/channels.yaml), VERSION, BUNDLE_REPO (published bundles, tagged vX.Y.Z), BUNDLE_IMG
 # (bundle for VERSION; default $BUNDLE_REPO:v$VERSION), ICON, OPM, YQ, OPM_RENDER_FLAGS (e.g. --use-http).
 set -euo pipefail
 
@@ -14,16 +14,17 @@ OPM=${OPM:-opm}
 YQ=${YQ:-yq}
 PACKAGE=sops-operator
 BUNDLE_IMG=${BUNDLE_IMG:-${BUNDLE_REPO}:v${VERSION}}
+CHANNELS=${CHANNELS:-${CATALOG_DIR}/channels.yaml}
 release="${CATALOG_DIR}/release"
 bundles="${CATALOG_DIR}/bundles"
 
 rm -rf "${release}" "${bundles}"
 mkdir -p "${bundles}"
-entries=$("${YQ}" ea 'select(.schema == "olm.channel") | .entries[].name' "${CATALOG_DIR}/channels.yaml" \
+entries=$("${YQ}" ea 'select(.schema == "olm.channel") | .entries[].name' "${CHANNELS}" \
   | grep -v '^---$' | sort -u)
 
 if ! grep -qx "${PACKAGE}.v${VERSION}" <<<"${entries}"; then
-  echo "${PACKAGE}.v${VERSION} is not listed in ${CATALOG_DIR}/channels.yaml: not promoted, no catalog built"
+  echo "${PACKAGE}.v${VERSION} is not listed in ${CHANNELS}: not promoted, no catalog built"
   exit 0
 fi
 
@@ -56,6 +57,6 @@ mkdir -p "${release}"
 ICON_DATA=$(base64 < "${ICON}" | tr -d '\n') "${YQ}" \
   '.icon = {"base64data": strenv(ICON_DATA), "mediatype": "image/svg+xml"}' "${CATALOG_DIR}/package.yaml" \
   > "${release}/index.yaml"
-{ echo '---'; "${YQ}" ea '.' "${CATALOG_DIR}/channels.yaml" "${bundles}"/*.yaml; } >> "${release}/index.yaml"
+{ echo '---'; "${YQ}" ea '.' "${CHANNELS}" "${bundles}"/*.yaml; } >> "${release}/index.yaml"
 "${OPM}" validate "${release}"
 echo "wrote ${release}/index.yaml"

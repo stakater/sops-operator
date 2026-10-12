@@ -154,9 +154,6 @@ E2E_OLM_TAG := e2e-$(shell date +%s)
 # Set to an operator image that already exists locally (e.g. built in CI) to skip the build.
 E2E_OLM_OPERATOR_IMG ?=
 
-# Catalog directory of the OLM e2e run: catalog/package.yaml and a channel with only this build (ignored by git).
-E2E_CATALOG_DIR = $(CATALOG_DIR_PATH)/e2e
-
 .PHONY: e2e-olm-images
 e2e-olm-images: opm yq kustomize operator-sdk ## Build and push the operator, bundle and catalog images for the OLM e2e run to E2E_REGISTRY.
 ifeq ($(E2E_OLM_OPERATOR_IMG),)
@@ -169,14 +166,11 @@ endif
 	$(MAKE) bundle-build bundle-push BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_OLM_TAG)
 	@# The e2e run is a fresh install of this build: its catalog lists only this bundle, whatever
 	@# catalog/channels.yaml promotes (the promotion graph is tested by make test-catalog).
-	rm -rf $(E2E_CATALOG_DIR) && mkdir -p $(E2E_CATALOG_DIR)
-	cp $(CATALOG_DIR_PATH)/package.yaml $(E2E_CATALOG_DIR)/
 	printf 'schema: olm.channel\npackage: $(OPERATOR_NAME)\nname: alpha\nentries:\n  - name: $(OPERATOR_NAME).v$(VERSION)\n' \
-		> $(E2E_CATALOG_DIR)/channels.yaml
-	$(MAKE) catalog-render CATALOG_DIR_PATH=$(E2E_CATALOG_DIR) \
+		> $(LOCALBIN)/e2e-channels.yaml
+	$(MAKE) catalog-render CATALOG_CHANNELS=$(LOCALBIN)/e2e-channels.yaml \
 		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_OLM_TAG) OPM_RENDER_FLAGS=--use-http
-	$(MAKE) catalog-build catalog-push CATALOG_DIR_PATH=$(E2E_CATALOG_DIR) \
-		CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_OLM_TAG)
+	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_OLM_TAG)
 
 .PHONY: test-e2e-olm
 test-e2e-olm: setup-test-e2e-olm sops e2e-olm-images ## Run the e2e tests against the operator installed by OLM from a freshly built catalog.
@@ -440,10 +434,12 @@ CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 
 # Published bundle images; channel entries other than VERSION are rendered from here.
 BUNDLE_REPO ?= $(IMAGE_TAG_BASE)-bundle
+# Channels file catalog-render renders (the upgrade graph); the OLM e2e run passes its own.
+CATALOG_CHANNELS ?= $(CATALOG_DIR_PATH)/channels.yaml
 
 .PHONY: catalog-render
 catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
-	CATALOG_DIR=$(CATALOG_DIR_PATH) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) \
+	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) \
 		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) OPM_RENDER_FLAGS="$(OPM_RENDER_FLAGS)" \
 		hack/generate-catalog-index.sh
 
@@ -451,8 +447,8 @@ catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channel
 catalog-build: ## Build the catalog image from CATALOG_DIR_PATH/release.
 	@test -f $(CATALOG_DIR_PATH)/release/index.yaml || { echo "$(CATALOG_DIR_PATH)/release/index.yaml does not exist:" \
 		"run make catalog-render; it builds no catalog when $(OPERATOR_NAME).v$(VERSION) is not listed in" \
-		"$(CATALOG_DIR_PATH)/channels.yaml"; exit 1; }
-	$(CONTAINER_TOOL) build -f catalog.Dockerfile --build-arg CATALOG_RELEASE=$(CATALOG_DIR_PATH)/release -t $(CATALOG_IMG) .
+		"$(CATALOG_CHANNELS)"; exit 1; }
+	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
 
 .PHONY: test-catalog
 test-catalog: yq ## Test the catalog promotion script with a fake opm.

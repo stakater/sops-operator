@@ -38,8 +38,8 @@ catalog() { # catalog <dir> <channel entries...>: write package.yaml and channel
   { printf 'schema: olm.channel\npackage: sops-operator\nname: alpha\nentries:\n'
     for e in "$@"; do printf '  - name: %s\n' "$e"; done; } > "${dir}/channels.yaml"
 }
-generate() { # generate <dir> <version> [bundle img]
-  CATALOG_DIR="$1" VERSION="$2" BUNDLE_IMG="${3:-}" BUNDLE_REPO=ghcr.io/stakater/sops-operator-bundle \
+generate() { # generate <dir> <version> [bundle img]; CHANNELS passes through
+  CHANNELS="${CHANNELS:-}" CATALOG_DIR="$1" VERSION="$2" BUNDLE_IMG="${3:-}" BUNDLE_REPO=ghcr.io/stakater/sops-operator-bundle \
     OPM="${work}/opm" YQ="${YQ}" ICON="${root}/operator-icon.svg" "${root}/hack/generate-catalog-index.sh"
 }
 
@@ -58,6 +58,13 @@ catalog "${work}/b" sops-operator.v0.0.1
 mkdir -p "${work}/b/release" && echo stale > "${work}/b/release/index.yaml"
 generate "${work}/b" 0.0.2 > /dev/null || true
 check "shall not build a catalog for an unpromoted version" '[ ! -e "${work}/b/release/index.yaml" ]'
+
+# shall render the channels file given in CHANNELS instead of the catalog's own
+catalog "${work}/d" sops-operator.v0.0.1
+printf 'schema: olm.channel\npackage: sops-operator\nname: alpha\nentries:\n  - name: sops-operator.v0.0.9\n' > "${work}/only.yaml"
+CHANNELS="${work}/only.yaml" generate "${work}/d" 0.0.9 localhost:5011/sops-operator-bundle:e2e > /dev/null 2>&1 || true
+check "shall render the channels file given in CHANNELS" \
+  '[ "$("${YQ}" ea "select(.schema == \"olm.channel\") | .entries[].name" "${work}/d/release/index.yaml" 2>/dev/null)" = sops-operator.v0.0.9 ]'
 
 catalog "${work}/c" sops-operator.v0.0.1 sops-operator.vmissing
 check "shall fail when a listed bundle cannot be rendered" '! generate "${work}/c" 0.0.1 > /dev/null 2>&1'
