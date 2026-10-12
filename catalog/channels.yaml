@@ -1,0 +1,5 @@
+schema: olm.channel
+package: sops-operator
+name: alpha
+entries:
+  - name: sops-operator.v0.0.1

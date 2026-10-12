@@ -602,6 +602,12 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   tenant ClusterRoles of §5.2, samples, scorecard configuration) and validated with the `operatorframework` suite.
   `bundle/` is a build output and is not committed. The base CSV is regenerated from API markers by `make csv`,
   which also stamps `operator-icon.svg` (Hestia's icon) into it.
+- **Catalog and promotion** (from Hestia): `catalog/package.yaml` and `catalog/channels.yaml` are committed;
+  `channels.yaml` is the upgrade graph. A version is released to a channel by adding `sops-operator.vX.Y.Z` to it
+  (with `replaces` or `skipRange`) in a reviewed change, so any number of channels and parallel version streams
+  can be maintained. `make catalog-render` renders every bundle the channels list (published ones from
+  `ghcr.io/stakater/sops-operator-bundle:vX.Y.Z`) into `catalog/release/index.yaml` and validates it; a version
+  listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
 - **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
   `RESYNC_INTERVAL` (Go duration, default `10m`). An invalid value stops the operator at startup.
 - **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** that
@@ -676,6 +682,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D39 | The primary public key is stored as `age.pub` in the key Secret at generation; no separate public object | The tenant admin needs it once to set up `.sops.yaml`; no extra RBAC, and the operator still cannot modify the key. A mismatching `age.pub` is `KeyInvalid`. |
 | D40 | The source SopsSecret is recorded on the output Secret as the annotation `sops.stakater.com/sopssecret`, not a label | Object names can exceed the 63-character label value limit; a label made such Secrets invalid (found by testing ESO's long-name case). |
 | D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
+| D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
 
 ---
 

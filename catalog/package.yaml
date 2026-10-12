@@ -1,0 +1,6 @@
+schema: olm.package
+name: sops-operator
+defaultChannel: alpha
+description: |
+  Decrypts SOPS-encrypted SopsSecrets into Kubernetes Secrets with per-tenant post-quantum age keys,
+  without giving the operator access to any Secret.

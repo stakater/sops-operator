@@ -378,24 +378,26 @@ OPM = $(shell which opm)
 endif
 endif
 
-# A comma-separated list of bundle images (e.g. make catalog-build BUNDLE_IMGS=example.com/operator-bundle:v0.1.0,example.com/operator-bundle:v0.2.0).
-# These images MUST exist in a registry and be pull-able.
-BUNDLE_IMGS ?= $(BUNDLE_IMG)
-
 # The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:v0.2.0).
 CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 
-# Set CATALOG_BASE_IMG to an existing catalog image tag to add $BUNDLE_IMGS to that image.
-ifneq ($(origin CATALOG_BASE_IMG), undefined)
-FROM_INDEX_OPT := --from-index $(CATALOG_BASE_IMG)
-endif
+# Published bundle images; channel entries other than VERSION are rendered from here.
+BUNDLE_REPO ?= $(IMAGE_TAG_BASE)-bundle
 
-# Build a catalog image by adding bundle images to an empty catalog using the operator package manager tool, 'opm'.
-# This recipe invokes 'opm' in 'semver' bundle add mode. For more information on add modes, see:
-# https://github.com/operator-framework/community-operators/blob/7f1438c/docs/packaging-operator.md#updating-your-existing-operator
+.PHONY: catalog-render
+catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
+	CATALOG_DIR=$(CATALOG_DIR_PATH) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) \
+		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) OPM_RENDER_FLAGS="$(OPM_RENDER_FLAGS)" \
+		hack/generate-catalog-index.sh
+
 .PHONY: catalog-build
-catalog-build: opm ## Build a catalog image.
-	$(OPM) index add --container-tool $(CONTAINER_TOOL) --mode semver --tag $(CATALOG_IMG) --bundles $(BUNDLE_IMGS) $(FROM_INDEX_OPT)
+catalog-build: ## Build the catalog image from catalog/release.
+	test -f $(CATALOG_DIR_PATH)/release/index.yaml || { echo "run make catalog-render first"; exit 1; }
+	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
+
+.PHONY: test-catalog
+test-catalog: yq ## Test the catalog promotion script with a fake opm.
+	YQ=$(YQ) hack/test-generate-catalog-index.sh
 
 # Push the catalog image.
 .PHONY: catalog-push
