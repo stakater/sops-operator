@@ -3,6 +3,7 @@
 resources:
 - bases/sops-operator.clusterserviceversion.yaml
 - ../default
+- ../tenant-rbac
 - ../samples
 - ../scorecard
 

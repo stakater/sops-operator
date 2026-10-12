@@ -330,12 +330,18 @@ endif
 samples: sops yq ## Regenerate the SopsSecret sample (alm-example) encrypted for a throwaway key.
 	SOPS=$(SOPS) YQ=$(YQ) hack/generate-samples.sh
 
+.PHONY: csv
+csv: manifests kustomize operator-sdk yq ## Regenerate the base CSV from API markers and stamp operator-icon.svg into it.
+	$(OPERATOR_SDK) generate kustomize manifests -q --interactive=false
+	ICON="$$(base64 < operator-icon.svg | tr -d '\n')" $(YQ) -i \
+		'.spec.icon = [{"base64data": strenv(ICON), "mediatype": "image/svg+xml"}]' \
+		config/manifests/bases/sops-operator.clusterserviceversion.yaml
+
 .PHONY: bundle
-bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
-	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
-	$(OPERATOR_SDK) bundle validate ./bundle
+bundle: csv ## Generate bundle manifests and metadata for IMG, then validate them. Committed files are not changed.
+	$(KUSTOMIZE) build config/manifests | sed 's#image: controller:latest#image: $(IMG)#' \
+		| $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
