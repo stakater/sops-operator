@@ -5,7 +5,7 @@
 <h1 align="center">SOPS Operator</h1>
 
 <p align="center">
-  <strong>Encrypted secrets in Git. Decrypted only in your cluster. Never trusted by default.</strong>
+  <strong>GitOps-first, zero-trust secrets for Kubernetes and OpenShift</strong>
 </p>
 
 <p align="center">
@@ -18,19 +18,40 @@
 
 ---
 
-SOPS Operator turns [SOPS](https://getsops.io)-encrypted `SopsSecret` resources committed to Git into Kubernetes
-Secrets, for many teams on one cluster.
+SOPS Operator delivers secrets from Git to Kubernetes and OpenShift. Teams commit
+[SOPS](https://getsops.io)-encrypted `SopsSecret` resources; the operator decrypts them inside the cluster and
+writes the Kubernetes Secrets, for many teams on one cluster.
 
-Teams manage their own encryption keys and secrets. The cluster admin decides which namespaces each team may
-write to. Kubernetes enforces that decision on every single read and write. The operator itself holds **no
-permission on any Secret**.
+It is built on two principles:
 
-## Why SOPS Operator
+- **GitOps first**: Git is the source of truth. Only ciphertext is stored in Git and applied by the GitOps tool,
+  with standard SOPS tooling and no plugin in the delivery pipeline.
+- **Zero trust**: no component is trusted because of where it runs. Every key read and every Secret write is
+  authorized by the Kubernetes API server against an explicit grant from the cluster admin, and the operator
+  holds **no permission on any Secret** of its own.
 
-Committing encrypted secrets to Git is a solved problem. Doing it safely for many teams on a shared cluster is
-not. Most approaches end up with one of three compromises: one master key for the whole cluster, plaintext
-passing through the delivery pipeline, or a controller that can read every Secret in the cluster. SOPS Operator
-is built to need none of them.
+## GitOps first
+
+### 🌿 Plain SOPS, any GitOps tool
+
+Files are ordinary SOPS documents with readable diffs, encrypted with the standard `sops` CLI. Argo CD, Flux or a
+CI job applies them like any other manifest, with nothing to install. **Plaintext never passes through the
+delivery pipeline**, and the operator needs no Git access or Git credentials.
+
+### 🔁 One-way flow, one owner per Secret
+
+Each `SopsSecret` produces exactly one Secret with the same name in the same namespace. The operator restores
+the Secret when it is changed or deleted, removes it with the `SopsSecret` (or keeps it with
+`deletionPolicy: Retain`), and never adopts or overwrites a Secret it did not create. GitOps tracking labels are
+not copied to the Secret, so GitOps tools do not prune it.
+
+### 🩺 Status your tooling understands
+
+Every resource reports a standard `Ready` condition with `observedGeneration` and a precise reason, such as
+`Decrypted`, `AccessDenied` or `ScopeMismatch`. Flux health checks and other kstatus-based tools read it
+without extra configuration.
+
+## Zero trust
 
 ### 🔐 Zero standing privileges
 
@@ -39,18 +60,17 @@ write is an **impersonated API call as the tenant's own ServiceAccount**, author
 against RBAC the cluster admin created. A compromised operator cannot reach any Secret outside a tenant's grants,
 and every access appears in the Kubernetes audit log under both identities.
 
-### ✍️ Write-only into application namespaces
+### ✍️ Least privilege in application namespaces
 
 A tenant's identity may create and update Secrets in its namespaces, but **cannot read them**. The operator tracks
 ownership through the UID of the Secret it created, so it never needs to read what lives in an application
-namespace. A Secret it did not create is never overwritten.
+namespace.
 
-### 🧩 Self-service without self-promotion
+### 🧩 Explicit grants, self-service tenants
 
 Tenant admins create their own `SopsTenant` and manage their own key. Developers write their own `SopsSecret`s.
-Nobody but the cluster admin can extend a tenant's reach: a namespace is granted only by a RoleBinding the
-cluster admin creates. There are no selectors, labels or naming conventions a tenant could use to claim a
-namespace it was not given.
+Only the cluster admin can extend a tenant's reach: a namespace is granted by a RoleBinding the cluster admin
+creates, and no selector, label or naming convention grants access.
 
 ### 🎯 Ciphertext bound to its destination
 
@@ -59,40 +79,29 @@ encrypted for `prod/db-creds` is rejected in `dev` or under another name, even w
 same key. The scope is verified before any other value is decrypted, and error messages never contain decrypted
 values.
 
-### 🛡️ Post-quantum keys by default
-
-Ciphertext in Git lives forever. Generated keys are hybrid **post-quantum age keys** (ML-KEM-768 + X25519), so
-files committed today stay confidential against "harvest now, decrypt later". Bring-your-own X25519 keys are
-supported too.
-
-### 🔑 One key per team, no cluster master key
+### 🔑 One key per tenant, post-quantum by default
 
 Every tenant has its own key, generated in place when it does not exist and never overwritten or deleted by the
-operator. Rotation works by adding a key next to the old one; break-glass recipients let the platform team
-recover any file. There is no single key whose loss or leak affects the whole cluster.
+operator; there is no cluster-wide master key. Generated keys are hybrid **post-quantum age keys**
+(ML-KEM-768 + X25519), because ciphertext committed to Git stays readable to anyone who obtains it later.
+Bring-your-own X25519 keys, rotation with several keys and break-glass recipients are supported.
 
-### 🌿 Plain SOPS, any GitOps tool
-
-Files are ordinary SOPS documents: readable diffs, standard `sops` CLI, nothing to install in Argo CD, Flux or
-CI. GitOps tools apply ciphertext only; **plaintext never passes through the pipeline**. The operator has no Git
-access and no Git credentials.
-
-### 🟥 Built for OpenShift
+## Built for OpenShift
 
 Installed and upgraded through OLM, with console-ready samples and form descriptors, `AllNamespaces` install
-mode, no admission webhooks, no dependencies on other operators, and schema validation done with CEL in the CRDs.
+mode, no admission webhooks, no dependencies on other operators, and schema validation with CEL in the CRDs.
 
 ## At a glance
 
 | | Typical approaches | SOPS Operator |
 |---|---|---|
+| Plaintext in the delivery pipeline | Often (decrypt in CI or the GitOps tool) | **None**; decrypted in-cluster only |
+| Tooling for developers | Custom CLI or plugin | **Standard `sops` CLI** |
+| Existing Secrets with the same name | Overwritten or merged | **Not modified**; reported as `Conflict` |
 | Secret permissions of the controller | Cluster-wide read/write | **None**; impersonates tenant identities |
-| Decryption keys | One per cluster, or shared by everyone | **One per tenant**, post-quantum |
 | Who grants a team access to a namespace | Labels, selectors or the team itself | **Cluster admin RBAC only**, enforced by the API server |
 | Copying ciphertext to another namespace | Usually works | **Rejected** (encrypted scope) |
-| Plaintext in the delivery pipeline | Often (decrypt in CI or the GitOps tool) | **Never**; decrypted in-cluster only |
-| Existing Secrets with the same name | Overwritten or merged | **Never touched**; reported as `Conflict` |
-| Tooling for developers | Custom CLI or plugin | **Standard `sops` CLI** |
+| Decryption keys | One per cluster, or shared by everyone | **One per tenant**, post-quantum |
 
 ## How it works
 
