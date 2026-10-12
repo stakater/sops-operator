@@ -47,6 +47,8 @@ import (
 const (
 	waitTimeout = 2 * time.Minute
 	tenantName  = "solar"
+	// password is the plaintext value the use cases encrypt.
+	password = "hunter2"
 )
 
 // namespace creates a namespace with a fixed name, so snapshots are stable, and deletes it
@@ -182,6 +184,28 @@ func waitUntilDeleted(t *testing.T, what string, obj client.Object) {
 		err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), obj)
 		return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
 	})
+}
+
+// waitForNewSync waits until the SopsSecret reports Decrypted with a lastSyncTime after since, i.e.
+// it was reconciled again. Timestamps come from the operator, so host clock skew does not matter.
+func waitForNewSync(t *testing.T, s *sopsv1alpha1.SopsSecret, since *metav1.Time) {
+	t.Helper()
+	poll(t, "a new successful sync of "+s.Namespace+"/"+s.Name, func() (bool, error) {
+		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(s), s); err != nil {
+			return false, err
+		}
+		c := meta.FindStatusCondition(s.Status.Conditions, sopsv1alpha1.ConditionReady)
+		synced := s.Status.LastSyncTime != nil && (since == nil || s.Status.LastSyncTime.After(since.Time))
+		return synced && c != nil && c.Reason == sopsv1alpha1.ReasonDecrypted, nil
+	})
+}
+
+// deleteObject deletes obj and fails the test on any error other than NotFound.
+func deleteObject(t *testing.T, obj client.Object) {
+	t.Helper()
+	if err := k8s.Delete(context.Background(), obj); client.IgnoreNotFound(err) != nil {
+		t.Fatalf("delete %T %s/%s: %v", obj, obj.GetNamespace(), obj.GetName(), err)
+	}
 }
 
 // waitForReason waits until the Ready condition of obj has one of reasons; obj is refreshed in place.

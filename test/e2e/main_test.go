@@ -38,7 +38,11 @@ import (
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
 
-const operatorNamespace = "sops-operator-system"
+const (
+	operatorNamespace = "sops-operator-system"
+	// resyncInterval is the operator's resync interval during e2e tests.
+	resyncInterval = "10s"
+)
 
 var (
 	// kubeContext is passed explicitly to every kubectl call and to the client, so the tests
@@ -96,6 +100,12 @@ func setup(cluster string) error {
 		return fmt.Errorf("config/default no longer uses the controller:latest image placeholder")
 	}
 	manifests = strings.ReplaceAll(manifests, "image: controller:latest", "image: "+image)
+	// Resync in seconds so self-healing, rotation and revocation are observable within a test.
+	const probeArg = "        - --health-probe-bind-address=:8081\n"
+	if !strings.Contains(manifests, probeArg) {
+		return fmt.Errorf("config/default no longer has the health-probe argument to anchor --resync-interval")
+	}
+	manifests = strings.Replace(manifests, probeArg, probeArg+"        - --resync-interval="+resyncInterval+"\n", 1)
 	if _, err := run(manifests, "kubectl", "--context", kubeContext, "apply", "--server-side", "-f", "-"); err != nil {
 		return err
 	}

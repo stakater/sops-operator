@@ -30,14 +30,14 @@ func TestSecretDecryption(t *testing.T) {
 		tenantNS, recipient := onboardedTenant(t, "e2e-deliver-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
 			Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
-			StringData: map[string]string{"password": "hunter2", "username": "app"},
+			StringData: map[string]string{"password": password, "username": "app"},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		assertGolden(t, s, "decrypted")
 
 		out := outputSecret(t, prod)
 		// Values are checked here; the snapshot only records which keys exist.
-		if string(out.Data["password"]) != "hunter2" || string(out.Data["username"]) != "app" {
+		if string(out.Data["password"]) != password || string(out.Data["username"]) != "app" {
 			t.Fatal("output Secret does not hold the decrypted values")
 		}
 		assertGolden(t, out, "output")

@@ -134,8 +134,8 @@ setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests kustomize ## Run the e2e tests on the Kind cluster (kept for reruns; remove with cleanup-test-e2e).
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) KUSTOMIZE=$(KUSTOMIZE) E2E_IMG=$(E2E_IMG) \
+test-e2e: setup-test-e2e manifests kustomize sops yq ## Run the e2e tests on the Kind cluster (kept for reruns; remove with cleanup-test-e2e).
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) KUSTOMIZE=$(KUSTOMIZE) SOPS=$(SOPS) YQ=$(YQ) E2E_IMG=$(E2E_IMG) \
 		go test ./test/e2e/ -v -count=1 -timeout 20m $(if $(filter true,$(UPDATE_GOLDEN)),-update)
 
 .PHONY: cleanup-test-e2e
@@ -231,6 +231,8 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KIND ?= $(LOCALBIN)/kind
+SOPS ?= $(LOCALBIN)/sops
+YQ ?= $(LOCALBIN)/yq
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
@@ -238,6 +240,8 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
 KIND_VERSION ?= v0.33.0
+SOPS_VERSION ?= v3.13.3
+YQ_VERSION ?= v4.54.1
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.18.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
@@ -245,6 +249,16 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= 1.31.0
 GOLANGCI_LINT_VERSION ?= v2.1.0
+
+.PHONY: sops
+sops: $(SOPS) ## Download the sops CLI locally if necessary (used by e2e tests like a developer would).
+$(SOPS): $(LOCALBIN)
+	$(call go-install-tool,$(SOPS),github.com/getsops/sops/v3/cmd/sops,$(SOPS_VERSION))
+
+.PHONY: yq
+yq: $(YQ) ## Download yq locally if necessary.
+$(YQ): $(LOCALBIN)
+	$(call go-install-tool,$(YQ),github.com/mikefarah/yq/v4,$(YQ_VERSION))
 
 .PHONY: kind
 kind: $(KIND) ## Download kind locally if necessary.

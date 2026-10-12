@@ -48,7 +48,7 @@ func TestNamespaceIsolation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.secret.TenantNamespace, tc.secret.StringData = tenantNS, map[string]string{"password": "hunter2"}
+			tc.secret.TenantNamespace, tc.secret.StringData = tenantNS, map[string]string{"password": password}
 			s := createSopsSecret(t, recipient, tc.secret)
 			waitForReason(t, s, tc.reason)
 			assertGolden(t, s, "rejected")

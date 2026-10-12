@@ -30,7 +30,7 @@ func TestSecretDeletion(t *testing.T) {
 		tenantNS, recipient := onboardedTenant(t, "e2e-remove-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
 			Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
-			StringData: map[string]string{"password": "hunter2"},
+			StringData: map[string]string{"password": password},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		out := outputSecret(t, prod)
@@ -45,7 +45,7 @@ func TestSecretDeletion(t *testing.T) {
 		tenantNS, recipient := onboardedTenant(t, "e2e-retain-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
 			Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
-			DeletionPolicy: string(sopsv1alpha1.DeletionPolicyRetain), StringData: map[string]string{"password": "hunter2"},
+			DeletionPolicy: string(sopsv1alpha1.DeletionPolicyRetain), StringData: map[string]string{"password": password},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		if err := k8s.Delete(context.Background(), s); err != nil {
