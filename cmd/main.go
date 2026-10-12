@@ -19,8 +19,8 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
