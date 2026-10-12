@@ -343,6 +343,15 @@ bundle: csv ## Generate bundle manifests and metadata for IMG, then validate the
 		| $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
 
+# Kind cluster scorecard runs its test pods in.
+SCORECARD_CLUSTER ?= $(KIND_CLUSTER)
+
+.PHONY: scorecard
+scorecard: bundle kind ## Run the scorecard suites against ./bundle on the Kind cluster SCORECARD_CLUSTER.
+	$(KIND) get kubeconfig --name $(SCORECARD_CLUSTER) > $(LOCALBIN)/kubeconfig-$(SCORECARD_CLUSTER)
+	$(OPERATOR_SDK) scorecard ./bundle --kubeconfig $(LOCALBIN)/kubeconfig-$(SCORECARD_CLUSTER) \
+		--namespace default --wait-time 180s
+
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
 	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .

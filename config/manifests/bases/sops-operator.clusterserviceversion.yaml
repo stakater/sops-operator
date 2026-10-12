@@ -15,14 +15,91 @@ spec:
   customresourcedefinitions:
     owned:
       - description: SopsSecret is a SOPS-encrypted Secret.
-        displayName: Sops Secret
+        displayName: SOPS Secret
         kind: SopsSecret
         name: sopssecrets.sops.stakater.com
+        resources:
+          - kind: Secret
+            name: ""
+            version: v1
+        specDescriptors:
+          - description: Data holds encrypted base64 values.
+            displayName: Data (encrypted)
+            path: data
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:hidden
+          - displayName: Deletion policy
+            path: deletionPolicy
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:select:Delete
+              - urn:alm:descriptor:com.tectonic.ui:select:Retain
+          - description: Scope is the encrypted "<namespace>/<name>" this document may be decrypted into.
+            displayName: Scope (encrypted)
+            path: scope
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:hidden
+          - description: StringData holds encrypted text values.
+            displayName: String data (encrypted)
+            path: stringData
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:hidden
+          - displayName: Secret metadata
+            path: template
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:advanced
+          - displayName: Tenant
+            path: tenantRef
+          - displayName: Tenant name
+            path: tenantRef.name
+          - displayName: Tenant namespace
+            path: tenantRef.namespace
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes:Namespace
+          - displayName: Secret type
+            path: type
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:select:Opaque
+              - urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/tls
+              - urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/dockerconfigjson
+              - urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/basic-auth
+              - urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/ssh-auth
+        statusDescriptors:
+          - displayName: Conditions
+            path: conditions
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes.conditions
+          - displayName: Last sync
+            path: lastSyncTime
+          - displayName: Observed generation
+            path: observedGeneration
+          - description: SecretUID is the UID of the Secret this SopsSecret created.
+            displayName: Secret UID
+            path: secretUID
         version: v1alpha1
       - description: SopsTenant is a tenant key used to decrypt SopsSecrets.
-        displayName: Sops Tenant
+        displayName: SOPS Tenant
         kind: SopsTenant
         name: sopstenants.sops.stakater.com
+        resources:
+          - kind: Secret
+            name: ""
+            version: v1
+        specDescriptors:
+          - description: GenerateKey generates a post-quantum age key when the key Secret does not exist.
+            displayName: Generate key
+            path: generateKey
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:booleanSwitch
+        statusDescriptors:
+          - displayName: Conditions
+            path: conditions
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes.conditions
+          - displayName: Observed generation
+            path: observedGeneration
+          - description: UsedBy is the number of SopsSecrets referencing this tenant.
+            displayName: Used by
+            path: usedBy
         version: v1alpha1
   description: |
     SOPS Operator turns SOPS-encrypted `SopsSecret` resources committed to Git into Kubernetes Secrets.

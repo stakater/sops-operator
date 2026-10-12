@@ -25,17 +25,21 @@ import (
 type SopsTenantSpec struct {
 	// GenerateKey generates a post-quantum age key when the key Secret does not exist.
 	// +kubebuilder:default=true
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Generate key",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
 	// +optional
 	GenerateKey *bool `json:"generateKey,omitempty"`
 }
 
 // SopsTenantStatus reports the state of the tenant key.
 type SopsTenantStatus struct {
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Observed generation"
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// UsedBy is the number of SopsSecrets referencing this tenant.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Used by"
 	// +optional
 	UsedBy int32 `json:"usedBy,omitempty"`
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions",xDescriptors={"urn:alm:descriptor:io.kubernetes.conditions"}
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -48,6 +52,7 @@ type SopsTenantStatus struct {
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Used By",type=integer,JSONPath=`.status.usedBy`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +operator-sdk:csv:customresourcedefinitions:displayName="SOPS Tenant",resources={{Secret,v1,""}}
 
 // SopsTenant is a tenant key used to decrypt SopsSecrets.
 type SopsTenant struct {
