@@ -26,6 +26,7 @@ import (
 )
 
 // Use case: the operator restarts (upgrade, node drain, crash) while SopsSecrets exist.
+// Not parallel: Go runs it before the parallel tests start, so the restart disturbs no other test.
 func TestOperatorRestart(t *testing.T) {
 	t.Run("shall resume after a restart without reporting Conflict", func(t *testing.T) {
 		prod := namespace(t, "e2e-restart-prod")

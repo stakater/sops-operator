@@ -29,7 +29,9 @@ import (
 
 // Use case: Secrets written by the operator stay as declared even when someone deletes or edits them.
 func TestSelfHealing(t *testing.T) {
+	t.Parallel()
 	t.Run("shall recreate a deleted Secret", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-heal-deleted-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-heal-deleted-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
@@ -50,6 +52,7 @@ func TestSelfHealing(t *testing.T) {
 	})
 
 	t.Run("shall restore a modified Secret", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-heal-modified-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-heal-modified-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{

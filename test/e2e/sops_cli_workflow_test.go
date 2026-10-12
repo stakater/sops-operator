@@ -28,7 +28,9 @@ import (
 // Use case: a developer encrypts with the sops CLI exactly as documented (DESIGN.md §8.2) — the repo's
 // .sops.yaml, yq for the scope and key order, then `sops encrypt` — and the GitOps tool applies the file.
 func TestSopsCLIWorkflow(t *testing.T) {
+	t.Parallel()
 	t.Run("shall decrypt a file encrypted with the sops CLI", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-cli-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-cli-tenant", prod)
 

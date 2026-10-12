@@ -25,7 +25,9 @@ import (
 
 // Use case: a developer removes a SopsSecret from Git and the GitOps tool prunes it.
 func TestSecretDeletion(t *testing.T) {
+	t.Parallel()
 	t.Run("shall delete the Secret with the SopsSecret", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-remove-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-remove-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
@@ -41,6 +43,7 @@ func TestSecretDeletion(t *testing.T) {
 	})
 
 	t.Run("shall keep the Secret when deletionPolicy is Retain", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-retain-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-retain-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{

@@ -27,7 +27,9 @@ import (
 
 // Use case: a tenant admin creates a SopsTenant after the cluster admin onboarded the tenant (DESIGN.md §8.1).
 func TestTenantOnboarding(t *testing.T) {
+	t.Parallel()
 	t.Run("shall generate a post-quantum key when onboarded", func(t *testing.T) {
+		t.Parallel()
 		tenantNS, recipient := onboardedTenant(t, "e2e-onboard-ready")
 		if !strings.HasPrefix(recipient, "age1pq1") {
 			t.Fatal("generated key is not post-quantum")
@@ -39,6 +41,7 @@ func TestTenantOnboarding(t *testing.T) {
 	})
 
 	t.Run("shall report AccessDenied until onboarded", func(t *testing.T) {
+		t.Parallel()
 		ns := namespace(t, "e2e-onboard-missing")
 		apply(t, render(t, "sopstenant.yaml", map[string]any{"Name": tenantName, "Namespace": ns}))
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: ns}}

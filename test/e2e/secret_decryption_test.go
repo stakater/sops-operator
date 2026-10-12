@@ -25,7 +25,9 @@ import (
 
 // Use case: a developer commits an encrypted SopsSecret and the application gets a Secret (DESIGN.md §8.2).
 func TestSecretDecryption(t *testing.T) {
+	t.Parallel()
 	t.Run("shall decrypt into a Secret", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-deliver-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-deliver-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
@@ -44,6 +46,7 @@ func TestSecretDecryption(t *testing.T) {
 	})
 
 	t.Run("shall update the Secret when the SopsSecret changes", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-change-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-change-tenant", prod)
 		secret := sopsSecret{

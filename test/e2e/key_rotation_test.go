@@ -31,6 +31,7 @@ import (
 // Use case: a tenant admin rotates the tenant key (DESIGN.md §8.3): add a new primary key, re-encrypt
 // files, then remove the old key.
 func TestKeyRotation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	prod := namespace(t, "e2e-rotate-prod")
 	tenantNS, oldRecipient := onboardedTenant(t, "e2e-rotate-tenant", prod)

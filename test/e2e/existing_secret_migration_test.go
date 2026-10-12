@@ -24,7 +24,9 @@ import (
 
 // Use case: a team moves an existing Secret to a SopsSecret (DESIGN.md §8.4).
 func TestExistingSecretMigration(t *testing.T) {
+	t.Parallel()
 	t.Run("shall not overwrite a Secret it did not create", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-migrate-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-migrate-tenant", prod)
 		apply(t, render(t, "secret.yaml", map[string]any{"Name": "db-creds", "Namespace": prod}))

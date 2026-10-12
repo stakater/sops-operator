@@ -29,6 +29,7 @@ import (
 
 // Use case: secrets stay inside the namespaces the cluster admin granted to their tenant (DESIGN.md §7.1).
 func TestNamespaceIsolation(t *testing.T) {
+	t.Parallel()
 	prod := namespace(t, "e2e-isolate-prod")
 	dev := namespace(t, "e2e-isolate-dev")
 	other := namespace(t, "e2e-isolate-other")
@@ -48,6 +49,7 @@ func TestNamespaceIsolation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			tc.secret.TenantNamespace, tc.secret.StringData = tenantNS, map[string]string{"password": password}
 			s := createSopsSecret(t, recipient, tc.secret)
 			waitForReason(t, s, tc.reason)

@@ -23,6 +23,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"text/template"
 	"time"
@@ -262,7 +263,10 @@ func poll(t *testing.T, what string, cond func() (bool, error), detail ...func()
 }
 
 // usedGolden records the golden files compared in this run, to find obsolete ones.
-var usedGolden = map[string]bool{}
+var (
+	usedGoldenMu sync.Mutex
+	usedGolden   = map[string]bool{}
+)
 
 // assertGolden compares obj, normalized by test/snapshot, with
 // testdata/<test>/<kind>-<label>.yaml. Record or update the files with `make test-e2e UPDATE_GOLDEN=true`.
@@ -278,6 +282,8 @@ func assertGolden(t *testing.T, obj client.Object, label string) {
 	}
 	file := strings.ToLower(gvk.Kind) + "-" + strings.ReplaceAll(strings.ToLower(label), " ", "-") + ".yaml"
 	name := filepath.Join(t.Name(), file)
+	usedGoldenMu.Lock()
 	usedGolden[name] = true
+	usedGoldenMu.Unlock()
 	golden.Assert(t, string(out), name)
 }

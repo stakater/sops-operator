@@ -28,7 +28,9 @@ import (
 // Use case: the cluster admin revokes a tenant's grants (DESIGN.md §6.5); the operator stops acting
 // on the next resync.
 func TestAccessRevocation(t *testing.T) {
+	t.Parallel()
 	t.Run("shall report AccessDenied after the namespace grant is removed", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-revoke-ns-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-revoke-ns-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
@@ -44,6 +46,7 @@ func TestAccessRevocation(t *testing.T) {
 	})
 
 	t.Run("shall report TenantNotReady after the key grant is removed", func(t *testing.T) {
+		t.Parallel()
 		prod := namespace(t, "e2e-revoke-key-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-revoke-key-tenant", prod)
 		s := createSopsSecret(t, recipient, sopsSecret{
