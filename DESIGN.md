@@ -608,6 +608,15 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   can be maintained. `make catalog-render` renders every bundle the channels list (published ones from
   `ghcr.io/stakater/sops-operator-bundle:vX.Y.Z`) into `catalog/release/index.yaml` and validates it; a version
   listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
+- **Publishing** (`.github/workflows/push.yaml`): `catalog/channels.yaml` is the only source of truth. A push to
+  `main` that does not change `catalog/` publishes nothing. When it does, `hack/release-plan.sh` finds the one listed
+  version whose bundle is not published yet; the workflow builds the operator image for `linux/amd64` and
+  `linux/arm64`, the bundle referencing the operator by digest, and the catalog, tags them `vX.Y.Z`, attaches SBOM
+  and provenance, signs them with cosign (keyless, GitHub OIDC), verifies the signatures and that the images can
+  be pulled anonymously, then creates the git tag and GitHub release. When every listed version is already
+  published (e.g. promoting a version from `alpha` to `stable`), only the catalog is republished, tagged with the
+  highest listed version; a published operator or bundle version is never overwritten. More than one unpublished
+  version, or a registry that cannot be read, fails the release.
 - **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
   `RESYNC_INTERVAL` (Go duration, default `10m`). An invalid value stops the operator at startup.
 - **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** with the
@@ -636,8 +645,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
   (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request code. Actions are
-  pinned by commit SHA and kept current by Dependabot. Push and release workflows (signing, SBOM, bundle and catalog)
-  follow in plan 3.
+  pinned by commit SHA and kept current by Dependabot. A `push` workflow on `main` publishes
+  releases (below).
 - **Conventions** (from Stakater operators): project/module name `sops-operator`; images
   `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` tagged `vX.Y.Z`; Makefile variables `VERSION`,
   `OPERATOR_NAME`, `DOCKER_REPO_BASE`, `CATALOG_DIR_PATH`; file-based catalog in `catalog/`; CSV provider
@@ -692,6 +701,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
 | D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
 | D43 | OLM e2e installs the pull request's bundle from a catalog that lists only that bundle, through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config) as a fresh install, independent of which versions `channels.yaml` promotes, and works with kind's standard local registry. The promotion graph is tested by `make test-catalog`. |
+| D44 | A push to `main` publishes only what `catalog/channels.yaml` lists, and only when `catalog/` changes; the version comes from the channels file, not from git tags or the Makefile | Version rollout is a reviewed change to one file; no image is pushed for unreleased code and no published version is overwritten (Hestia's flow pushes images on every merge under the next version's tag). |
 
 ---
 

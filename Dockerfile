@@ -24,12 +24,13 @@ COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o manager cmd/main.go
 
-# Image from a binary built outside Docker, e.g. in CI with a warm Go build cache:
-#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager cmd/main.go
+# Image from binaries built outside Docker, e.g. in CI with a warm Go build cache, one per architecture:
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager-amd64 cmd/main.go
 #   docker build --target prebuilt .
 FROM gcr.io/distroless/static:nonroot AS prebuilt
+ARG TARGETARCH
 WORKDIR /
-COPY dist/manager .
+COPY dist/manager-${TARGETARCH} ./manager
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

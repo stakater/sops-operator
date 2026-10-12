@@ -389,7 +389,6 @@ vulnerability, open a private
 ## Roadmap
 
 - Key backends beyond Kubernetes Secrets (OpenBao, cloud KMS) behind the same API.
-- Release automation with signed images, SBOM and provenance.
 
 ## Development
 
@@ -402,6 +401,7 @@ make lint
 make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
 make scorecard          # operator-sdk scorecard against the bundle
 make test-catalog       # catalog promotion tests
+make test-release-plan  # what a push to main publishes
 ```
 
 Install from source on a cluster of your choice:
@@ -413,8 +413,10 @@ bin/kustomize build config/default | sed 's#controller:latest#<registry>/sops-op
 kubectl --context <context> apply --server-side -k config/tenant-rbac
 ```
 
-Releases are promoted through channels by editing [`catalog/channels.yaml`](catalog/channels.yaml) in a pull
-request; the catalog is rendered from every bundle the channels list.
+Releases are made by editing [`catalog/channels.yaml`](catalog/channels.yaml) in a pull request. When it is
+merged, the push workflow publishes the newly listed version (operator, bundle and catalog images for amd64 and
+arm64, signed with cosign, with SBOM and provenance) and creates the GitHub release. Promoting a published
+version to another channel republishes only the catalog. Merges that do not change `catalog/` publish nothing.
 
 ## Contributing
 

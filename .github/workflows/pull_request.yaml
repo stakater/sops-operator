@@ -48,8 +48,8 @@ jobs:
           go mod tidy
           git diff --exit-code
 
-      - name: Test catalog promotion
-        run: make test-catalog
+      - name: Test catalog promotion and release plan
+        run: make test-catalog test-release-plan
 
       - name: Lint
         run: make lint
@@ -91,7 +91,7 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager cmd/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager-amd64 cmd/main.go
           docker build --target prebuilt \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${HEAD_SHA}" \
