@@ -169,7 +169,8 @@ func installWithOLM() error {
 		return run(stdin, "kubectl", append([]string{"--context", kubeContext}, args...)...)
 	}
 	// A rerun replaces the previous install so the new catalog image is used.
-	if _, err := kubectl("", "delete", "namespace", operatorNamespace, "--ignore-not-found", "--wait", "--timeout=180s"); err != nil {
+	if _, err := kubectl("", "delete", "namespace", operatorNamespace,
+		"--ignore-not-found", "--wait", "--timeout=180s"); err != nil {
 		return err
 	}
 	if err := deletePreviousClusterRBAC(context.Background()); err != nil {
@@ -189,7 +190,8 @@ func installWithOLM() error {
 		return err
 	}
 	for _, args := range [][]string{
-		{"-n", operatorNamespace, "wait", "subscription/sops-operator", "--for=jsonpath={.status.state}=AtLatestKnown", "--timeout=300s"},
+		{"-n", operatorNamespace, "wait", "subscription/sops-operator",
+			"--for=jsonpath={.status.state}=AtLatestKnown", "--timeout=300s"},
 		{"-n", operatorNamespace, "wait", "csv", "--all", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=300s"},
 		{"-n", operatorNamespace, "rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"},
 	} {
@@ -269,7 +271,7 @@ func deletePreviousClusterRBAC(ctx context.Context) error {
 	if err := k8s.List(ctx, &bindings, managed); err != nil {
 		return err
 	}
-	var owned []client.Object
+	owned := make([]client.Object, 0, len(roles.Items)+len(bindings.Items))
 	for i := range roles.Items {
 		owned = append(owned, &roles.Items[i])
 	}
