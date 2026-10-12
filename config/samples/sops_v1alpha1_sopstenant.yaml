@@ -1,7 +1,7 @@
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
 metadata:
-  name: solar
-  namespace: solar-system
+  name: my-team
+  namespace: my-team-sops
 spec:
   generateKey: true

@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
@@ -67,6 +69,28 @@ func TestTenantKey(t *testing.T) {
 		}
 		if len(key.OwnerReferences) != 0 {
 			t.Fatal("key Secret must not have an ownerReference")
+		}
+	})
+
+	t.Run("shall generate a key for the console sample without a key Secret", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		b, err := os.ReadFile("../../config/samples/sops_v1alpha1_sopstenant.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tenant sopsv1alpha1.SopsTenant
+		if err := yaml.Unmarshal(b, &tenant); err != nil {
+			t.Fatal(err)
+		}
+		tenant.Namespace = ns
+		if err := env.Admin.Create(ctx, &tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, &tenant, sopsv1alpha1.ReasonKeyGenerated)
+		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(&tenant), &corev1.Secret{}); err != nil {
+			t.Fatalf("generated key Secret: %v", err)
 		}
 	})
 

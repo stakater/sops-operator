@@ -326,6 +326,10 @@ OPERATOR_SDK = $(shell which operator-sdk)
 endif
 endif
 
+.PHONY: samples
+samples: sops yq ## Regenerate the SopsSecret sample (alm-example) encrypted for a throwaway key.
+	SOPS=$(SOPS) YQ=$(YQ) hack/generate-samples.sh
+
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
