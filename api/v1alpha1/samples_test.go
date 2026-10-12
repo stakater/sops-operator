@@ -43,29 +43,47 @@ func TestConfigSamples(t *testing.T) {
 		Resources []string `json:"resources"`
 	}
 	readYAML(t, filepath.Join(samplesDir, "kustomization.yaml"), &kustomization)
-	samples := map[string]string{}
+	// samples lists the sample files of each kind in kustomization order; the console pre-fills
+	// its form with the first and offers the others under "Samples".
+	samples := map[string][]string{}
 	for _, file := range kustomization.Resources {
 		var typeMeta struct {
 			Kind string `json:"kind"`
 		}
 		readYAML(t, filepath.Join(samplesDir, file), &typeMeta)
-		samples[typeMeta.Kind] = filepath.Join(samplesDir, file)
+		samples[typeMeta.Kind] = append(samples[typeMeta.Kind], filepath.Join(samplesDir, file))
 	}
 
 	t.Run("shall provide a sample for every kind", func(t *testing.T) {
 		for _, kind := range []string{"SopsTenant", "SopsSecret"} {
-			if samples[kind] == "" {
+			if len(samples[kind]) == 0 {
 				t.Errorf("config/samples has no %s", kind)
 			}
 		}
 	})
 
-	t.Run("shall accept the SopsTenant sample", func(t *testing.T) {
+	t.Run("shall default to a SopsTenant that generates its key", func(t *testing.T) {
 		var tenant sopsv1alpha1.SopsTenant
 		readYAML(t, requireSample(t, samples, "SopsTenant"), &tenant)
 		createInNewNamespace(t, &tenant)
 		if tenant.Spec.GenerateKey == nil || !*tenant.Spec.GenerateKey {
-			t.Error("the sample must show generateKey: true")
+			t.Error("the default sample must show generateKey: true")
+		}
+	})
+
+	t.Run("shall offer a SopsTenant for an existing key Secret", func(t *testing.T) {
+		found := false
+		for _, file := range samples["SopsTenant"] {
+			var tenant sopsv1alpha1.SopsTenant
+			readYAML(t, file, &tenant)
+			if tenant.Spec.GenerateKey == nil || *tenant.Spec.GenerateKey {
+				continue
+			}
+			found = true
+			createInNewNamespace(t, &tenant)
+		}
+		if !found {
+			t.Error("config/samples has no SopsTenant with generateKey: false")
 		}
 	})
 
@@ -140,12 +158,13 @@ func readYAML(t *testing.T, path string, into any) {
 	}
 }
 
-func requireSample(t *testing.T, samples map[string]string, kind string) string {
+// requireSample returns the default (first) sample of kind.
+func requireSample(t *testing.T, samples map[string][]string, kind string) string {
 	t.Helper()
-	if samples[kind] == "" {
+	if len(samples[kind]) == 0 {
 		t.Fatalf("config/samples has no %s", kind)
 	}
-	return samples[kind]
+	return samples[kind][0]
 }
 
 // createInNewNamespace creates obj the way the console does: in the user's current project.

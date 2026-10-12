@@ -1,0 +1,7 @@
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsTenant
+metadata:
+  name: my-team-existing-key
+  namespace: my-team-sops
+spec:
+  generateKey: false

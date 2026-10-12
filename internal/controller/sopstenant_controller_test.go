@@ -73,25 +73,42 @@ func TestTenantKey(t *testing.T) {
 	})
 
 	t.Run("shall generate a key for the console sample without a key Secret", func(t *testing.T) {
-		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns)
-		b, err := os.ReadFile("../../config/samples/sops_v1alpha1_sopstenant.yaml")
+		tenant := createSample(t, "sops_v1alpha1_sopstenant.yaml", ns)
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
+		if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), &corev1.Secret{}); err != nil {
+			t.Fatalf("generated key Secret: %v", err)
+		}
+	})
+
+	t.Run("shall load the existing key for the console sample", func(t *testing.T) {
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		keyFile, _, err := crypto.GenerateKeyFile(time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		var tenant sopsv1alpha1.SopsTenant
-		if err := yaml.Unmarshal(b, &tenant); err != nil {
+		key := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-team-existing-key", Namespace: ns},
+			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
+		}
+		if err := env.Admin.Create(context.Background(), key); err != nil {
 			t.Fatal(err)
 		}
-		tenant.Namespace = ns
-		if err := env.Admin.Create(ctx, &tenant); err != nil {
-			t.Fatal(err)
+		tenant := createSample(t, "sops_v1alpha1_sopstenant_existing_key.yaml", ns)
+		if tenant.Name != key.Name {
+			t.Fatalf("the sample names tenant %q; its key Secret must have the same name", tenant.Name)
 		}
-		eventuallyReason(t, &tenant, sopsv1alpha1.ReasonKeyGenerated)
-		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(&tenant), &corev1.Secret{}); err != nil {
-			t.Fatalf("generated key Secret: %v", err)
-		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		assertUnchanged(t, key)
+	})
+
+	t.Run("shall not generate a key for the existing-key sample", func(t *testing.T) {
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		tenant := createSample(t, "sops_v1alpha1_sopstenant_existing_key.yaml", ns)
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
 	})
 
 	t.Run("shall load an existing key without changing it", func(t *testing.T) {
@@ -202,4 +219,23 @@ func TestTenantKey(t *testing.T) {
 			g.Expect(tenant.Status.UsedBy).To(Equal(int32(2)))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
 	})
+}
+
+// createSample creates the SopsTenant sample file from config/samples in ns, as the console does
+// in the user's current project.
+func createSample(t *testing.T, file, ns string) *sopsv1alpha1.SopsTenant {
+	t.Helper()
+	b, err := os.ReadFile("../../config/samples/" + file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tenant sopsv1alpha1.SopsTenant
+	if err := yaml.Unmarshal(b, &tenant); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Namespace = ns
+	if err := env.Admin.Create(context.Background(), &tenant); err != nil {
+		t.Fatal(err)
+	}
+	return &tenant
 }
