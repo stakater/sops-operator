@@ -133,6 +133,25 @@ setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 			$(KIND) create cluster --name $(KIND_CLUSTER) --image $(KIND_NODE_IMAGE) ;; \
 	esac
 
+KIND_CLUSTER_OLM ?= sops-operator-test-e2e-olm
+OLM_VERSION ?= 0.46.0
+REGISTRY_IMAGE ?= registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+# Local registry for OLM e2e images; its own name and port, so other projects' kind registries are untouched.
+REGISTRY_NAME ?= sops-operator-registry
+REGISTRY_PORT ?= 5011
+OLM_KUBECONFIG = $(LOCALBIN)/kubeconfig-$(KIND_CLUSTER_OLM)
+
+.PHONY: setup-test-e2e-olm
+setup-test-e2e-olm: kind operator-sdk ## Kind cluster with a local registry (localhost:$(REGISTRY_PORT)) and OLM, for OLM e2e tests and scorecard.
+	hack/kind-with-registry.sh $(KIND) $(KIND_CLUSTER_OLM) $(KIND_NODE_IMAGE) $(REGISTRY_IMAGE) $(REGISTRY_NAME) $(REGISTRY_PORT)
+	$(KIND) get kubeconfig --name $(KIND_CLUSTER_OLM) > $(OLM_KUBECONFIG)
+	KUBECONFIG=$(OLM_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
+		|| KUBECONFIG=$(OLM_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
+
+.PHONY: cleanup-test-e2e-olm
+cleanup-test-e2e-olm: kind ## Tear down the OLM Kind cluster (the registry container is kept).
+	$(KIND) delete cluster --name $(KIND_CLUSTER_OLM)
+
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests kustomize sops yq ## Run the e2e tests on the Kind cluster (kept for reruns; remove with cleanup-test-e2e).
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) KUSTOMIZE=$(KUSTOMIZE) SOPS=$(SOPS) YQ=$(YQ) E2E_IMG=$(E2E_IMG) \
