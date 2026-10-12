@@ -27,11 +27,8 @@ BUNDLE_DEFAULT_CHANNEL := --default-channel=$(DEFAULT_CHANNEL)
 endif
 BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 
-# IMAGE_TAG_BASE defines the docker.io namespace and part of the image name for remote images.
-# This variable is used to construct full image tags for bundle and catalog images.
-#
-# For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# stakater.com/sops-operator-bundle:$VERSION and stakater.com/sops-operator-catalog:$VERSION.
+# IMAGE_TAG_BASE is the registry path of the operator image; the bundle and catalog images add -bundle and
+# -catalog, e.g. ghcr.io/stakater/sops-operator-bundle:v$(VERSION).
 IMAGE_TAG_BASE ?= $(DOCKER_REPO_BASE)/$(OPERATOR_NAME)
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
@@ -49,8 +46,6 @@ ifeq ($(USE_IMAGE_DIGESTS), true)
 	BUNDLE_GEN_FLAGS += --use-image-digests
 endif
 
-# Set the Operator SDK version to use. By default, what is installed on the system is used.
-# This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.3
 # Image URL to use all building/pushing image targets
 IMG ?= $(IMAGE_TAG_BASE):v$(VERSION)
@@ -185,13 +180,6 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
-.PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
-
-# If you wish to build the manager image targeting other platforms you can use the --platform flag.
-# (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
-# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
@@ -199,52 +187,6 @@ docker-build: ## Build docker image with the manager.
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
-
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
-.PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name sops-operator-builder
-	$(CONTAINER_TOOL) buildx use sops-operator-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm sops-operator-builder
-	rm Dockerfile.cross
-
-.PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
-	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
-
-##@ Deployment
-
-ifndef ignore-not-found
-  ignore-not-found = false
-endif
-
-.PHONY: install
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
-
-.PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
-
-.PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
-
-.PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 
@@ -254,7 +196,6 @@ $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
 ## Tool Binaries
-KUBECTL ?= kubectl
 KIND ?= $(LOCALBIN)/kind
 SOPS ?= $(LOCALBIN)/sops
 YQ ?= $(LOCALBIN)/yq
@@ -334,22 +275,20 @@ mv $(1) $(1)-$(3) ;\
 ln -sf $(1)-$(3) $(1)
 endef
 
-.PHONY: operator-sdk
+# operator-sdk and opm come from GitHub releases, verified against the release checksums.
 OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
-operator-sdk: ## Download operator-sdk locally if necessary.
-ifeq (,$(wildcard $(OPERATOR_SDK)))
-ifeq (, $(shell which operator-sdk 2>/dev/null))
-	@{ \
-	set -e ;\
-	mkdir -p $(dir $(OPERATOR_SDK)) ;\
-	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$${OS}_$${ARCH} ;\
-	chmod +x $(OPERATOR_SDK) ;\
-	}
-else
-OPERATOR_SDK = $(shell which operator-sdk)
-endif
-endif
+OPM ?= $(LOCALBIN)/opm
+OPM_VERSION ?= v1.74.0
+BOOTSTRAP_STAMP = $(LOCALBIN)/.bootstrap-$(OPERATOR_SDK_VERSION)-$(OPM_VERSION)
+
+.PHONY: operator-sdk opm
+operator-sdk: $(BOOTSTRAP_STAMP) ## Install the pinned operator-sdk into bin/ (checksum-verified, with opm).
+opm: $(BOOTSTRAP_STAMP) ## Install the pinned opm into bin/ (checksum-verified, with operator-sdk).
+
+$(BOOTSTRAP_STAMP):
+	mkdir -p $(LOCALBIN)
+	BIN_DIR=$(LOCALBIN) OPERATOR_SDK_VERSION=$(OPERATOR_SDK_VERSION) OPM_VERSION=$(OPM_VERSION) hack/bootstrap-tools.sh
+	touch $@
 
 .PHONY: samples
 samples: sops yq ## Regenerate the SopsSecret sample (alm-example) encrypted for a throwaway key.
@@ -387,25 +326,8 @@ bundle-build: ## Build the bundle image.
 bundle-push: ## Push the bundle image.
 	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
 
-.PHONY: opm
-OPM_VERSION ?= v1.74.0
-OPM = $(LOCALBIN)/opm
-opm: ## Download opm locally if necessary.
-ifeq (,$(wildcard $(OPM)))
-ifeq (,$(shell which opm 2>/dev/null))
-	@{ \
-	set -e ;\
-	mkdir -p $(dir $(OPM)) ;\
-	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$${OS}-$${ARCH}-opm ;\
-	chmod +x $(OPM) ;\
-	}
-else
-OPM = $(shell which opm)
-endif
-endif
 
-# The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:v0.2.0).
+# The catalog image catalog-build tags.
 CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 
 # Published bundle images; channel entries other than VERSION are rendered from here.

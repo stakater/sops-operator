@@ -6,7 +6,7 @@ OPERATOR_SDK_VERSION="${OPERATOR_SDK_VERSION:-v1.42.3}"
 OPM_VERSION="${OPM_VERSION:-v1.74.0}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_DIR="${ROOT}/bin"
+BIN_DIR="${BIN_DIR:-${ROOT}/bin}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
