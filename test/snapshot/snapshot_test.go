@@ -113,7 +113,7 @@ func TestSnapshotNormalization(t *testing.T) {
 		out := render(t, &sopsv1alpha1.SopsSecret{
 			ObjectMeta: meta("db"),
 			Spec: sopsv1alpha1.SopsSecretSpec{
-				TenantRef: sopsv1alpha1.TenantReference{Name: "solar", Namespace: "solar-system"},
+				TenantRef: sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
 				Scope:     enc, StringData: map[string]string{"password": enc}, Data: map[string]string{"cert": enc},
 			},
 			Sops: sopsv1alpha1.SopsMetadata{
@@ -123,13 +123,13 @@ func TestSnapshotNormalization(t *testing.T) {
 			Status: sopsv1alpha1.SopsSecretStatus{SecretUID: "77aa"},
 		})
 		mustContain(t, out, "scope: <encrypted>", "sops: <encrypted>", "password: <redacted>", "cert: <redacted>",
-			"secretUID: <uid>", "name: solar")
+			"secretUID: <uid>", "name: my-team")
 		mustNotContain(t, out, "ENC[", "age1pq1abc", "BEGIN AGE", "77aa")
 	})
 
 	t.Run("shall replace valid condition timestamps", func(t *testing.T) {
 		out := render(t, &sopsv1alpha1.SopsTenant{
-			ObjectMeta: meta("solar"),
+			ObjectMeta: meta("my-team"),
 			Status: sopsv1alpha1.SopsTenantStatus{Conditions: []metav1.Condition{{
 				Type: "Ready", Status: metav1.ConditionTrue, Reason: "KeyLoaded", Message: "key loaded",
 				LastTransitionTime: metav1.NewTime(time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)),
@@ -140,7 +140,7 @@ func TestSnapshotNormalization(t *testing.T) {
 
 	t.Run("shall fail when a condition has no timestamp", func(t *testing.T) {
 		_, err := snapshot.YAML(&sopsv1alpha1.SopsTenant{
-			ObjectMeta: meta("solar"),
+			ObjectMeta: meta("my-team"),
 			Status: sopsv1alpha1.SopsTenantStatus{
 				Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}},
 			},

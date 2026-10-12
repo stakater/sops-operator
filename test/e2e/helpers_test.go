@@ -48,7 +48,7 @@ import (
 
 const (
 	waitTimeout = 2 * time.Minute
-	tenantName  = "solar"
+	tenantName  = "my-team"
 	// password is the plaintext value the use cases encrypt.
 	password = "hunter2"
 )

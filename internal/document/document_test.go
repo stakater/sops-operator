@@ -30,7 +30,7 @@ func encryptedSopsSecret(t *testing.T, spec map[string]any) (*sopsv1alpha1.SopsS
 	plain, err := json.Marshal(map[string]any{
 		"apiVersion": "sops.stakater.com/v1alpha1",
 		"kind":       "SopsSecret",
-		"metadata":   map[string]any{"name": "db-creds", "namespace": "solar-prod"},
+		"metadata":   map[string]any{"name": "db-creds", "namespace": "my-app-prod"},
 		"spec":       spec,
 	})
 	if err != nil {
@@ -62,7 +62,7 @@ func decrypt(t *testing.T, s *sopsv1alpha1.SopsSecret, ks *crypto.KeySet) (*docu
 	if err != nil {
 		t.Fatalf("Canonical: %v", err)
 	}
-	plain, err := crypto.Decrypt(doc, ks, document.ScopeFor("solar-prod", "db-creds"))
+	plain, err := crypto.Decrypt(doc, ks, document.ScopeFor("my-app-prod", "db-creds"))
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -72,8 +72,8 @@ func decrypt(t *testing.T, s *sopsv1alpha1.SopsSecret, ks *crypto.KeySet) (*docu
 func TestSopsSecretDocument(t *testing.T) {
 	t.Run("shall decrypt after a round trip through the Kubernetes API", func(t *testing.T) {
 		s, ks := encryptedSopsSecret(t, map[string]any{
-			"tenantRef":  map[string]any{"name": "solar", "namespace": "solar-system"},
-			"scope":      "solar-prod/db-creds",
+			"tenantRef":  map[string]any{"name": "my-team", "namespace": "my-team-sops"},
+			"scope":      "my-app-prod/db-creds",
 			"data":       map[string]any{"cert": "AAEC"}, // bytes 0x00 0x01 0x02
 			"stringData": map[string]any{"password": "hunter2"},
 		})
@@ -81,7 +81,7 @@ func TestSopsSecretDocument(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParsePlain: %v", err)
 		}
-		if p.Scope != document.ScopeFor("solar-prod", "db-creds") {
+		if p.Scope != document.ScopeFor("my-app-prod", "db-creds") {
 			t.Fatalf("scope = %q", p.Scope)
 		}
 		if string(p.Data["password"]) != "hunter2" || string(p.Data["cert"]) != "\x00\x01\x02" {
@@ -92,8 +92,8 @@ func TestSopsSecretDocument(t *testing.T) {
 	t.Run("shall keep keys in byte order", func(t *testing.T) {
 		// Natural ordering (digit runs, punctuation first) differs from byte order for these keys.
 		s, ks := encryptedSopsSecret(t, map[string]any{
-			"tenantRef": map[string]any{"name": "solar", "namespace": "solar-system"},
-			"scope":     "solar-prod/db-creds",
+			"tenantRef": map[string]any{"name": "my-team", "namespace": "my-team-sops"},
+			"scope":     "my-app-prod/db-creds",
 			"stringData": map[string]any{
 				"key2": "a", "key10": "b", "APIKEY": "c", "API_KEY": "d", "Z": "e", "_a": "f",
 				"PG_HOST": "g", "PGPASSWORD": "h",
@@ -113,8 +113,8 @@ func TestSopsSecretDocument(t *testing.T) {
 		for name, value := range map[string]any{"port": 5432, "pin": 0o123, "enabled": true} {
 			t.Run(name, func(t *testing.T) {
 				s, ks := encryptedSopsSecret(t, map[string]any{
-					"tenantRef":  map[string]any{"name": "solar", "namespace": "solar-system"},
-					"scope":      "solar-prod/db-creds",
+					"tenantRef":  map[string]any{"name": "my-team", "namespace": "my-team-sops"},
+					"scope":      "my-app-prod/db-creds",
 					"stringData": map[string]any{name: value},
 				})
 				_, err := decrypt(t, s, ks)

@@ -19,7 +19,7 @@ import (
 	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 )
 
-const tenantName = "solar"
+const tenantName = "my-team"
 
 // readyCondition returns the Ready condition of a SopsTenant or SopsSecret, or nil.
 func readyCondition(obj client.Object) *metav1.Condition {

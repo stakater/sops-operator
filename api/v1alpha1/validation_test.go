@@ -34,7 +34,7 @@ func validSopsSecret(ns string) *sopsv1alpha1.SopsSecret {
 	return &sopsv1alpha1.SopsSecret{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "s-", Namespace: ns},
 		Spec: sopsv1alpha1.SopsSecretSpec{
-			TenantRef:  sopsv1alpha1.TenantReference{Name: "solar", Namespace: "solar-system"},
+			TenantRef:  sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
 			Scope:      enc,
 			StringData: map[string]string{"password": enc},
 		},
@@ -94,7 +94,7 @@ func TestDefaults(t *testing.T) {
 	})
 
 	t.Run("shall default generateKey to true", func(t *testing.T) {
-		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: "solar", Namespace: env.Namespace(t, "tenant")}}
+		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: "my-team", Namespace: env.Namespace(t, "tenant")}}
 		if err := env.Admin.Create(context.Background(), tenant); err != nil {
 			t.Fatal(err)
 		}

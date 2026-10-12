@@ -15,14 +15,14 @@ import (
 
 // sortedPlain is a plaintext document whose keys are already sorted, as required (D29).
 const sortedPlain = `spec:
-  scope: solar-prod/db-creds
+  scope: my-app-prod/db-creds
   stringData:
     a: one
     b: two
 `
 
 // wantScope is the scope of sortedPlain.
-const wantScope = "solar-prod/db-creds"
+const wantScope = "my-app-prod/db-creds"
 
 func newKeys(t *testing.T) *crypto.KeySet {
 	t.Helper()
@@ -78,7 +78,7 @@ func flipType(field, key string) func(m map[string]any) {
 }
 
 const leakPlain = `spec:
-  scope: solar-prod/db-creds
+  scope: my-app-prod/db-creds
   stringData:
     password: hunter2-SECRET
 `
@@ -109,7 +109,7 @@ func TestDecryption(t *testing.T) {
 		if err := yaml.Unmarshal(plain, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Spec.Scope != "solar-prod/db-creds" || got.Spec.StringData["a"] != "one" || got.Spec.StringData["b"] != "two" {
+		if got.Spec.Scope != "my-app-prod/db-creds" || got.Spec.StringData["a"] != "one" || got.Spec.StringData["b"] != "two" {
 			t.Fatal("decrypted values do not match the plaintext")
 		}
 	})
@@ -166,7 +166,7 @@ func TestDecryption(t *testing.T) {
 
 	t.Run("shall ask to sort keys when the MAC does not match", func(t *testing.T) {
 		ks := newKeys(t)
-		unsorted := "spec:\n  scope: solar-prod/db-creds\n  stringData:\n    b: two\n    a: one\n"
+		unsorted := "spec:\n  scope: my-app-prod/db-creds\n  stringData:\n    b: two\n    a: one\n"
 		doc := viaAPI(t, encrypt(t, unsorted, ks.Recipients[0]), nil)
 		_, err := crypto.Decrypt(doc, ks, wantScope)
 		if !errors.Is(err, crypto.ErrDecrypt) {
@@ -211,11 +211,11 @@ func TestDecryption(t *testing.T) {
 		ks := newKeys(t)
 		// A copied file with a tampered value must be rejected by scope, before the value is decrypted.
 		doc := viaAPI(t, encrypt(t, leakPlain, ks.Recipients[0]), flipType("stringData", "password"))
-		_, err := crypto.Decrypt(doc, ks, "solar-dev/db-creds")
+		_, err := crypto.Decrypt(doc, ks, "my-app-dev/db-creds")
 		if !errors.Is(err, crypto.ErrScopeMismatch) {
 			t.Fatalf("got %v, want ErrScopeMismatch", err)
 		}
-		if strings.Contains(err.Error(), "solar-prod") {
+		if strings.Contains(err.Error(), "my-app-prod") {
 			t.Fatalf("error reveals the decrypted scope: %q", err)
 		}
 	})
@@ -227,7 +227,7 @@ func TestDecryption(t *testing.T) {
 		if !errors.Is(err, crypto.ErrDecrypt) {
 			t.Fatalf("got %v, want ErrDecrypt", err)
 		}
-		if strings.Contains(err.Error(), "solar-prod") {
+		if strings.Contains(err.Error(), "my-app-prod") {
 			t.Fatalf("error leaks the scope plaintext: %q", err)
 		}
 	})

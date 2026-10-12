@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 
 func TestTenantIdentity(t *testing.T) {
 	t.Run("shall act as the sops ServiceAccount", func(t *testing.T) {
-		if got := identity.UserName("solar-system"); got != "system:serviceaccount:solar-system:sops" {
+		if got := identity.UserName("my-team-sops"); got != "system:serviceaccount:my-team-sops:sops" {
 			t.Fatalf("UserName = %q", got)
 		}
 	})
@@ -38,7 +38,7 @@ func TestTenantIdentity(t *testing.T) {
 	t.Run("shall read the key only when onboarded", func(t *testing.T) {
 		ctx := context.Background()
 		tenantNS := env.Namespace(t, "tenant")
-		key := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "solar", Namespace: tenantNS}}
+		key := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "my-team", Namespace: tenantNS}}
 		if err := env.Admin.Create(ctx, key); err != nil {
 			t.Fatal(err)
 		}

@@ -3,10 +3,10 @@ kind: SopsTenant
 metadata:
   creationTimestamp: <timestamp>
   generation: 1
-  name: solar
+  name: my-team
   namespace: e2e-onboard-missing
   resourceVersion: <resourceVersion>
-  uid: <uid:sopstenant/solar>
+  uid: <uid:sopstenant/my-team>
 spec:
   generateKey: true
 status:
