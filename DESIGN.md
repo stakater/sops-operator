@@ -98,7 +98,7 @@ Kubernetes API: SopsSecret ──► operator: authorize → load key → decryp
 | **Developer** | Human | `SopsSecret` files in Git and objects in the namespaces they work in. Encrypting with the public key. | Read keys or tenants; decrypt or edit existing files; target a namespace other than the `SopsSecret`'s own. |
 | **GitOps tool** (Argo CD, Flux, CI) | Machine | Applying the still-encrypted `SopsSecret` from Git to the cluster. | See plaintext or keys. |
 | **Operator** | Machine | Decrypting and writing output Secrets — only by impersonating a tenant identity. | Access any Secret with its own identity. |
-| **Tenant identity** (`solar-system:sops`) | Machine (ServiceAccount) | The permissions the cluster admin granted: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
+| **Tenant identity** (`my-team-sops:sops`) | Machine (ServiceAccount) | The permissions the cluster admin granted: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
 
 ### 3.2 Boundaries
 
@@ -120,13 +120,13 @@ flowchart TB
         OP["sops-operator<br/>no Secret permissions"]
     end
 
-    subgraph TNS["Namespace solar-system — controlled by tenant admin"]
-        TEN["SopsTenant solar"]
-        KEY[("Secret solar<br/>private key")]
+    subgraph TNS["Namespace my-team-sops — controlled by tenant admin"]
+        TEN["SopsTenant my-team"]
+        KEY[("Secret my-team<br/>private key")]
         SA["ServiceAccount sops<br/>tenant identity"]
     end
 
-    subgraph PROD["Namespace solar-prod — controlled by developers"]
+    subgraph PROD["Namespace my-app-prod — controlled by developers"]
         SS["SopsSecret db-creds"]
         OUT[("Secret db-creds<br/>plaintext")]
     end
@@ -172,8 +172,8 @@ flowchart TB
 | Boundary | Separates | Enforced by |
 |---|---|---|
 | Tenant ↔ tenant | Different keys, different tenant identities | Kubernetes RBAC: each tenant identity is granted only its own namespaces |
-| Key namespace ↔ consumer namespaces | Private keys never leave `solar-system`; developers have no access there | Kubernetes RBAC |
-| Namespace ↔ namespace within a tenant | Ciphertext for `solar-prod` cannot be used in `solar-dev` | Cryptography: encrypted `scope`, checked after decryption |
+| Key namespace ↔ consumer namespaces | Private keys never leave `my-team-sops`; developers have no access there | Kubernetes RBAC |
+| Namespace ↔ namespace within a tenant | Ciphertext for `my-app-prod` cannot be used in `my-app-dev` | Cryptography: encrypted `scope`, checked after decryption |
 | Git ↔ cluster | Only ciphertext in Git and in the GitOps tool | SOPS encryption |
 | Humans ↔ plaintext | Developers encrypt but cannot decrypt | Public-key cryptography |
 | Operator ↔ Secrets | No standing access; every access is made as a tenant identity | Kubernetes RBAC + impersonation |
@@ -192,9 +192,9 @@ sequenceDiagram
     participant OP as Operator
 
     Note over CA,OP: Onboarding (once per tenant)
-    CA->>API: ServiceAccount solar-system/sops + RoleBindings
-    TA->>API: SopsTenant solar
-    OP->>API: create Secret solar (as solar-system:sops)
+    CA->>API: ServiceAccount my-team-sops/sops + RoleBindings
+    TA->>API: SopsTenant my-team
+    OP->>API: create Secret my-team (as my-team-sops:sops)
     TA->>DEV: public key (.sops.yaml)
 
     Note over CA,OP: Every secret change
@@ -202,10 +202,10 @@ sequenceDiagram
     DEV->>GIT: commit ciphertext
     GO->>GIT: pull
     GO->>API: apply SopsSecret (encrypted)
-    OP->>API: SubjectAccessReview: may solar-system:sops write here?
-    OP->>API: read key (as solar-system:sops)
-    OP->>OP: verify recipient, MAC, scope; decrypt
-    OP->>API: apply Secret (as solar-system:sops)
+    OP->>API: SubjectAccessReview: may my-team-sops:sops write here?
+    OP->>API: read key (as my-team-sops:sops)
+    OP->>OP: check recipient, decrypt and check scope, then values and MAC
+    OP->>API: apply Secret (as my-team-sops:sops)
     OP->>API: status Ready / Decrypted
 ```
 
@@ -223,8 +223,8 @@ A tenant is a **key**. It does not list namespaces; access is granted by the clu
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
 metadata:
-  name: solar                    # key Secret: solar-system/solar
-  namespace: solar-system        # tenant namespace (dedicated; holds keys only)
+  name: my-team                  # key Secret: my-team-sops/my-team
+  namespace: my-team-sops        # tenant namespace (dedicated; holds keys only)
 spec:
   generateKey: true              # default; generates a post-quantum key if the key Secret is missing
 status:
@@ -252,8 +252,8 @@ Same name and namespace as the `SopsTenant`.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: solar
-  namespace: solar-system
+  name: my-team
+  namespace: my-team-sops
   labels:
     app.kubernetes.io/managed-by: sops-operator   # only if generated by the operator
 type: Opaque
@@ -283,15 +283,15 @@ One `SopsSecret` produces **one** Secret with the **same name** in the **same na
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsSecret
 metadata:
-  name: db-creds                     # → Secret solar-prod/db-creds
-  namespace: solar-prod
+  name: db-creds                     # → Secret my-app-prod/db-creds
+  namespace: my-app-prod
   annotations:
     sops.stakater.com/suspend: "true"     # optional; pauses reconciliation
 spec:
   tenantRef:
-    name: solar
-    namespace: solar-system
-  scope: ENC[AES256_GCM,...]         # encrypted; decrypts to "solar-prod/db-creds"
+    name: my-team
+    namespace: my-team-sops
+  scope: ENC[AES256_GCM,...]         # encrypted; decrypts to "my-app-prod/db-creds"
   deletionPolicy: Delete             # Delete (default) | Retain
   template:                          # optional; metadata for the output Secret
     metadata:
@@ -344,16 +344,16 @@ Behaviour:
 
 ### 5.1 Flow for a `SopsSecret` in namespace X
 
-1. Resolve `tenantRef` → `solar-system/solar`.
-2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:solar-system:sops` create Secrets in X?
+1. Resolve `tenantRef` → `my-team-sops/my-team`.
+2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:my-team-sops:sops` create Secrets in X?
    If not → `AccessDenied`. Done before any decryption.
-3. Read the key Secret **impersonating** `solar-system:sops`.
+3. Read the key Secret **impersonating** `my-team-sops:sops`.
 4. Verify the file's recipients include the tenant key → else `NotRecipient`.
 5. Decrypt **only** the encrypted `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No other value of
    a document scoped elsewhere is decrypted. Then decrypt the values and verify the MAC → else `DecryptFailed`.
    Error messages never contain decrypted values (SOPS does not authenticate a value's type tag, and its parse
    errors quote the plaintext).
-6. Create or update the Secret in X **impersonating** `solar-system:sops` (D28). The API server enforces the cluster
+6. Create or update the Secret in X **impersonating** `my-team-sops:sops` (D28). The API server enforces the cluster
    admin's RoleBinding again.
 
 ### 5.2 RBAC objects
@@ -375,21 +375,21 @@ Cluster admin onboarding template (per tenant; can be applied automatically by S
 ```yaml
 apiVersion: v1
 kind: ServiceAccount
-metadata: { name: sops, namespace: solar-system }
+metadata: { name: sops, namespace: my-team-sops }
 automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-key-owner, namespace: solar-system }
+metadata: { name: sops-key-owner, namespace: my-team-sops }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: solar-system }]
+subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
 ---
 # one per namespace the tenant may write to
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-solar, namespace: solar-prod }
+metadata: { name: sops-my-team, namespace: my-app-prod }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: solar-system }]
+subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
 ```
 
 ### 5.3 Operator permissions
@@ -514,7 +514,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 |---|---|
 | Developer in `mallory-ns` references another tenant's key | No cluster admin grant in `mallory-ns` → `AccessDenied`; the write would be denied by the API server anyway. |
 | Tenant admin targets a namespace of another tenant | Tenants cannot grant themselves namespaces; only the cluster admin's RoleBinding does. |
-| Developer copies a prod `SopsSecret` into a dev namespace of the same tenant | Encrypted `scope` decrypts to `solar-prod/…` → `ScopeMismatch`. |
+| Developer copies a prod `SopsSecret` into a dev namespace of the same tenant | Encrypted `scope` decrypts to `my-app-prod/…` → `ScopeMismatch`. |
 | Developer edits `scope` or splices ciphertext between files | Requires the private key; per-file data keys, path-bound values and the MAC make splicing fail. |
 | Developer reads keys | Key Secrets live in the dedicated tenant namespace; developers have no access. |
 | Tenant SA token stolen from a consumer namespace | No SA exists in consumer namespaces; the tenant SA lives in the tenant namespace with `automountServiceAccountToken: false`. |
@@ -554,7 +554,7 @@ creation_rules:
     encrypted_regex: ^(data|stringData|scope)$
     mac_only_encrypted: true
     age:
-      - age1pq1...solar          # tenant public key
+      - age1pq1...my-team          # tenant public key
       - age1pq1...breakglass     # platform break-glass recipient
 ```
 
@@ -566,7 +566,7 @@ sops encrypt -i prod/db-creds.sops.yaml
 git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
 ```
 
-- If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "solar-prod/db-creds"'`.
+- If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "my-app-prod/db-creds"'`.
 - Keys must be sorted byte-wise before encryption (`yq sort_keys` does this). The SOPS MAC depends on key order and
   the Kubernetes API returns objects with keys sorted byte-wise; an unsorted file fails with `DecryptFailed`.
 - `stringData` values must be quoted strings. SOPS parses unquoted scalars before encrypting (`0123` would become
@@ -701,7 +701,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 |---|---|
 | Q2 | Minimum SOPS version that supports `age1pq1` recipients (needs age ≥ 1.3). |
 | Q4 | Default resync interval (proposed 10m). |
-| Q5 | Namespace-wide scope (`solar-prod/*`) for files reused under several names — v1 or later? |
+| Q5 | Namespace-wide scope (`my-app-prod/*`) for files reused under several names — v1 or later? |
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |

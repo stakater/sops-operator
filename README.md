@@ -96,15 +96,49 @@ mode, no admission webhooks, no dependencies on other operators, and schema vali
 
 ## How it works
 
+Each box is a trust boundary, labelled with who controls it. Solid arrows are actions; dotted arrows are grants,
+and only the cluster admin makes them.
+
 ```mermaid
-flowchart LR
-    DEV(["Developer"]) -->|"sops encrypt<br/>git commit"| GIT[("Git<br/>ciphertext only")]
-    GIT --> GITOPS(["Argo CD / Flux"])
-    GITOPS -->|"applies SopsSecret<br/>(still encrypted)"| SS["SopsSecret<br/>my-app/db-credentials"]
-    SS --> OP["SOPS Operator<br/>no Secret permissions"]
-    OP -->|impersonates| SA["Tenant identity<br/>my-team-sops/sops"]
-    SA -->|"reads key<br/>(granted by cluster admin)"| KEY[("Key Secret<br/>my-team-sops/my-team")]
-    SA -->|"writes, cannot read<br/>(granted by cluster admin)"| OUT[("Secret<br/>my-app/db-credentials")]
+flowchart TB
+    CA(["Cluster admin"])
+    TA(["Tenant admin"])
+    DEV(["Developer"])
+
+    subgraph GIT["Git repository — ciphertext only"]
+        FILE["db-credentials.sops.yaml<br/>encrypted values + encrypted scope"]
+    end
+
+    GITOPS(["GitOps tool<br/>Argo CD / Flux"])
+
+    subgraph OPNS["Operator namespace — controlled by cluster admin"]
+        OP["SOPS Operator<br/>no Secret permissions"]
+    end
+
+    subgraph TNS["Namespace my-team-sops — controlled by tenant admin"]
+        TEN["SopsTenant my-team"]
+        KEY[("Secret my-team<br/>private key")]
+        SA["ServiceAccount sops<br/>tenant identity"]
+    end
+
+    subgraph APP["Namespace my-app — controlled by developers"]
+        SS["SopsSecret db-credentials"]
+        OUT[("Secret db-credentials<br/>plaintext")]
+    end
+
+    CA -->|installs| OP
+    CA -->|creates| SA
+    CA -.->|"grants: read key"| KEY
+    CA -.->|"grants: write Secrets"| OUT
+    TA -->|creates| TEN
+    TA -->|"shares public key"| DEV
+    DEV -->|"encrypts, commits"| FILE
+    FILE --> GITOPS
+    GITOPS -->|"applies (encrypted)"| SS
+    OP -->|impersonates| SA
+    SA -->|reads| KEY
+    SA -->|"writes, cannot read"| OUT
+    SS -.->|owns| OUT
 ```
 
 For every `SopsSecret`, on every change and on a periodic resync, the operator:
