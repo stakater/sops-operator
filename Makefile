@@ -290,10 +290,6 @@ $(BOOTSTRAP_STAMP):
 	BIN_DIR=$(LOCALBIN) OPERATOR_SDK_VERSION=$(OPERATOR_SDK_VERSION) OPM_VERSION=$(OPM_VERSION) hack/bootstrap-tools.sh
 	touch $@
 
-.PHONY: samples
-samples: sops yq ## Regenerate the SopsSecret sample (alm-example) encrypted for a throwaway key.
-	SOPS=$(SOPS) YQ=$(YQ) hack/generate-samples.sh
-
 .PHONY: csv
 csv: manifests kustomize operator-sdk yq ## Regenerate the base CSV from API markers and stamp operator-icon.svg into it.
 	$(OPERATOR_SDK) generate kustomize manifests -q --interactive=false
