@@ -10,6 +10,7 @@ import (
 	"filippo.io/age"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -238,4 +239,31 @@ func createSample(t *testing.T, file, ns string) *sopsv1alpha1.SopsTenant {
 		t.Fatal(err)
 	}
 	return &tenant
+}
+
+func TestTenantEvents(t *testing.T) {
+	t.Run("shall record a KeyGenerated event on the tenant through the events API", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns)
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
+		NewWithT(t).Eventually(func(g Gomega) {
+			var events eventsv1.EventList
+			g.Expect(env.Admin.List(ctx, &events, client.InNamespace(ns))).To(Succeed())
+			var got []eventsv1.Event
+			for _, e := range events.Items {
+				if e.Regarding.UID == tenant.UID && e.Reason == sopsv1alpha1.ReasonKeyGenerated {
+					got = append(got, e)
+				}
+			}
+			g.Expect(got).To(HaveLen(1), "KeyGenerated events regarding the tenant")
+			g.Expect(got[0].Type).To(Equal(corev1.EventTypeNormal))
+			g.Expect(got[0].ReportingController).To(Equal("sops-operator"))
+			g.Expect(got[0].Action).To(Equal("GenerateKey"))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
 }

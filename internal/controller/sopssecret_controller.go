@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -54,7 +53,6 @@ type SopsSecretReconciler struct {
 	// is always seen; a stale cache would otherwise report Conflict for the operator's own Secret.
 	APIReader      client.Reader
 	Identities     *identity.Factory
-	Recorder       record.EventRecorder
 	ResyncInterval time.Duration
 	Now            func() time.Time
 }
