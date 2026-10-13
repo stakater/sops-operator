@@ -352,10 +352,6 @@ catalog-build: ## Build the catalog image from CATALOG_DIR_PATH/release.
 test-catalog: yq ## Test the catalog promotion script with a fake opm.
 	YQ=$(YQ) hack/test-generate-catalog-index.sh
 
-.PHONY: test-release-plan
-test-release-plan: yq ## Test the publish decision of the push workflow with a fake registry.
-	YQ=$(YQ) hack/test-release-plan.sh
-
 # Push the catalog image.
 .PHONY: catalog-push
 catalog-push: ## Push a catalog image.

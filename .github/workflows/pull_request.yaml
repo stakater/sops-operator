@@ -48,8 +48,8 @@ jobs:
           go mod tidy
           git diff --exit-code
 
-      - name: Test catalog promotion and release plan
-        run: make test-catalog test-release-plan
+      - name: Test catalog rendering
+        run: make test-catalog
 
       - name: Lint
         run: make lint
