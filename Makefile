@@ -150,7 +150,7 @@ endif
 	printf 'schema: olm.channel\npackage: $(OPERATOR_NAME)\nname: alpha\nentries:\n  - name: $(OPERATOR_NAME).v$(VERSION)\n' \
 		> $(LOCALBIN)/e2e-channels.yaml
 	$(MAKE) catalog-render CATALOG_CHANNELS=$(LOCALBIN)/e2e-channels.yaml \
-		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG) INSECURE_REGISTRIES=$(E2E_REGISTRY)
+		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG) OPM_RENDER_FLAGS=--use-http
 	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG)
 
 .PHONY: test-e2e
@@ -338,7 +338,7 @@ CATALOG_CHANNELS ?= $(CATALOG_DIR_PATH)/channels.yaml
 .PHONY: catalog-render
 catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
 	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) \
-		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) OPM_RENDER_FLAGS="$(OPM_RENDER_FLAGS)" INSECURE_REGISTRIES="$(INSECURE_REGISTRIES)" \
+		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) OPM_RENDER_FLAGS="$(OPM_RENDER_FLAGS)" \
 		hack/generate-catalog-index.sh
 
 .PHONY: catalog-build
