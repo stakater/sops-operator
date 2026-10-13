@@ -29,6 +29,7 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
       build: ${{ steps.plan.outputs.build }}
       version: ${{ steps.plan.outputs.version }}
+      catalog_tags: ${{ steps.plan.outputs.catalog_tags }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -61,7 +62,8 @@ jobs:
           fi
           make yq
           CHANGED_FILES="${changed}" BEFORE_UNKNOWN="${unknown}" CHANNELS=catalog/channels.yaml \
-            BUNDLE_REPO="${REGISTRY}/sops-operator-bundle" YQ=bin/yq \
+            OPERATOR_REPO="${REGISTRY}/sops-operator" BUNDLE_REPO="${REGISTRY}/sops-operator-bundle" \
+            CATALOG_REPO="${REGISTRY}/sops-operator-catalog" SHA="${GITHUB_SHA}" YQ=bin/yq \
             hack/release-plan.sh | tee -a "${GITHUB_OUTPUT}"
           docker logout ghcr.io
 
@@ -78,6 +80,7 @@ jobs:
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       BUILD: ${{ needs.plan.outputs.build }}
+      CATALOG_TAGS: ${{ needs.plan.outputs.catalog_tags }}
       PLATFORMS: linux/amd64,linux/arm64
     steps:
       # Registry credentials live in a per-run directory, used by docker and by opm (catalog-render).
@@ -148,7 +151,7 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --metadata-file "${RUNNER_TEMP}/catalog.json" --push \
-            -t "${REGISTRY}/sops-operator-catalog:v${VERSION}" .
+            $(for tag in ${CATALOG_TAGS}; do printf -- '-t %s ' "${REGISTRY}/sops-operator-catalog:${tag}"; done) .
           cosign sign --yes \
             "${REGISTRY}/sops-operator-catalog@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/catalog.json")"
 
@@ -160,10 +163,12 @@ jobs:
       # are accepted as releases.
       - name: Verify the published images are public and signed
         run: |
-          images="sops-operator-catalog"
-          if [ "${BUILD}" = true ]; then images="sops-operator sops-operator-bundle ${images}"; fi
-          for image in ${images}; do
-            ref="${REGISTRY}/${image}:v${VERSION}"
+          refs=""
+          for tag in ${CATALOG_TAGS}; do refs="${refs} ${REGISTRY}/sops-operator-catalog:${tag}"; done
+          if [ "${BUILD}" = true ]; then
+            refs="${refs} ${REGISTRY}/sops-operator:v${VERSION} ${REGISTRY}/sops-operator-bundle:v${VERSION}"
+          fi
+          for ref in ${refs}; do
             DOCKER_CONFIG="$(mktemp -d)" docker manifest inspect "${ref}" > /dev/null \
               || { echo "::error::${ref} cannot be pulled anonymously; make the package public"; exit 1; }
             cosign verify "${ref}" \
