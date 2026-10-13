@@ -6,7 +6,7 @@
 # installable. When VERSION is listed in no channel, nothing is released and no index is written.
 #
 # Environment: CATALOG_DIR, CHANNELS (channels file; default $CATALOG_DIR/channels.yaml), VERSION, BUNDLE_REPO (published bundles, tagged vX.Y.Z), BUNDLE_IMG
-# (bundle for VERSION; default $BUNDLE_REPO:v$VERSION), ICON, OPM, YQ, OPM_RENDER_FLAGS (e.g. --use-http).
+# (bundle for VERSION; default $BUNDLE_REPO:v$VERSION), ICON, OPM, YQ, INSECURE_REGISTRIES (space-separated hosts reached over plain HTTP, e.g. a local test registry), OPM_RENDER_FLAGS (e.g. --use-http).
 set -euo pipefail
 
 : "${CATALOG_DIR:?}" "${VERSION:?}" "${BUNDLE_REPO:?}" "${ICON:?}"
@@ -32,14 +32,27 @@ fi
 # system has none (e.g. macOS), give opm the default accept-all policy in a temporary HOME; an
 # existing user or system policy is never overridden. Registry credentials are passed through.
 opm_env=()
+tmp_dirs=()
+trap 'rm -rf ${tmp_dirs[@]+"${tmp_dirs[@]}"}' EXIT
 if [ ! -f "${HOME}/.config/containers/policy.json" ] && [ ! -f /etc/containers/policy.json ]; then
   opm_home=$(mktemp -d)
-  trap 'rm -rf "${opm_home}"' EXIT
+  tmp_dirs+=("${opm_home}")
   mkdir -p "${opm_home}/.config/containers"
   echo '{"default":[{"type":"insecureAcceptAnything"}]}' > "${opm_home}/.config/containers/policy.json"
   opm_env=(HOME="${opm_home}")
   docker_auth="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
   [ -f "${docker_auth}" ] && opm_env+=(REGISTRY_AUTH_FILE="${REGISTRY_AUTH_FILE:-${docker_auth}}")
+fi
+
+# Registries named in INSECURE_REGISTRIES (e.g. a local test registry) are reached over plain HTTP;
+# every other registry keeps TLS, unlike opm's --use-http, which drops TLS for all of them.
+if [ -n "${INSECURE_REGISTRIES:-}" ]; then
+  conf_dir=$(mktemp -d)
+  tmp_dirs+=("${conf_dir}")
+  for host in ${INSECURE_REGISTRIES}; do
+    printf '[[registry]]\nlocation = "%s"\ninsecure = true\n\n' "${host}" >> "${conf_dir}/registries.conf"
+  done
+  opm_env+=(CONTAINERS_REGISTRIES_CONF="${conf_dir}/registries.conf")
 fi
 
 for entry in ${entries}; do

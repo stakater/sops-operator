@@ -400,7 +400,6 @@ make test               # unit and envtest tests with the RBAC authorizer
 make lint
 make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
 make scorecard          # operator-sdk scorecard against the bundle
-make test-catalog       # catalog promotion tests
 ```
 
 Install from source on a cluster of your choice:

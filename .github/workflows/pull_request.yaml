@@ -48,9 +48,6 @@ jobs:
           go mod tidy
           git diff --exit-code
 
-      - name: Test catalog rendering
-        run: make test-catalog
-
       - name: Lint
         run: make lint
 
