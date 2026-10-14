@@ -115,7 +115,7 @@ flowchart TB
     DEV(["Developer"])
 
     subgraph GIT["Git repository — ciphertext only"]
-        FILE["db-credentials.sops.yaml<br/>encrypted values + encrypted scope"]
+        FILE["#lt;name#gt;.sops.yaml<br/>encrypted values + encrypted scope"]
     end
 
     GITOPS(["GitOps tool<br/>Argo CD / Flux"])
@@ -124,21 +124,21 @@ flowchart TB
         OP["SOPS Operator<br/>no Secret permissions"]
     end
 
-    subgraph TNS["Namespace team-a-system — controlled by tenant admin"]
-        TEN["SopsTenant team-a"]
-        KEY[("Secret team-a<br/>private key")]
-        SA["ServiceAccount team-a-sops-tenant<br/>tenant identity"]
+    subgraph TNS["Tenant namespace — controlled by tenant admin"]
+        TEN["SopsTenant #lt;tenant#gt;"]
+        KEY[("Secret #lt;tenant#gt;<br/>private key")]
+        SA["ServiceAccount #lt;tenant#gt;-sops-tenant<br/>tenant identity"]
     end
 
-    subgraph APP["Namespace team-a-foo — controlled by developers"]
-        SS["SopsSecret db-credentials"]
-        OUT[("Secret db-credentials<br/>plaintext")]
+    subgraph APP["Application namespace — controlled by developers"]
+        SS["SopsSecret #lt;name#gt;"]
+        OUT[("Secret #lt;name#gt;<br/>plaintext")]
     end
 
     CA -->|installs| OP
     OP -->|creates| SA
-    CA -.->|"RoleBinding in team-a-system:<br/>may use the tenant ServiceAccount"| OP
-    CA -.->|"RoleBinding in team-a-system: may read its key<br/>RoleBinding in team-a-foo: may write Secrets"| SA
+    CA -.->|"RoleBinding in the tenant namespace:<br/>may use the tenant ServiceAccount"| OP
+    CA -.->|"RoleBinding in the tenant namespace: may read its key<br/>RoleBinding in each application namespace: may write Secrets"| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts, commits"| FILE

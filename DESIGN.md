@@ -111,30 +111,30 @@ flowchart TB
     DEV(["Developer"])
 
     subgraph GIT["Git repository — ciphertext only"]
-        FILE["db-creds.sops.yaml<br/>encrypted values + encrypted scope"]
+        FILE["#lt;name#gt;.sops.yaml<br/>encrypted values + encrypted scope"]
     end
 
     GITOPS(["GitOps tool<br/>Argo CD / Flux"])
 
-    subgraph OPNS["Namespace sops-operator — controlled by cluster admin"]
+    subgraph OPNS["Operator namespace — controlled by cluster admin"]
         OP["sops-operator<br/>no Secret permissions"]
     end
 
-    subgraph TNS["Namespace team-a-system — controlled by tenant admin"]
-        TEN["SopsTenant team-a"]
-        KEY[("Secret team-a<br/>private key")]
-        SA["ServiceAccount team-a-sops-tenant<br/>tenant identity"]
+    subgraph TNS["Tenant namespace — controlled by tenant admin"]
+        TEN["SopsTenant #lt;tenant#gt;"]
+        KEY[("Secret #lt;tenant#gt;<br/>private key")]
+        SA["ServiceAccount #lt;tenant#gt;-sops-tenant<br/>tenant identity"]
     end
 
-    subgraph PROD["Namespace team-a-prod — controlled by developers"]
-        SS["SopsSecret db-creds"]
-        OUT[("Secret db-creds<br/>plaintext")]
+    subgraph APP["Application namespace — controlled by developers"]
+        SS["SopsSecret #lt;name#gt;"]
+        OUT[("Secret #lt;name#gt;<br/>plaintext")]
     end
 
     CA -->|installs| OP
     OP -->|creates| SA
-    CA -.->|"RoleBinding in team-a-system:<br/>may use the tenant ServiceAccount"| OP
-    CA -.->|"RoleBinding in team-a-system: may read its key<br/>RoleBinding in team-a-foo: may write Secrets"| SA
+    CA -.->|"RoleBinding in the tenant namespace:<br/>may use the tenant ServiceAccount"| OP
+    CA -.->|"RoleBinding in the tenant namespace: may read its key<br/>RoleBinding in each application namespace: may write Secrets"| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts, commits"| FILE
@@ -142,7 +142,7 @@ flowchart TB
     GITOPS -->|"applies (encrypted)"| SS
     OP -->|impersonates| SA
     SA -->|reads| KEY
-    SA -->|writes| OUT
+    SA -->|"writes, cannot read"| OUT
     SS -.->|owns| OUT
 ```
 
@@ -193,11 +193,11 @@ sequenceDiagram
     participant OP as Operator
 
     Note over CA,OP: Onboarding (once per tenant)
-    TA->>API: SopsTenant team-a
-    CA->>API: RoleBindings in team-a-system: operator, key owner team-a-sops-tenant
-    CA->>API: RoleBinding in team-a-prod: Secret writer team-a-sops-tenant
-    OP->>API: create ServiceAccount team-a-system/team-a-sops-tenant
-    OP->>API: create Secret team-a (as team-a-system:team-a-sops-tenant)
+    TA->>API: SopsTenant in the tenant namespace
+    CA->>API: RoleBindings in the tenant namespace: operator, key owner
+    CA->>API: RoleBinding in each application namespace: Secret writer
+    OP->>API: create ServiceAccount #lt;tenant#gt;-sops-tenant
+    OP->>API: create key Secret (as #lt;tenant#gt;-sops-tenant)
     TA->>DEV: public key (.sops.yaml)
 
     Note over CA,OP: Every secret change
@@ -205,10 +205,10 @@ sequenceDiagram
     DEV->>GIT: commit ciphertext
     GO->>GIT: pull
     GO->>API: apply SopsSecret (encrypted)
-    OP->>API: SubjectAccessReview: may team-a-system:team-a-sops-tenant write here?
-    OP->>API: read key (as team-a-system:team-a-sops-tenant)
+    OP->>API: SubjectAccessReview: may #lt;tenant#gt;-sops-tenant write here?
+    OP->>API: read key (as #lt;tenant#gt;-sops-tenant)
     OP->>OP: check recipient, decrypt and check scope, then values and MAC
-    OP->>API: apply Secret (as team-a-system:team-a-sops-tenant)
+    OP->>API: apply Secret (as #lt;tenant#gt;-sops-tenant)
     OP->>API: status Ready / Decrypted
 ```
 
