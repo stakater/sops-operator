@@ -214,25 +214,19 @@ New releases reach the cluster through the catalog: OLM upgrades along the `alph
 v0.0.2 → v0.0.3) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
 use an immutable catalog tag such as `v0.0.3` and change it deliberately.
 
-The bundle also installs the ClusterRoles used for onboarding: `sops-operator-tenant`, `sops-key-owner` and
+The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-secret-writer`.
 
 ### 2. Onboard the tenant (cluster admin)
 
-For a `SopsTenant` named `team-a` in `team-a-system`, the operator creates one ServiceAccount,
-`team-a-system/team-a-sops-tenant` (`<tenant>-sops-tenant`). It has no permissions until you bind it:
+When the tenant admin creates the `SopsTenant` `team-a` in `team-a-system` (step 3), the operator creates the
+ServiceAccount `team-a-sops-tenant` in `team-a-system`. Everything the operator does for `team-a` it does as this
+ServiceAccount, and it can do nothing until you grant it the three RoleBindings below. Their names are up to you.
 
-| Where | RoleBinding to ClusterRole | Subject | Allows | How often |
-|---|---|---|---|---|
-| `team-a-system` | `sops-operator-tenant` | the operator's ServiceAccount | the operator to create and use `team-a-sops-tenant` | once per tenant namespace |
-| `team-a-system` | `sops-key-owner` | `team-a-system/team-a-sops-tenant` | the tenant to read and create its key | once per tenant |
-| `team-a-foo` | `sops-secret-writer` | `team-a-system/team-a-sops-tenant` | the tenant to write Secrets in `team-a-foo` | once per namespace the tenant writes to |
-
-RoleBinding names are free; only `roleRef` and `subjects` matter.
+**a. Let the operator use the tenant's ServiceAccount** (once per tenant namespace). The subject is the operator's own
+ServiceAccount, `sops-operator-controller-manager`, in the namespace of its Subscription from step 1:
 
 ```yaml
-# The operator's ServiceAccount is sops-operator-controller-manager, in the namespace of its Subscription
-# (openshift-operators in step 1).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -246,7 +240,11 @@ subjects:
   - kind: ServiceAccount
     name: sops-operator-controller-manager
     namespace: openshift-operators
----
+```
+
+**b. Let the tenant read and create its key** (once per tenant):
+
+```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -260,8 +258,11 @@ subjects:
   - kind: ServiceAccount
     name: team-a-sops-tenant
     namespace: team-a-system
----
-# One per namespace the tenant may write Secrets to
+```
+
+**c. Let the tenant write Secrets into an application namespace** (one per namespace, here `team-a-foo`):
+
+```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -277,9 +278,9 @@ subjects:
     namespace: team-a-system
 ```
 
-The first two RoleBindings only grant permissions the built-in `admin` role already holds in `team-a-system`, so the
-tenant admin may create them too. The Secret-writer RoleBindings decide where a tenant may write, and stay with the
-cluster admin. Tenant operators such as Stakater Tenant Operator or Capsule can apply this automatically.
+Bindings **a** and **b** stay inside the tenant namespace and grant nothing the tenant admin doesn't already have
+there, so the tenant admin may create them instead. Binding **c** decides where the tenant may write, so it stays
+with the cluster admin. Stakater Tenant Operator or Capsule can create all three automatically.
 
 ### 3. Create the tenant key (tenant admin)
 
