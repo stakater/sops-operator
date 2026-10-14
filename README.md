@@ -126,13 +126,12 @@ flowchart TB
         OUT[("Secret")]
     end
 
-    CA -.->|"lets the operator act as<br/>the tenant ServiceAccount"| OP
-    CA -.->|"lets the tenant ServiceAccount<br/>read the tenant key"| SA
-    CA -.->|"lets the tenant ServiceAccount<br/>write Secrets here"| APP
+    CA -.->|grant| OP
+    CA -.->|grant| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts and commits"| SS
-    OP -->|"acts as"| SA
+    OP -->|"tenant impersonation"| SA
     SA -->|reads| KEY
     SA -->|writes| OUT
 ```
