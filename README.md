@@ -113,9 +113,7 @@ flowchart TB
     TA(["Tenant admin"])
     DEV(["Developer"])
 
-    subgraph OPNS["Operator namespace"]
-        OP["SOPS Operator"]
-    end
+    OP["SOPS Operator"]
 
     subgraph TNS["Tenant namespace"]
         TEN["SopsTenant"]
@@ -128,9 +126,9 @@ flowchart TB
         OUT[("Secret")]
     end
 
-    CA -.->|"allows to act as the tenant ServiceAccount"| OP
-    CA -.->|"allows to read the tenant key"| SA
-    CA -.->|"allows to write Secrets in the application namespace"| SA
+    CA -.->|"lets the operator act as<br/>the tenant ServiceAccount"| OP
+    CA -.->|"lets the tenant ServiceAccount<br/>read the tenant key"| SA
+    CA -.->|"lets the tenant ServiceAccount<br/>write Secrets here"| APP
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts and commits"| SS
