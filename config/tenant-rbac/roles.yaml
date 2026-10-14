@@ -1,7 +1,7 @@
-# Bound by the cluster admin to the operator's ServiceAccount in each tenant namespace: the operator
-# creates the tenants' ServiceAccounts (<tenant>-sops) there and acts as them. RBAC cannot limit
-# impersonation to name patterns, so this is granted per namespace; keep tenant namespaces for
-# tenant keys only.
+# Bound to the operator's ServiceAccount in each tenant namespace: the operator
+# creates the tenants' ServiceAccounts (<tenant>-sops-tenant) there and acts as them. RBAC cannot
+# limit impersonation to name patterns, so this is granted per namespace; keep tenant namespaces for
+# tenant keys only. The built-in admin role holds these permissions, so the tenant admin may bind it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -11,7 +11,7 @@ rules:
     resources: [serviceaccounts]
     verbs: [create, impersonate]
 ---
-# Bound by the cluster admin to a tenant's ServiceAccount (<tenant>-sops) in the tenant namespace.
+# Bound to a tenant's ServiceAccount (<tenant>-sops-tenant) in the tenant namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

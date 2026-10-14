@@ -50,7 +50,7 @@ const (
 	waitTimeout = 2 * time.Minute
 	tenantName  = "my-team"
 	// tenantSA is the tenant's ServiceAccount, which the operator creates.
-	tenantSA = tenantName + "-sops"
+	tenantSA = tenantName + "-sops-tenant"
 	// password is the plaintext value the use cases encrypt.
 	password = "hunter2"
 )

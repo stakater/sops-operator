@@ -57,7 +57,7 @@ without extra configuration.
 
 The operator cannot read, list or write a single Secret with its own identity. Every key read and every Secret
 write is an **impersonated API call as the tenant's own ServiceAccount**, authorized by the Kubernetes API server
-against RBAC the cluster admin created. A compromised operator cannot reach any Secret outside a tenant's grants,
+against RoleBindings the tenant admin and cluster admin created. A compromised operator cannot reach any Secret outside a tenant's grants,
 and every access appears in the Kubernetes audit log under both identities.
 
 ### ✍️ Least privilege in application namespaces
@@ -105,8 +105,7 @@ mode, no admission webhooks, no dependencies on other operators, and schema vali
 
 ## How it works
 
-Each box is a trust boundary, labelled with who controls it. Solid arrows are actions; dotted arrows are grants,
-and only the cluster admin makes them.
+Solid arrows are actions; dotted arrows are grants.
 
 ```mermaid
 flowchart TB
@@ -114,40 +113,27 @@ flowchart TB
     TA(["Tenant admin"])
     DEV(["Developer"])
 
-    subgraph GIT["Git repository — ciphertext only"]
-        FILE["db-credentials.sops.yaml<br/>encrypted values + encrypted scope"]
+    OP["SOPS Operator"]
+
+    subgraph TNS["Tenant namespace"]
+        TEN["SopsTenant"]
+        SA["Tenant ServiceAccount"]
+        KEY["Secret<br/>tenant key"]
     end
 
-    GITOPS(["GitOps tool<br/>Argo CD / Flux"])
-
-    subgraph OPNS["Operator namespace — controlled by cluster admin"]
-        OP["SOPS Operator<br/>no Secret permissions"]
+    subgraph APP["Application namespace"]
+        SS["SopsSecret"]
+        OUT["Secret<br/>decrypted values"]
     end
 
-    subgraph TNS["Namespace my-team-sops — controlled by tenant admin"]
-        TEN["SopsTenant my-team"]
-        KEY[("Secret my-team<br/>private key")]
-        SA["ServiceAccount my-team-sops<br/>tenant identity"]
-    end
-
-    subgraph APP["Namespace my-app — controlled by developers"]
-        SS["SopsSecret db-credentials"]
-        OUT[("Secret db-credentials<br/>plaintext")]
-    end
-
-    CA -->|installs| OP
-    OP -->|creates| SA
-    CA -.->|"grants: read key"| KEY
-    CA -.->|"grants: write Secrets"| OUT
+    CA -.->|grant| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
-    DEV -->|"encrypts, commits"| FILE
-    FILE --> GITOPS
-    GITOPS -->|"applies (encrypted)"| SS
-    OP -->|impersonates| SA
+    DEV -->|"encrypts and commits"| SS
+    OP -->|create| SA
+    OP -->|"tenant impersonation"| SA
     SA -->|reads| KEY
-    SA -->|"writes, cannot read"| OUT
-    SS -.->|owns| OUT
+    SA -->|writes| OUT
 ```
 
 For every `SopsSecret`, on every change and on a periodic resync, the operator:
@@ -165,18 +151,33 @@ decisions.
 
 ## Who does what
 
-| Role | Owns | Cannot |
-|---|---|---|
-| **Cluster admin** | Installing the operator; onboarding tenants; granting namespaces | Needs no access to tenant keys or plaintext |
-| **Tenant admin** | `SopsTenant` and the tenant key; sharing the public key; rotation | Grant the tenant new namespaces |
-| **Developer** | Writing and encrypting `SopsSecret`s | Read keys; decrypt files; target another namespace |
-| **GitOps tool** | Applying encrypted `SopsSecret`s | See plaintext or keys |
-| **Operator** | Decrypting and writing Secrets, only as a tenant identity | Access any Secret on its own |
+**Cluster admin**, once per tenant ([step 2](#2-onboard-the-tenant-cluster-admin)):
+
+- Let the operator use the tenant's ServiceAccount in the tenant namespace (`sops-operator-tenant`).
+- Let the tenant's ServiceAccount read and create its key (`sops-key-owner`).
+- Grant each namespace the tenant may write Secrets to (`sops-secret-writer`).
+
+Never needs access to tenant keys or plaintext.
+
+**Tenant admin** ([step 3](#3-create-the-tenant-key-tenant-admin)):
+
+- Create the `SopsTenant`.
+- Give developers the public key for their `.sops.yaml`.
+- Back up and rotate the key.
+
+Cannot grant the tenant new namespaces.
+
+**Developer** ([step 4](#4-write-and-encrypt-a-secret-developer)):
+
+- Write a `SopsSecret` with its scope, encrypt it with `sops`, and commit it.
+- Check its `Ready` reason when a Secret does not appear.
+
+Cannot read keys, decrypt files or target another namespace.
 
 ## Quick start
 
-The example uses one tenant, `my-team`, whose key lives in the dedicated namespace `my-team-sops`, and one
-application namespace, `my-app`.
+The example uses one tenant, `team-a`, whose key lives in the dedicated tenant namespace `team-a-system`, and one
+application namespace, `team-a-foo`.
 
 ### 1. Install the operator (cluster admin)
 
@@ -211,41 +212,76 @@ spec:
 ```
 
 New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
-v0.0.1 → v0.0.2) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
-use an immutable catalog tag such as `v0.0.2` and change it deliberately.
+v0.0.2 → v0.0.3) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
+use an immutable catalog tag such as `v0.0.3` and change it deliberately.
 
-The bundle also installs the ClusterRoles used for onboarding: `sops-operator-tenant`, `sops-key-owner` and
+The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-secret-writer`.
 
-### 2. Onboard a tenant (cluster admin)
+### 2. Onboard the tenant (cluster admin)
 
-Each tenant has its own identity, the ServiceAccount `<tenant>-sops` in the `SopsTenant`'s namespace. The operator
-creates it; it has no permissions until you bind it. Let the operator act in the tenant namespace, let the tenant's
-identity own its key, and grant it each namespace it may write to:
+When the tenant admin creates the `SopsTenant` `team-a` in `team-a-system` (step 3), the operator creates the
+ServiceAccount `team-a-sops-tenant` in `team-a-system`. Everything the operator does for `team-a` it does as this
+ServiceAccount, and it can do nothing until you grant it the three RoleBindings below. Their names are up to you.
+
+**a. Let the operator use the tenant's ServiceAccount** (once per tenant namespace). The subject is the operator's own
+ServiceAccount, `sops-operator-controller-manager`, in the namespace of its Subscription from step 1:
 
 ```yaml
-# Once per tenant namespace; openshift-operators is where the operator is installed
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-operator, namespace: my-team-sops }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-operator-tenant }
-subjects: [{ kind: ServiceAccount, name: sops-operator-controller-manager, namespace: openshift-operators }]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata: { name: my-team-sops-key-owner, namespace: my-team-sops }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }]
----
-# One per namespace the tenant may write Secrets to
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata: { name: my-team-sops-my-team-sops, namespace: my-app }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }]
+metadata:
+  name: sops-operator
+  namespace: team-a-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-operator-tenant
+subjects:
+  - kind: ServiceAccount
+    name: sops-operator-controller-manager
+    namespace: openshift-operators
 ```
 
-Tenant operators such as Stakater Tenant Operator or Capsule can apply this template automatically.
+**b. Let the tenant read and create its key** (once per tenant):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-a-key-owner
+  namespace: team-a-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-key-owner
+subjects:
+  - kind: ServiceAccount
+    name: team-a-sops-tenant
+    namespace: team-a-system
+```
+
+**c. Let the tenant write Secrets into an application namespace** (one per namespace, here `team-a-foo`):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-a-secret-writer
+  namespace: team-a-foo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-secret-writer
+subjects:
+  - kind: ServiceAccount
+    name: team-a-sops-tenant
+    namespace: team-a-system
+```
+
+Bindings **a** and **b** stay inside the tenant namespace and grant nothing the tenant admin doesn't already have
+there, so the tenant admin may create them instead. Binding **c** decides where the tenant may write, so it stays
+with the cluster admin. Stakater Tenant Operator or Capsule can create all three automatically.
 
 ### 3. Create the tenant key (tenant admin)
 
@@ -253,22 +289,22 @@ Tenant operators such as Stakater Tenant Operator or Capsule can apply this temp
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
 metadata:
-  name: my-team
-  namespace: my-team-sops
+  name: team-a
+  namespace: team-a-system
 spec:
   generateKey: true   # default: generate a post-quantum key if the key Secret does not exist
 ```
 
 ```console
-$ kubectl get sopstenant -n my-team-sops
-NAME      READY   REASON         USED BY   AGE
-my-team   True    KeyGenerated   0         5s
+$ kubectl get sopstenant -n team-a-system
+NAME     READY   REASON         USED BY   AGE
+team-a   True    KeyGenerated   0         5s
 ```
 
 Read the public key and commit it to the team's `.sops.yaml`:
 
 ```bash
-kubectl get secret my-team -n my-team-sops -o jsonpath='{.data.age\.pub}' | base64 -d
+kubectl get secret team-a -n team-a-system -o jsonpath='{.data.age\.pub}' | base64 -d
 ```
 
 ```yaml
@@ -278,46 +314,46 @@ creation_rules:
     encrypted_regex: ^(data|stringData|scope)$
     mac_only_encrypted: true
     age:
-      - age1pq1...   # my-team
+      - age1pq1...   # team-a
 ```
 
-To use an existing key, create the Secret `my-team-sops/my-team` with your identity in `age.agekey` first, and
+To use an existing key, create the Secret `team-a-system/team-a` with your identity in `age.agekey` first, and
 set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
 
 ```yaml
-# my-app/db-credentials.sops.yaml, before encryption: never commit this state
+# team-a-foo/db-credentials.sops.yaml, before encryption: never commit this state
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsSecret
 metadata:
   name: db-credentials
-  namespace: my-app
+  namespace: team-a-foo
 spec:
   tenantRef:
-    name: my-team
-    namespace: my-team-sops
+    name: team-a
+    namespace: team-a-system
   stringData:
     username: "app"
     password: "s3cr3t"
 ```
 
 ```bash
-yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' my-app/db-credentials.sops.yaml
-yq -i 'sort_keys(..)' my-app/db-credentials.sops.yaml
-sops encrypt -i my-app/db-credentials.sops.yaml
-git add my-app/db-credentials.sops.yaml && git commit -m "Add database credentials"
+yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' team-a-foo/db-credentials.sops.yaml
+yq -i 'sort_keys(..)' team-a-foo/db-credentials.sops.yaml
+sops encrypt -i team-a-foo/db-credentials.sops.yaml
+git add team-a-foo/db-credentials.sops.yaml && git commit -m "Add database credentials"
 ```
 
 Once your GitOps tool applies the file:
 
 ```console
-$ kubectl get sopssecret -n my-app
+$ kubectl get sopssecret -n team-a-foo
 NAME             TENANT    READY   REASON      AGE
-db-credentials   my-team   True    Decrypted   8s
+db-credentials   team-a    True    Decrypted   8s
 ```
 
-The Secret `my-app/db-credentials` now exists, owned by the `SopsSecret` and deleted with it.
+The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and deleted with it.
 
 > [!TIP]
 > - Sort keys before encrypting (`yq 'sort_keys(..)'`): the SOPS MAC depends on key order.
@@ -353,7 +389,7 @@ The Secret `my-app/db-credentials` now exists, owned by the `SopsSecret` and del
 | `ApplyFailed` | The API server rejected the Secret, for example an invalid TLS Secret. |
 | `Suspended` | Reconciliation is paused by annotation. |
 
-`SopsTenant` reports `KeyGenerated`, `KeyLoaded`, `KeyMissing`, `KeyInvalid` or `AccessDenied` (not onboarded).
+`SopsTenant` reports `KeyGenerated`, `KeyLoaded`, `KeyMissing`, `KeyInvalid` or `AccessDenied` (a RoleBinding is missing; the message names it).
 
 ### Configuration
 

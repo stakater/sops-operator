@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 
 func TestTenantIdentity(t *testing.T) {
 	t.Run("shall act as the tenant's own ServiceAccount", func(t *testing.T) {
-		if got := identity.UserName("my-team-sops", "my-team"); got != "system:serviceaccount:my-team-sops:my-team-sops" {
+		if got := identity.UserName("team-a-ns", "team-a"); got != "system:serviceaccount:team-a-ns:team-a-sops-tenant" {
 			t.Fatalf("UserName = %q", got)
 		}
 	})

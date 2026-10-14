@@ -270,7 +270,7 @@ func TestTenantEvents(t *testing.T) {
 
 // The operator creates the tenant identity; only the cluster admin's RoleBindings give it access.
 func TestTenantServiceAccount(t *testing.T) {
-	const saName = tenantName + "-sops"
+	const saName = tenantName + "-sops-tenant"
 
 	t.Run("shall report AccessDenied naming the operator binding until the namespace is granted", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")

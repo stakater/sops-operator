@@ -8,8 +8,10 @@ import (
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/testenv"
@@ -75,4 +77,61 @@ func TestOperatorPermissions(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The tenant admin onboards their own tenant namespace (DESIGN.md D47): both bindings grant only
+// what the built-in admin role already holds there, so Kubernetes lets a namespace admin create them.
+func TestTenantAdminOnboarding(t *testing.T) {
+	t.Run("shall let a namespace admin bind the operator and the key owner", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		user, err := env.AddUser("tenant-admin-"+ns, namespaceAdminRole(t), ns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bindings := []*rbacv1.RoleBinding{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "sops-operator", Namespace: ns},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-operator-tenant"},
+				Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "sops-operator-controller-manager", Namespace: "operator-ns"}},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-a-sops-tenant-key-owner", Namespace: ns},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-key-owner"},
+				Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "team-a-sops-tenant", Namespace: ns}},
+			},
+		}
+		for _, b := range bindings {
+			if err := user.Create(ctx, b); err != nil {
+				t.Fatalf("namespace admin creating %s: %v", b.Name, err)
+			}
+		}
+	})
+
+}
+
+// namespaceAdminRole returns a ClusterRole with the rules of the built-in admin role. envtest runs no
+// controller-manager, so admin stays empty; this aggregates the same ClusterRoles it would.
+func namespaceAdminRole(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	// admin aggregates edit, which aggregates view.
+	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{GenerateName: "aggregated-admin-"}}
+	for _, to := range []string{"admin", "edit", "view"} {
+		var parts rbacv1.ClusterRoleList
+		err := env.Admin.List(ctx, &parts, client.MatchingLabels{"rbac.authorization.k8s.io/aggregate-to-" + to: "true"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range parts.Items {
+			role.Rules = append(role.Rules, p.Rules...)
+		}
+	}
+	if len(role.Rules) == 0 {
+		t.Fatal("no ClusterRoles aggregate to admin")
+	}
+	if err := env.Admin.Create(ctx, role); err != nil {
+		t.Fatal(err)
+	}
+	return role.Name
 }
