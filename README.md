@@ -212,8 +212,8 @@ spec:
 ```
 
 New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
-v0.0.2 → v0.0.3) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
-use an immutable catalog tag such as `v0.0.3` and change it deliberately.
+v0.0.3 → v0.0.4) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
+use an immutable catalog tag such as `v0.0.4` and change it deliberately.
 
 The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-secret-writer`.
