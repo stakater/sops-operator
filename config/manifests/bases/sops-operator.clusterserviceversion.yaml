@@ -95,6 +95,11 @@ spec:
             path: conditions
             x-descriptors:
               - urn:alm:descriptor:io.kubernetes.conditions
+          - description: KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+            displayName: Key Secret
+            path: keySecretName
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes:Secret
           - displayName: Observed generation
             path: observedGeneration
           - description: |-

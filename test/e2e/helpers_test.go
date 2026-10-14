@@ -51,6 +51,8 @@ const (
 	tenantName  = "my-team"
 	// tenantSA is the tenant's ServiceAccount, which the operator creates.
 	tenantSA = tenantName + "-sops-tenant"
+	// tenantKeySecret holds the tenant key, which the operator generates.
+	tenantKeySecret = tenantName + "-sops-keys"
 	// password is the plaintext value the use cases encrypt.
 	password = "hunter2"
 )
@@ -141,7 +143,8 @@ func onboardedTenant(t *testing.T, tenantNamespace string, writeNamespaces ...st
 	waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)
 
 	var key corev1.Secret
-	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(tenant), &key); err != nil {
+	keyName := client.ObjectKey{Namespace: tenantNamespace, Name: tenantKeySecret}
+	if err := k8s.Get(context.Background(), keyName, &key); err != nil {
 		t.Fatal(err)
 	}
 	ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])

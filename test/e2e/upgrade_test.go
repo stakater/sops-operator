@@ -184,7 +184,7 @@ func csvName(version string) string { return "sops-operator.v" + version }
 func tenantKey(t *testing.T, tenantNamespace string) *corev1.Secret {
 	t.Helper()
 	var key corev1.Secret
-	key.Namespace, key.Name = tenantNamespace, tenantName
+	key.Namespace, key.Name = tenantNamespace, tenantKeySecret
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(&key), &key); err != nil {
 		t.Fatal(err)
 	}

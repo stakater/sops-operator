@@ -127,7 +127,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{}, err
 	}
 	var key corev1.Secret
-	if err := tc.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, &key); err != nil {
+	if err := tc.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: sopsv1alpha1.TenantKeySecretName(ref.Name)}, &key); err != nil {
 		if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
 			return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is not readable", tenantName)}, nil
 		}

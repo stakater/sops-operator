@@ -301,10 +301,10 @@ NAME     READY   REASON         USED BY   AGE
 team-a   True    KeyGenerated   0         5s
 ```
 
-Read the public key and commit it to the team's `.sops.yaml`:
+The key is in the Secret `team-a-sops-keys`. Read its public key and commit it to the team's `.sops.yaml`:
 
 ```bash
-kubectl get secret team-a -n team-a-system -o jsonpath='{.data.age\.pub}' | base64 -d
+kubectl get secret team-a-sops-keys -n team-a-system -o jsonpath='{.data.age\.pub}' | base64 -d
 ```
 
 ```yaml

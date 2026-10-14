@@ -30,7 +30,7 @@ func newTenant(ns string, generate *bool) *sopsv1alpha1.SopsTenant {
 
 func keySecret(ns string, keyFile string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns},
 		Data:       map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
 	}
 }
@@ -51,8 +51,11 @@ func TestTenantKey(t *testing.T) {
 			g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
 
+		if want := tenantName + "-sops-keys"; tenant.Status.KeySecretName != want {
+			t.Fatalf("status.keySecretName = %q, want %q", tenant.Status.KeySecretName, want)
+		}
 		var key corev1.Secret
-		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &key); err != nil {
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName + "-sops-keys"}, &key); err != nil {
 			t.Fatal(err)
 		}
 		ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
@@ -78,7 +81,8 @@ func TestTenantKey(t *testing.T) {
 		env.Onboard(t, ns, tenantName)
 		tenant := createSample(t, "sops_v1alpha1_sopstenant.yaml", ns)
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
-		if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), &corev1.Secret{}); err != nil {
+		keyName := client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenant.Name)}
+		if err := env.Admin.Get(context.Background(), keyName, &corev1.Secret{}); err != nil {
 			t.Fatalf("generated key Secret: %v", err)
 		}
 	})
@@ -91,15 +95,15 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		key := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "my-team-existing-key", Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns},
 			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := env.Admin.Create(context.Background(), key); err != nil {
 			t.Fatal(err)
 		}
 		tenant := createSample(t, "sops_v1alpha1_sopstenant_existing_key.yaml", ns)
-		if tenant.Name != key.Name {
-			t.Fatalf("the sample names tenant %q; its key Secret must have the same name", tenant.Name)
+		if sopsv1alpha1.TenantKeySecretName(tenant.Name) != key.Name {
+			t.Fatalf("the sample names tenant %q; its key Secret must be %s", tenant.Name, key.Name)
 		}
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
 		assertUnchanged(t, key)
@@ -185,7 +189,7 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyMissing)
-		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &corev1.Secret{})
+		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &corev1.Secret{})
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("key Secret must not be created: %v", err)
 		}
@@ -198,7 +202,7 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonAccessDenied)
-		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName}, &corev1.Secret{})
+		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &corev1.Secret{})
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("key Secret must not be created: %v", err)
 		}
