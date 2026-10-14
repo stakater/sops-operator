@@ -267,3 +267,46 @@ func TestTenantEvents(t *testing.T) {
 		}).WithTimeout(20 * time.Second).Should(Succeed())
 	})
 }
+
+// The operator creates the tenant identity; only the cluster admin's RoleBindings give it access.
+func TestTenantServiceAccount(t *testing.T) {
+	t.Run("shall create the tenant ServiceAccount and name the binding it still needs", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
+		if msg := readyCondition(tenant).Message; !strings.Contains(msg, "sops-key-owner") ||
+			!strings.Contains(msg, ns+"/sops") {
+			t.Fatalf("AccessDenied message does not name the ClusterRole and ServiceAccount to bind: %q", msg)
+		}
+		var sa corev1.ServiceAccount
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: "sops"}, &sa); err != nil {
+			t.Fatalf("tenant ServiceAccount: %v", err)
+		}
+		if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
+			t.Fatal("the tenant ServiceAccount must not automount a token")
+		}
+		if sa.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+			t.Fatal("the tenant ServiceAccount is missing the managed-by label")
+		}
+	})
+
+	t.Run("shall leave an existing ServiceAccount unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "sops", Namespace: ns}}
+		if err := env.Admin.Create(ctx, sa); err != nil {
+			t.Fatal(err)
+		}
+		env.Onboard(t, ns)
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
+		assertUnchanged(t, sa)
+	})
+}

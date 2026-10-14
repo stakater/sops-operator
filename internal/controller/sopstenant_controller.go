@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -63,6 +64,9 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	if err := r.ensureServiceAccount(ctx, tenant.Namespace); err != nil {
+		return ctrl.Result{}, err
+	}
 	reason, message, err := r.reconcileKey(ctx, &tenant)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -90,6 +94,23 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{RequeueAfter: r.ResyncInterval}, nil
 }
 
+// ensureServiceAccount creates the tenant identity if it does not exist. It grants nothing: only
+// the cluster admin's RoleBindings give it access. An existing ServiceAccount is never changed.
+func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, namespace string) error {
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      identity.ServiceAccountName,
+			Namespace: namespace,
+			Labels:    map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
+		},
+		AutomountServiceAccountToken: ptr.To(false),
+	}
+	if err := r.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create ServiceAccount %s/%s: %w", namespace, identity.ServiceAccountName, err)
+	}
+	return nil
+}
+
 // reconcileKey returns the Ready reason and message for the tenant key. Only a 404 on the key
 // Secret leads to generation; the tenant identity cannot modify or delete an existing key.
 func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
@@ -112,8 +133,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		}
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " +
-			"the cluster admin must onboard this tenant", nil
+		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t.Namespace), nil
 	case !apierrors.IsNotFound(err):
 		return "", "", err
 	}
@@ -137,7 +157,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	if err := tc.Create(ctx, secret); err != nil {
 		if apierrors.IsForbidden(err) {
 			return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot create its key Secret; " +
-				"the cluster admin must onboard this tenant", nil
+				onboardHint(t.Namespace), nil
 		}
 		// AlreadyExists: a key appeared since the read; the retry loads it.
 		return "", "", err
@@ -145,6 +165,12 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
 		"generated a post-quantum key in Secret %s", t.Name)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil
+}
+
+// onboardHint names the RoleBinding the cluster admin creates to onboard a tenant.
+func onboardHint(namespace string) string {
+	return fmt.Sprintf("the cluster admin must bind ClusterRole sops-key-owner to ServiceAccount %s/%s in %s",
+		namespace, identity.ServiceAccountName, namespace)
 }
 
 // SetupWithManager registers the controller.

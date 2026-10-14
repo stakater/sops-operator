@@ -59,6 +59,11 @@ func TestTenantOnboarding(t *testing.T) {
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: ns}}
 		waitForReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
 		assertGolden(t, tenant, "not onboarded")
+		// The operator created the identity the cluster admin binds next.
+		var sa corev1.ServiceAccount
+		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "sops"}, &sa); err != nil {
+			t.Fatalf("tenant ServiceAccount: %v", err)
+		}
 
 		apply(t, render(t, "onboarding.yaml", map[string]any{"TenantNamespace": ns, "WriteNamespaces": []string{}}))
 		waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)

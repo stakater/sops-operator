@@ -136,7 +136,7 @@ flowchart TB
     end
 
     CA -->|installs| OP
-    CA -->|creates| SA
+    OP -->|creates| SA
     CA -.->|"grants: read key"| KEY
     CA -.->|"grants: write Secrets"| OUT
     TA -->|creates| TEN
@@ -218,14 +218,10 @@ The bundle also installs the tenant-facing ClusterRoles `sops-key-owner` and `so
 
 ### 2. Onboard a tenant (cluster admin)
 
-Create the tenant's identity, let it own keys in its key namespace, and grant it each namespace it may write to:
+The operator creates the tenant's identity, the ServiceAccount `sops` in the `SopsTenant`'s namespace; it has no
+permissions until you bind it. Let it own keys in its key namespace, and grant it each namespace it may write to:
 
 ```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata: { name: sops, namespace: my-team-sops }
-automountServiceAccountToken: false
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata: { name: sops-key-owner, namespace: my-team-sops }
