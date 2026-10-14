@@ -60,7 +60,7 @@ func onboardedTenant(t *testing.T, writeNS ...string) (string, string) {
 	}).WithTimeout(20 * time.Second).Should(Succeed())
 
 	var key corev1.Secret
-	if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: tenantName}, &key); err != nil {
+	if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &key); err != nil {
 		t.Fatal(err)
 	}
 	ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])

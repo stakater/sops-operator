@@ -225,12 +225,14 @@ A tenant is a **key**. It does not list namespaces; access is granted by the clu
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
 metadata:
-  name: team-a                  # key Secret: team-a-system/team-a
+  name: team-a                  # key Secret: team-a-system/team-a-sops-keys
   namespace: team-a-system        # tenant namespace (dedicated; holds keys only)
 spec:
   generateKey: true              # default; generates a post-quantum key if the key Secret is missing
 status:
   observedGeneration: 2
+  serviceAccountName: team-a-sops-tenant
+  keySecretName: team-a-sops-keys
   usedBy: 4                      # SopsSecrets referencing this tenant
   conditions:
     - type: Ready
@@ -241,6 +243,8 @@ status:
 | Field | Default | Meaning |
 |---|---|---|
 | `spec.generateKey` | `true` | Generate a post-quantum age key when reading the key Secret returns `404 Not Found`. Any other error never triggers generation. Set `false` for bring-your-own keys and during disaster recovery. |
+| `status.serviceAccountName` | — | The tenant's ServiceAccount, `<tenant>-sops-tenant` (D46). |
+| `status.keySecretName` | — | The tenant's key Secret, `<tenant>-sops-keys` (D48). |
 | `status.usedBy` | — | Number of `SopsSecret`s referencing this tenant. |
 | `status.conditions[Ready]` | — | Reasons: `KeyLoaded`, `KeyGenerated`, `KeyMissing`, `KeyInvalid`, `AccessDenied` (tenant not onboarded). |
 
@@ -712,7 +716,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D2 | Build a new operator | Existing operators require cluster-wide Secret RBAC or lack tenant isolation and ciphertext scoping. |
 | D3 | Go + operator-sdk, distributed via OLM only | Operator ecosystem fit (OpenShift, OperatorHub). Helm can be generated from `config/` later. |
 | D4 | v1 backend: age key in a Kubernetes Secret; OpenBao later | No infrastructure dependency; backend stays pluggable. |
-| D5 | `SopsTenant` is namespaced; key Secret has the same name; generated if missing (`generateKey`) | Self-service via namespace RBAC; predictable key location. |
+| D5 | `SopsTenant` is namespaced; its key Secret is `<tenant>-sops-keys` (D48); generated if missing (`generateKey`) | Self-service via namespace RBAC; predictable key location. |
 | D6 | Generated keys are age post-quantum hybrid | Ciphertext lives in Git history indefinitely ("harvest now, decrypt later"). |
 | D7 | No public key or `.sops.yaml` in the CR | Public key is derivable from the key Secret; repos own their `.sops.yaml`. |
 | D8 | Namespace access is granted only by cluster admin RoleBindings to the tenant ServiceAccount | Single source of truth enforced by the API server; no binding CRD, no selectors. |
@@ -755,6 +759,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D45 | The operator creates each tenant's ServiceAccount (create only, never update or delete); the cluster admin creates only RoleBindings | Onboarding is RoleBindings only, and the identity exists as an object the bindings refer to. An unbound ServiceAccount grants nothing. |
 | D46 | Each tenant's ServiceAccount is `<tenant>-sops-tenant`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where `sops-operator-tenant` is bound to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). |
 | D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
+| D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret. |
 
 ---
 
@@ -767,4 +772,4 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |
-| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `age.pub` (D39). |
+| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops-tenant` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `age.pub` (D39). |

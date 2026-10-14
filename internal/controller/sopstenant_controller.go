@@ -88,6 +88,7 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	tenant.Status.ObservedGeneration = tenant.Generation
 	tenant.Status.ServiceAccountName = sopsv1alpha1.TenantServiceAccountName(tenant.Name)
+	tenant.Status.KeySecretName = sopsv1alpha1.TenantKeySecretName(tenant.Name)
 	tenant.Status.UsedBy = int32(len(users.Items))
 	if err := r.Status().Update(ctx, &tenant); err != nil {
 		return ctrl.Result{}, err
@@ -130,8 +131,9 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	if err != nil {
 		return "", "", err
 	}
+	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
 	var key corev1.Secret
-	err = tc.Get(ctx, client.ObjectKeyFromObject(t), &key)
+	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, &key)
 	switch {
 	case err == nil:
 		keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
@@ -151,7 +153,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	}
 
 	if !t.ShouldGenerateKey() {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, t.Name), nil
+		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
 	}
 	keyFile, recipient, err := crypto.GenerateKeyFile(r.now())
 	if err != nil {
@@ -159,7 +161,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      t.Name,
+			Name:      keyName,
 			Namespace: t.Namespace,
 			Labels:    map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 		},
@@ -175,7 +177,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		return "", "", err
 	}
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
-		"generated a post-quantum key in Secret %s", t.Name)
+		"generated a post-quantum key in Secret %s", keyName)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil
 }
 

@@ -40,6 +40,10 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+	// KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
+	// +optional
+	KeySecretName string `json:"keySecretName,omitempty"`
 	// UsedBy is the number of SopsSecrets referencing this tenant.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Used by"
 	// +optional
@@ -77,6 +81,14 @@ const ServiceAccountSuffix = "-sops-tenant"
 // TenantServiceAccountName returns the name of the ServiceAccount of the tenant named tenant.
 func TenantServiceAccountName(tenant string) string {
 	return tenant + ServiceAccountSuffix
+}
+
+// KeySecretSuffix is appended to a tenant's name to form the name of its key Secret.
+const KeySecretSuffix = "-sops-keys"
+
+// TenantKeySecretName returns the name of the key Secret of the tenant named tenant.
+func TenantKeySecretName(tenant string) string {
+	return tenant + KeySecretSuffix
 }
 
 // ShouldGenerateKey reports whether a missing key Secret should be generated.

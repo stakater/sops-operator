@@ -37,7 +37,7 @@ func TestKeyRotation(t *testing.T) {
 	prod := namespace(t, "e2e-rotate-prod")
 	tenantNS, oldRecipient := onboardedTenant(t, "e2e-rotate-tenant", prod)
 	key := &corev1.Secret{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: tenantName}, key); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: tenantKeySecret}, key); err != nil {
 		t.Fatal(err)
 	}
 	oldKey := key.Data[crypto.KeyFileField]

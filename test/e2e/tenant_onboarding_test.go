@@ -39,7 +39,8 @@ func TestTenantOnboarding(t *testing.T) {
 			t.Fatal("generated key is not post-quantum")
 		}
 		var key corev1.Secret
-		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: tenantName}, &key); err != nil {
+		keyName := client.ObjectKey{Namespace: tenantNS, Name: tenantKeySecret}
+		if err := k8s.Get(context.Background(), keyName, &key); err != nil {
 			t.Fatal(err)
 		}
 		if strings.TrimSpace(string(key.Data[crypto.PublicKeyField])) != recipient {
