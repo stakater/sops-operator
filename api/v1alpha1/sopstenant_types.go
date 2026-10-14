@@ -72,7 +72,7 @@ type SopsTenant struct {
 }
 
 // ServiceAccountSuffix is appended to a tenant's name to form its ServiceAccount name.
-const ServiceAccountSuffix = "-sops"
+const ServiceAccountSuffix = "-sops-tenant"
 
 // TenantServiceAccountName returns the name of the ServiceAccount of the tenant named tenant.
 func TenantServiceAccountName(tenant string) string {

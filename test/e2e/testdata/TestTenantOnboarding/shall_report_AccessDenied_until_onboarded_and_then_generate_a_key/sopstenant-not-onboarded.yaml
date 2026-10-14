@@ -12,7 +12,7 @@ spec:
 status:
   conditions:
   - lastTransitionTime: <timestamp>
-    message: the operator cannot create ServiceAccount e2e-onboard-missing/my-team-sops;
+    message: the operator cannot create ServiceAccount e2e-onboard-missing/my-team-sops-tenant;
       the cluster admin must bind ClusterRole sops-operator-tenant to the operator's
       ServiceAccount in e2e-onboard-missing
     observedGeneration: 1
@@ -20,4 +20,4 @@ status:
     status: "False"
     type: Ready
   observedGeneration: 1
-  serviceAccountName: my-team-sops
+  serviceAccountName: my-team-sops-tenant

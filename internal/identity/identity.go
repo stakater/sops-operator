@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package identity provides clients that act as a tenant's ServiceAccount, <tenant>-sops in the
-// tenant namespace.
+// Package identity provides clients that act as a tenant's ServiceAccount, <tenant>-sops-tenant in
+// the tenant namespace.
 package identity
 
 import (

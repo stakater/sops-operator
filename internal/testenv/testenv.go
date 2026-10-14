@@ -120,6 +120,23 @@ func (e *Env) setup(root string, cfg *rest.Config) error {
 // Stop stops the API server.
 func (e *Env) Stop() error { return e.env.Stop() }
 
+// AddUser adds a user that holds clusterRole in namespace only, and returns a client acting as it.
+func (e *Env) AddUser(name, clusterRole, namespace string) (client.Client, error) {
+	user, err := e.env.AddUser(envtest.User{Name: name}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("add user %s: %w", name, err)
+	}
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: clusterRole},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: name}},
+	}
+	if err := e.Admin.Create(context.Background(), binding); err != nil {
+		return nil, err
+	}
+	return client.New(user.Config(), client.Options{Scheme: e.Scheme})
+}
+
 // Namespace creates a namespace with a generated name and returns the name.
 func (e *Env) Namespace(t testing.TB, prefix string) string {
 	t.Helper()

@@ -39,8 +39,8 @@ import (
 // traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
 // each channel head is `make test-e2e`.
 var upgradePaths = []struct{ channel, from, to string }{
-	// alpha: v0.0.1 --replaces--> v0.0.2 (head). Not tested: neither version was deployed, and both
-	// predate per-tenant ServiceAccounts (D46). Paths start again with the next release.
+	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 (head). Not tested: v0.0.1 and v0.0.2
+	// were never deployed and predate per-tenant ServiceAccounts (D46). Paths start from v0.0.3.
 }
 
 const (
