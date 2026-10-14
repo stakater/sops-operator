@@ -172,11 +172,10 @@ func main() {
 		os.Exit(1)
 	}
 	identities := identity.NewFactory(mgr.GetConfig(), mgr.GetScheme())
-	recorder := mgr.GetEventRecorderFor("sops-operator")
 	if err := (&controller.SopsTenantReconciler{
 		Client:         mgr.GetClient(),
 		Identities:     identities,
-		Recorder:       recorder,
+		Recorder:       mgr.GetEventRecorder("sops-operator"),
 		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsTenant")
@@ -186,7 +185,6 @@ func main() {
 		Client:         mgr.GetClient(),
 		APIReader:      mgr.GetAPIReader(),
 		Identities:     identities,
-		Recorder:       recorder,
 		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsSecret")

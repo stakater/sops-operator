@@ -28,6 +28,9 @@ const (
 	ReasonAccessDenied = "AccessDenied"
 )
 
+// ActionGenerateKey is the events.k8s.io action recorded when the operator generates a tenant key.
+const ActionGenerateKey = "GenerateKey"
+
 // SopsSecret Ready reasons. ReasonAccessDenied is shared with SopsTenant.
 const (
 	ReasonDecrypted      = "Decrypted"

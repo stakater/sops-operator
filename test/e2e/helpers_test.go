@@ -291,7 +291,13 @@ func waitForReason(t *testing.T, obj client.Object, reasons ...string) {
 // poll calls cond until it returns true or waitTimeout passes.
 func poll(t *testing.T, what string, cond func() (bool, error), detail ...func() string) {
 	t.Helper()
-	deadline := time.Now().Add(waitTimeout)
+	pollFor(t, waitTimeout, what, cond, detail...)
+}
+
+// pollFor calls cond until it returns true or timeout passes.
+func pollFor(t *testing.T, timeout time.Duration, what string, cond func() (bool, error), detail ...func() string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for {
 		ok, err := cond()
 		if err != nil {

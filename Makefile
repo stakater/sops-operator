@@ -3,7 +3,7 @@
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.0.1
+VERSION ?= 0.0.2
 OPERATOR_NAME ?= sops-operator
 CATALOG_DIR_PATH ?= catalog
 DOCKER_REPO_BASE ?= ghcr.io/stakater
@@ -127,6 +127,8 @@ E2E_REGISTRY ?= localhost:$(REGISTRY_PORT)
 E2E_TAG := e2e-$(shell date +%s)
 # Set to an operator image that already exists locally (e.g. built in CI) to skip the build.
 E2E_OPERATOR_IMG ?=
+# Channels file of the e2e catalog; test-upgrade passes catalog/channels.yaml.
+E2E_CATALOG_CHANNELS ?= $(LOCALBIN)/e2e-channels.yaml
 
 .PHONY: setup-test-e2e
 setup-test-e2e: kind operator-sdk ## Kind cluster with a local registry (localhost:$(REGISTRY_PORT)) and OLM, for e2e tests and scorecard.
@@ -145,18 +147,24 @@ endif
 	$(CONTAINER_TOOL) push $(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
 	$(MAKE) bundle IMG=$(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
 	$(MAKE) bundle-build bundle-push BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG)
-	@# The e2e run is a fresh install of this build: its catalog lists only this bundle, whatever
-	@# catalog/channels.yaml promotes (the promotion graph is tested by make test-catalog).
+	@# By default the catalog lists only this bundle (a fresh install of this build, whatever
+	@# catalog/channels.yaml promotes); test-upgrade renders the real channel graph instead.
 	printf 'schema: olm.channel\npackage: $(OPERATOR_NAME)\nname: alpha\nentries:\n  - name: $(OPERATOR_NAME).v$(VERSION)\n' \
 		> $(LOCALBIN)/e2e-channels.yaml
-	$(MAKE) catalog-render CATALOG_CHANNELS=$(LOCALBIN)/e2e-channels.yaml \
-		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG) OPM_RENDER_FLAGS=--use-http
+	$(MAKE) catalog-render CATALOG_CHANNELS=$(E2E_CATALOG_CHANNELS) \
+		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG) BUNDLE_IMG_RENDER_FLAGS=--use-http
 	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG)
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the operator installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
 	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) \
 		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update)
+
+.PHONY: test-upgrade
+test-upgrade: setup-test-e2e ## Run the upgrade paths of test/e2e/upgrade_test.go through the real channel graph (published bundles + this build).
+	$(MAKE) e2e-images E2E_TAG=$(E2E_TAG) E2E_CATALOG_CHANNELS=$(CATALOG_DIR_PATH)/channels.yaml
+	KIND_CLUSTER=$(KIND_CLUSTER) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) E2E_UPGRADE=true \
+		go test ./test/e2e/ -v -count=1 -timeout 30m -run '^TestUpgrade$$'
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: kind ## Tear down the e2e Kind cluster (the registry container is kept).
@@ -290,10 +298,6 @@ $(BOOTSTRAP_STAMP):
 	BIN_DIR=$(LOCALBIN) OPERATOR_SDK_VERSION=$(OPERATOR_SDK_VERSION) OPM_VERSION=$(OPM_VERSION) hack/bootstrap-tools.sh
 	touch $@
 
-.PHONY: samples
-samples: sops yq ## Regenerate the SopsSecret sample (alm-example) encrypted for a throwaway key.
-	SOPS=$(SOPS) YQ=$(YQ) hack/generate-samples.sh
-
 .PHONY: csv
 csv: manifests kustomize operator-sdk yq ## Regenerate the base CSV from API markers and stamp operator-icon.svg into it.
 	$(OPERATOR_SDK) generate kustomize manifests -q --interactive=false
@@ -338,7 +342,7 @@ CATALOG_CHANNELS ?= $(CATALOG_DIR_PATH)/channels.yaml
 .PHONY: catalog-render
 catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
 	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) \
-		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) OPM_RENDER_FLAGS="$(OPM_RENDER_FLAGS)" \
+		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) BUNDLE_IMG_RENDER_FLAGS="$(BUNDLE_IMG_RENDER_FLAGS)" \
 		hack/generate-catalog-index.sh
 
 .PHONY: catalog-build
@@ -347,14 +351,6 @@ catalog-build: ## Build the catalog image from CATALOG_DIR_PATH/release.
 		"run make catalog-render; it builds no catalog when $(OPERATOR_NAME).v$(VERSION) is not listed in" \
 		"$(CATALOG_CHANNELS)"; exit 1; }
 	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
-
-.PHONY: test-catalog
-test-catalog: yq ## Test the catalog promotion script with a fake opm.
-	YQ=$(YQ) hack/test-generate-catalog-index.sh
-
-.PHONY: test-release-plan
-test-release-plan: yq ## Test the publish decision of the push workflow with a fake registry.
-	YQ=$(YQ) hack/test-release-plan.sh
 
 # Push the catalog image.
 .PHONY: catalog-push

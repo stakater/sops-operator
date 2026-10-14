@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Renders the file-based catalog from catalog/channels.yaml (Hestia's promotion flow).
+# Renders the file-based catalog from catalog/channels.yaml.
 #
 # channels.yaml is the upgrade graph: a version is released by adding sops-operator.vX.Y.Z to a
 # channel in a reviewed change. Every bundle any channel lists is rendered, so older versions stay
 # installable. When VERSION is listed in no channel, nothing is released and no index is written.
 #
 # Environment: CATALOG_DIR, CHANNELS (channels file; default $CATALOG_DIR/channels.yaml), VERSION, BUNDLE_REPO (published bundles, tagged vX.Y.Z), BUNDLE_IMG
-# (bundle for VERSION; default $BUNDLE_REPO:v$VERSION), ICON, OPM, YQ, OPM_RENDER_FLAGS (e.g. --use-http).
+# (bundle for VERSION; default $BUNDLE_REPO:v$VERSION), ICON, OPM, YQ, BUNDLE_IMG_RENDER_FLAGS (opm render flags for BUNDLE_IMG only,
+# e.g. --use-http for a local test registry; published bundles are always pulled over TLS).
 set -euo pipefail
 
 : "${CATALOG_DIR:?}" "${VERSION:?}" "${BUNDLE_REPO:?}" "${ICON:?}"
@@ -45,11 +46,12 @@ fi
 for entry in ${entries}; do
   version=${entry#"${PACKAGE}.v"}
   ref="${BUNDLE_REPO}:v${version}"
-  [ "${version}" = "${VERSION}" ] && ref="${BUNDLE_IMG}"
+  flags=""
+  [ "${version}" = "${VERSION}" ] && ref="${BUNDLE_IMG}" && flags=${BUNDLE_IMG_RENDER_FLAGS:-}
   # One file per bundle: yq joins them as separate documents whether or not opm starts its
   # output with a separator; concatenated output would merge bundles or leave empty documents.
-  # shellcheck disable=SC2086 # OPM_RENDER_FLAGS holds separate flags
-  env ${opm_env[@]+"${opm_env[@]}"} "${OPM}" render "${ref}" --output=yaml ${OPM_RENDER_FLAGS:-} > "${bundles}/${entry}.yaml"
+  # shellcheck disable=SC2086 # flags holds separate flags
+  env ${opm_env[@]+"${opm_env[@]}"} "${OPM}" render "${ref}" --output=yaml ${flags} > "${bundles}/${entry}.yaml"
   echo "rendered ${ref}"
 done
 

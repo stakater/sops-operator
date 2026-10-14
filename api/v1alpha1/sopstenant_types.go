@@ -78,7 +78,3 @@ type SopsTenantList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []SopsTenant `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&SopsTenant{}, &SopsTenantList{})
-}

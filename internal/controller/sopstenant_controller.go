@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,7 +45,7 @@ import (
 type SopsTenantReconciler struct {
 	client.Client
 	Identities     *identity.Factory
-	Recorder       record.EventRecorder
+	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
 	Now            func() time.Time
 }
@@ -142,7 +142,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		// AlreadyExists: a key appeared since the read; the retry loads it.
 		return "", "", err
 	}
-	r.Recorder.Eventf(t, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated,
+	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
 		"generated a post-quantum key in Secret %s", t.Name)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil
 }

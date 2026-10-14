@@ -634,13 +634,18 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
   `TestSecretOwnership`, …) with `shall …` subtests.
   There is one e2e flow, the way customers install: `make test-e2e` builds the operator and
-  bundle images and a catalog that lists only that bundle (a fresh install; the promotion graph is tested by
-  `make test-catalog`), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
+  bundle images and a catalog that lists only that bundle (a fresh install; upgrades along the channel graph
+  are tested per release), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
   cluster and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`.
   Nothing from `config/` is applied, so the tenant ClusterRoles must come from the bundle. Each run uses a
   CatalogSource named after its image tag (OLM caches catalog contents by name) and first removes the cluster
   RBAC of the previous install (OLM keeps it after the CSV is deleted). `make scorecard` runs the operator-sdk
   basic and OLM suites against the bundle.
+  `make test-upgrade` renders the real `catalog/channels.yaml` instead (published bundles from GHCR, this build
+  as `VERSION`) and runs `TestUpgrade`: for each path in its table it subscribes at the starting version with
+  manual approval, creates a tenant and a SopsSecret, approves OLM's InstallPlans up to the target version, and
+  checks that the upgraded operator decrypts a change into the same Secret with the same tenant key. The table is
+  derived from the channel graph and edited in every change that edits the graph.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
@@ -700,7 +705,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D40 | The source SopsSecret is recorded on the output Secret as the annotation `sops.stakater.com/sopssecret`, not a label | Object names can exceed the 63-character label value limit; a label made such Secrets invalid (found by testing ESO's long-name case). |
 | D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
 | D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
-| D43 | OLM e2e installs the pull request's bundle from a catalog that lists only that bundle, through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config) as a fresh install, independent of which versions `channels.yaml` promotes, and works with kind's standard local registry. The promotion graph is tested by `make test-catalog`. |
+| D43 | OLM e2e installs the pull request's bundle from a catalog that lists only that bundle, through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config) as a fresh install, independent of which versions `channels.yaml` promotes, and works with kind's standard local registry. Upgrades along the channel graph are tested per release, against the real catalog. |
 | D44 | A push to `main` publishes only what `catalog/channels.yaml` lists, and only when `catalog/` changes; the version comes from the channels file, not from git tags or the Makefile | Version rollout is a reviewed change to one file; no image is pushed for unreleased code and no published version is overwritten (Hestia's flow pushes images on every merge under the next version's tag). |
 
 ---
