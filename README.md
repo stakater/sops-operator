@@ -105,8 +105,7 @@ mode, no admission webhooks, no dependencies on other operators, and schema vali
 
 ## How it works
 
-Each box is a trust boundary, labelled with who controls it. Solid arrows are actions; dotted arrows are grants,
-and only the cluster admin makes them.
+Solid arrows are actions; dotted arrows are grants.
 
 ```mermaid
 flowchart TB
@@ -114,39 +113,29 @@ flowchart TB
     TA(["Tenant admin"])
     DEV(["Developer"])
 
-    subgraph GIT["Git repository — ciphertext only"]
-        FILE["#lt;name#gt;.sops.yaml<br/>encrypted values + encrypted scope"]
+    subgraph OPNS["Operator namespace"]
+        OP["SOPS Operator"]
     end
 
-    GITOPS(["GitOps tool<br/>Argo CD / Flux"])
-
-    subgraph OPNS["Operator namespace — controlled by cluster admin"]
-        OP["SOPS Operator<br/>no Secret permissions"]
+    subgraph TNS["Tenant namespace"]
+        TEN["SopsTenant"]
+        SA["Tenant ServiceAccount"]
+        KEY[("Tenant key")]
     end
 
-    subgraph TNS["Tenant namespace — controlled by tenant admin"]
-        TEN["SopsTenant #lt;tenant#gt;"]
-        KEY[("Secret #lt;tenant#gt;<br/>private key")]
-        SA["ServiceAccount #lt;tenant#gt;-sops-tenant<br/>tenant identity"]
+    subgraph APP["Application namespace"]
+        SS["SopsSecret"]
+        OUT[("Secret")]
     end
 
-    subgraph APP["Application namespace — controlled by developers"]
-        SS["SopsSecret #lt;name#gt;"]
-        OUT[("Secret #lt;name#gt;<br/>plaintext")]
-    end
-
-    OP -->|creates| SA
-    CA -.->|"RoleBinding in the tenant namespace:<br/>may use the tenant ServiceAccount"| OP
-    CA -.->|"RoleBinding in the tenant namespace: may read its key<br/>RoleBinding in each application namespace: may write Secrets"| SA
+    CA -.->|"allows to act as the tenant"| OP
+    CA -.->|"grants key access and namespaces"| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
-    DEV -->|"encrypts, commits"| FILE
-    FILE --> GITOPS
-    GITOPS -->|"applies (encrypted)"| SS
-    OP -->|impersonates| SA
+    DEV -->|"encrypts and commits"| SS
+    OP -->|"acts as"| SA
     SA -->|reads| KEY
-    SA -->|"writes, cannot read"| OUT
-    SS -.->|owns| OUT
+    SA -->|writes| OUT
 ```
 
 For every `SopsSecret`, on every change and on a periodic resync, the operator:
