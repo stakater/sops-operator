@@ -7,6 +7,12 @@ on:
   push:
     branches:
       - main
+    # Files no image, bundle or catalog contains; same list as pull_request.yaml.
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+      - "**/.gitignore"
+      - .github/dependabot.yml
 
 permissions: {}
 

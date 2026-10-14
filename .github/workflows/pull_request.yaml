@@ -4,6 +4,12 @@ on:
   pull_request:
     branches:
       - main
+    # Files no build, test or generated artifact reads. The run is skipped only when every changed file matches.
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+      - "**/.gitignore"
+      - .github/dependabot.yml
 
 permissions: {}
 
