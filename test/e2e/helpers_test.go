@@ -49,6 +49,8 @@ import (
 const (
 	waitTimeout = 2 * time.Minute
 	tenantName  = "my-team"
+	// tenantSA is the tenant's ServiceAccount, which the operator creates.
+	tenantSA = tenantName + "-sops"
 	// password is the plaintext value the use cases encrypt.
 	password = "hunter2"
 )
@@ -118,14 +120,22 @@ func apply(t *testing.T, manifests []byte) {
 	}
 }
 
+// onboard applies the cluster admin's onboarding for the tenant in tenantNamespace with Secret
+// write in writeNamespaces.
+func onboard(t *testing.T, tenantNamespace string, writeNamespaces ...string) {
+	t.Helper()
+	apply(t, render(t, "onboarding.yaml", map[string]any{
+		"TenantNamespace": tenantNamespace, "TenantSA": tenantSA, "WriteNamespaces": writeNamespaces,
+		"OperatorNamespace": operatorNamespace,
+	}))
+}
+
 // onboardedTenant creates a tenant namespace, onboards it with Secret write in writeNamespaces,
 // waits for its key and returns the namespace and the key's recipient.
 func onboardedTenant(t *testing.T, tenantNamespace string, writeNamespaces ...string) (string, string) {
 	t.Helper()
 	namespace(t, tenantNamespace)
-	apply(t, render(t, "onboarding.yaml", map[string]any{
-		"TenantNamespace": tenantNamespace, "WriteNamespaces": writeNamespaces,
-	}))
+	onboard(t, tenantNamespace, writeNamespaces...)
 	apply(t, render(t, "sopstenant.yaml", map[string]any{"Name": tenantName, "Namespace": tenantNamespace}))
 	tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNamespace}}
 	waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)

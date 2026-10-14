@@ -37,7 +37,6 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -131,17 +130,31 @@ func (e *Env) Namespace(t testing.TB, prefix string) string {
 	return ns.Name
 }
 
-// Onboard does what the cluster admin's onboarding template does (DESIGN.md §5.2): it creates
-// the tenant's "sops" ServiceAccount, lets it own keys in the tenant namespace and lets it
-// write Secrets in each of writeNamespaces.
-func (e *Env) Onboard(t testing.TB, tenantNamespace string, writeNamespaces ...string) {
+// AllowOperator lets the operator create and act as ServiceAccounts in tenantNamespace, as the
+// first RoleBinding of the cluster admin's onboarding template does (DESIGN.md §5.2).
+func (e *Env) AllowOperator(t testing.TB, tenantNamespace string) {
 	t.Helper()
-	subjects := []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "sops", Namespace: tenantNamespace}}
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "sops-operator", Namespace: tenantNamespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-operator-tenant"},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: OperatorUser}},
+	}
+	if err := e.Admin.Create(context.Background(), binding); err != nil {
+		t.Fatalf("allow operator: %v", err)
+	}
+}
+
+// Onboard does what the cluster admin's onboarding template does (DESIGN.md §5.2): it lets the
+// operator act in tenantNamespace and lets the ServiceAccount of the tenant named tenant, which
+// the operator creates, own keys in the tenant namespace and write Secrets in each of
+// writeNamespaces.
+func (e *Env) Onboard(t testing.TB, tenantNamespace, tenant string, writeNamespaces ...string) {
+	t.Helper()
+	e.AllowOperator(t, tenantNamespace)
+	subjects := []rbacv1.Subject{{
+		Kind: rbacv1.ServiceAccountKind, Name: sopsv1alpha1.TenantServiceAccountName(tenant), Namespace: tenantNamespace,
+	}}
 	objs := []client.Object{
-		&corev1.ServiceAccount{
-			ObjectMeta:                   metav1.ObjectMeta{Name: "sops", Namespace: tenantNamespace},
-			AutomountServiceAccountToken: ptr.To(false),
-		},
 		&rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "sops-key-owner", Namespace: tenantNamespace},
 			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-key-owner"},

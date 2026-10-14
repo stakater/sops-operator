@@ -12,10 +12,12 @@ spec:
 status:
   conditions:
   - lastTransitionTime: <timestamp>
-    message: the tenant identity cannot read its key Secret; the cluster admin must
-      onboard this tenant
+    message: the operator cannot create ServiceAccount e2e-onboard-missing/my-team-sops;
+      the cluster admin must bind ClusterRole sops-operator-tenant to the operator's
+      ServiceAccount in e2e-onboard-missing
     observedGeneration: 1
     reason: AccessDenied
     status: "False"
     type: Ready
   observedGeneration: 1
+  serviceAccountName: my-team-sops

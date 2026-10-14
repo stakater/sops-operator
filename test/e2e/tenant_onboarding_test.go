@@ -59,8 +59,16 @@ func TestTenantOnboarding(t *testing.T) {
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: ns}}
 		waitForReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
 		assertGolden(t, tenant, "not onboarded")
+		// Until the cluster admin lets the operator act in the namespace, it creates nothing there.
+		var sa corev1.ServiceAccount
+		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: tenantSA}, &sa); err == nil {
+			t.Fatal("the operator created a ServiceAccount in a namespace it was not granted")
+		}
 
-		apply(t, render(t, "onboarding.yaml", map[string]any{"TenantNamespace": ns, "WriteNamespaces": []string{}}))
+		onboard(t, ns)
 		waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)
+		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: tenantSA}, &sa); err != nil {
+			t.Fatalf("tenant ServiceAccount: %v", err)
+		}
 	})
 }

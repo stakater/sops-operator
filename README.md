@@ -127,7 +127,7 @@ flowchart TB
     subgraph TNS["Namespace my-team-sops — controlled by tenant admin"]
         TEN["SopsTenant my-team"]
         KEY[("Secret my-team<br/>private key")]
-        SA["ServiceAccount sops<br/>tenant identity"]
+        SA["ServiceAccount my-team-sops<br/>tenant identity"]
     end
 
     subgraph APP["Namespace my-app — controlled by developers"]
@@ -136,7 +136,7 @@ flowchart TB
     end
 
     CA -->|installs| OP
-    CA -->|creates| SA
+    OP -->|creates| SA
     CA -.->|"grants: read key"| KEY
     CA -.->|"grants: write Secrets"| OUT
     TA -->|creates| TEN
@@ -214,30 +214,35 @@ New releases reach the cluster through the catalog: OLM upgrades along the `alph
 v0.0.1 → v0.0.2) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
 use an immutable catalog tag such as `v0.0.2` and change it deliberately.
 
-The bundle also installs the tenant-facing ClusterRoles `sops-key-owner` and `sops-secret-writer`.
+The bundle also installs the ClusterRoles used for onboarding: `sops-operator-tenant`, `sops-key-owner` and
+`sops-secret-writer`.
 
 ### 2. Onboard a tenant (cluster admin)
 
-Create the tenant's identity, let it own keys in its key namespace, and grant it each namespace it may write to:
+Each tenant has its own identity, the ServiceAccount `<tenant>-sops` in the `SopsTenant`'s namespace. The operator
+creates it; it has no permissions until you bind it. Let the operator act in the tenant namespace, let the tenant's
+identity own its key, and grant it each namespace it may write to:
 
 ```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata: { name: sops, namespace: my-team-sops }
-automountServiceAccountToken: false
+# Once per tenant namespace; openshift-operators is where the operator is installed
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: sops-operator, namespace: my-team-sops }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-operator-tenant }
+subjects: [{ kind: ServiceAccount, name: sops-operator-controller-manager, namespace: openshift-operators }]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-key-owner, namespace: my-team-sops }
+metadata: { name: my-team-sops-key-owner, namespace: my-team-sops }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
+subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }]
 ---
 # One per namespace the tenant may write Secrets to
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-my-team, namespace: my-app }
+metadata: { name: my-team-sops-my-team-sops, namespace: my-app }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
+subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }]
 ```
 
 Tenant operators such as Stakater Tenant Operator or Capsule can apply this template automatically.

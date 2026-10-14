@@ -49,7 +49,7 @@ func onboardedTenant(t *testing.T, writeNS ...string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	tenantNS := env.Namespace(t, "tenant")
-	env.Onboard(t, tenantNS, writeNS...)
+	env.Onboard(t, tenantNS, tenantName, writeNS...)
 	tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNS}}
 	if err := env.Admin.Create(ctx, tenant); err != nil {
 		t.Fatal(err)

@@ -14,7 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package identity provides clients that act as a tenant's "sops" ServiceAccount.
+// Package identity provides clients that act as a tenant's ServiceAccount, <tenant>-sops in the
+// tenant namespace.
 package identity
 
 import (
@@ -26,21 +27,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
 
-// ServiceAccountName is the name of every tenant identity's ServiceAccount.
-const ServiceAccountName = "sops"
-
-// UserName returns the user name of the tenant identity of tenantNamespace.
-func UserName(tenantNamespace string) string {
-	return "system:serviceaccount:" + tenantNamespace + ":" + ServiceAccountName
+// UserName returns the user name of the identity of the tenant named tenant in tenantNamespace.
+func UserName(tenantNamespace, tenant string) string {
+	return "system:serviceaccount:" + tenantNamespace + ":" + sopsv1alpha1.TenantServiceAccountName(tenant)
 }
 
 func groups(tenantNamespace string) []string {
 	return []string{"system:serviceaccounts", "system:serviceaccounts:" + tenantNamespace, "system:authenticated"}
 }
 
-// Factory creates and caches one impersonating client per tenant namespace.
+// Factory creates and caches one impersonating client per tenant.
 type Factory struct {
 	base    *rest.Config
 	scheme  *runtime.Scheme
@@ -53,29 +53,32 @@ func NewFactory(base *rest.Config, scheme *runtime.Scheme) *Factory {
 	return &Factory{base: base, scheme: scheme, clients: map[string]client.Client{}}
 }
 
-// ClientFor returns an uncached client acting as the tenant identity of tenantNamespace.
-func (f *Factory) ClientFor(tenantNamespace string) (client.Client, error) {
+// ClientFor returns an uncached client acting as the identity of the tenant named tenant in
+// tenantNamespace.
+func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, error) {
+	user := UserName(tenantNamespace, tenant)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if c, ok := f.clients[tenantNamespace]; ok {
+	if c, ok := f.clients[user]; ok {
 		return c, nil
 	}
 	cfg := rest.CopyConfig(f.base)
-	cfg.Impersonate = rest.ImpersonationConfig{UserName: UserName(tenantNamespace)}
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: user}
 	c, err := client.New(cfg, client.Options{Scheme: f.scheme})
 	if err != nil {
-		return nil, fmt.Errorf("client for tenant identity in %s: %w", tenantNamespace, err)
+		return nil, fmt.Errorf("client for %s: %w", user, err)
 	}
-	f.clients[tenantNamespace] = c
+	f.clients[user] = c
 	return c, nil
 }
 
-// CanWriteSecrets reports whether the tenant identity of tenantNamespace may create Secrets in
-// namespace. It is an early check; the API server enforces the same rule on every write.
-func CanWriteSecrets(ctx context.Context, c client.Client, tenantNamespace, namespace string) (bool, error) {
+// CanWriteSecrets reports whether the identity of the tenant named tenant in tenantNamespace may
+// create Secrets in namespace. It is an early check; the API server enforces the same rule on
+// every write.
+func CanWriteSecrets(ctx context.Context, c client.Client, tenantNamespace, tenant, namespace string) (bool, error) {
 	sar := &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:   UserName(tenantNamespace),
+			User:   UserName(tenantNamespace, tenant),
 			Groups: groups(tenantNamespace),
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Namespace: namespace,

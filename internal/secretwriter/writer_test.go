@@ -35,8 +35,8 @@ func setup(t *testing.T) (client.Client, string) {
 	t.Helper()
 	tenantNS := env.Namespace(t, "tenant")
 	ns := env.Namespace(t, "target")
-	env.Onboard(t, tenantNS, ns)
-	c, err := identity.NewFactory(env.OperatorConfig, env.Scheme).ClientFor(tenantNS)
+	env.Onboard(t, tenantNS, "my-team", ns)
+	c, err := identity.NewFactory(env.OperatorConfig, env.Scheme).ClientFor(tenantNS, "my-team")
 	if err != nil {
 		t.Fatal(err)
 	}

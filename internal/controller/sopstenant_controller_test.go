@@ -39,7 +39,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall generate a post-quantum key", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		tenant := newTenant(ns, nil)
 		if err := env.Admin.Create(ctx, tenant); err != nil {
 			t.Fatal(err)
@@ -75,7 +75,7 @@ func TestTenantKey(t *testing.T) {
 
 	t.Run("shall generate a key for the console sample without a key Secret", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		tenant := createSample(t, "sops_v1alpha1_sopstenant.yaml", ns)
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
 		if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), &corev1.Secret{}); err != nil {
@@ -85,7 +85,7 @@ func TestTenantKey(t *testing.T) {
 
 	t.Run("shall load the existing key for the console sample", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, "my-team-existing-key")
 		keyFile, _, err := crypto.GenerateKeyFile(time.Now())
 		if err != nil {
 			t.Fatal(err)
@@ -107,7 +107,7 @@ func TestTenantKey(t *testing.T) {
 
 	t.Run("shall not generate a key for the existing-key sample", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, "my-team-existing-key")
 		tenant := createSample(t, "sops_v1alpha1_sopstenant_existing_key.yaml", ns)
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
 	})
@@ -115,7 +115,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall load an existing key without changing it", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		x, err := age.GenerateX25519Identity()
 		if err != nil {
 			t.Fatal(err)
@@ -141,7 +141,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall report an invalid key", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		key := keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")
 		if err := env.Admin.Create(ctx, key); err != nil {
 			t.Fatal(err)
@@ -156,7 +156,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall report an invalid key when the public key does not match", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		x, err := age.GenerateX25519Identity()
 		if err != nil {
 			t.Fatal(err)
@@ -180,7 +180,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall report a missing key when generation is disabled", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		if err := env.Admin.Create(ctx, newTenant(ns, ptr.To(false))); err != nil {
 			t.Fatal(err)
 		}
@@ -245,7 +245,7 @@ func TestTenantEvents(t *testing.T) {
 	t.Run("shall record a KeyGenerated event on the tenant through the events API", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns)
+		env.Onboard(t, ns, tenantName)
 		tenant := newTenant(ns, nil)
 		if err := env.Admin.Create(ctx, tenant); err != nil {
 			t.Fatal(err)
@@ -265,5 +265,83 @@ func TestTenantEvents(t *testing.T) {
 			g.Expect(got[0].ReportingController).To(Equal("sops-operator"))
 			g.Expect(got[0].Action).To(Equal("GenerateKey"))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+}
+
+// The operator creates the tenant identity; only the cluster admin's RoleBindings give it access.
+func TestTenantServiceAccount(t *testing.T) {
+	const saName = tenantName + "-sops"
+
+	t.Run("shall report AccessDenied naming the operator binding until the namespace is granted", func(t *testing.T) {
+		ns := env.Namespace(t, "tenant")
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(context.Background(), tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
+		if msg := readyCondition(tenant).Message; !strings.Contains(msg, "sops-operator-tenant") {
+			t.Fatalf("AccessDenied message does not name the ClusterRole to bind to the operator: %q", msg)
+		}
+	})
+
+	t.Run("shall create the tenant ServiceAccount and name the binding it still needs", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.AllowOperator(t, ns)
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
+		if msg := readyCondition(tenant).Message; !strings.Contains(msg, "sops-key-owner") ||
+			!strings.Contains(msg, ns+"/"+saName) {
+			t.Fatalf("AccessDenied message does not name the ClusterRole and ServiceAccount to bind: %q", msg)
+		}
+		if tenant.Status.ServiceAccountName != saName {
+			t.Fatalf("status.serviceAccountName = %q, want %q", tenant.Status.ServiceAccountName, saName)
+		}
+		var sa corev1.ServiceAccount
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: saName}, &sa); err != nil {
+			t.Fatalf("tenant ServiceAccount: %v", err)
+		}
+		if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
+			t.Fatal("the tenant ServiceAccount must not automount a token")
+		}
+		want := map[string]string{
+			"app.kubernetes.io/managed-by": "sops-operator",
+			"app.kubernetes.io/component":  "tenant-identity",
+			"app.kubernetes.io/instance":   tenantName,
+		}
+		for k, v := range want {
+			if sa.Labels[k] != v {
+				t.Fatalf("label %s = %q, want %q", k, sa.Labels[k], v)
+			}
+		}
+	})
+
+	t.Run("shall generate the key as the tenant ServiceAccount once onboarded", func(t *testing.T) {
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(context.Background(), tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
+	})
+
+	t.Run("shall leave an existing ServiceAccount unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: ns}}
+		if err := env.Admin.Create(ctx, sa); err != nil {
+			t.Fatal(err)
+		}
+		env.Onboard(t, ns, tenantName)
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
+		assertUnchanged(t, sa)
 	})
 }
