@@ -126,11 +126,11 @@ flowchart TB
         OUT[("Secret")]
     end
 
-    CA -.->|grant| OP
     CA -.->|grant| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts and commits"| SS
+    OP -->|create| SA
     OP -->|"tenant impersonation"| SA
     SA -->|reads| KEY
     SA -->|writes| OUT
