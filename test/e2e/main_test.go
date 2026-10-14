@@ -97,23 +97,43 @@ func setup() error {
 	if err != nil {
 		return err
 	}
-	if err := installWithOLM(); err != nil {
-		return err
+	// Upgrade tests install the version each path starts from themselves (upgrade_test.go).
+	if os.Getenv("E2E_UPGRADE") != "true" {
+		if err := installWithOLM(); err != nil {
+			return err
+		}
 	}
 	// Fail early if the context points at the wrong cluster.
 	return k8s.List(context.Background(), &sopsv1alpha1.SopsTenantList{})
 }
 
-// installWithOLM installs the operator from the catalog image E2E_CATALOG_IMG, published by
-// `make test-e2e`, through a Subscription, as a customer does. The tenant ClusterRoles come
-// from the bundle; nothing from config/ is applied.
+// installWithOLM installs the head of the alpha channel from the catalog image E2E_CATALOG_IMG,
+// published by `make test-e2e`, through a Subscription, as a customer does. The tenant ClusterRoles
+// come from the bundle; nothing from config/ is applied.
 func installWithOLM() error {
+	if err := subscribe("alpha", "Automatic", ""); err != nil {
+		return err
+	}
+	for _, args := range [][]string{
+		{"-n", operatorNamespace, "wait", "subscription/sops-operator",
+			"--for=jsonpath={.status.state}=AtLatestKnown", "--timeout=300s"},
+		{"-n", operatorNamespace, "wait", "csv", "--all", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=300s"},
+		{"-n", operatorNamespace, "rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"},
+	} {
+		if _, err := kubectl("", args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// subscribe replaces any previous install with a CatalogSource for E2E_CATALOG_IMG, an OperatorGroup
+// for all namespaces and a Subscription to channel with the given InstallPlan approval, starting at
+// startingCSV when it is not empty.
+func subscribe(channel, approval, startingCSV string) error {
 	catalog := os.Getenv("E2E_CATALOG_IMG")
 	if catalog == "" {
-		return fmt.Errorf("E2E_CATALOG_IMG is not set (run make test-e2e)")
-	}
-	kubectl := func(stdin string, args ...string) (string, error) {
-		return run(stdin, "kubectl", append([]string{"--context", kubeContext}, args...)...)
+		return fmt.Errorf("E2E_CATALOG_IMG is not set (run make test-e2e or make test-upgrade)")
 	}
 	// A rerun replaces the previous install so the new catalog image is used.
 	if _, err := kubectl("", "delete", "namespace", operatorNamespace,
@@ -128,25 +148,18 @@ func installWithOLM() error {
 	catalogName := "sops-operator-" + catalog[strings.LastIndex(catalog, ":")+1:]
 	manifests, err := renderFile("olm-install.yaml", map[string]any{
 		"Namespace": operatorNamespace, "CatalogName": catalogName, "CatalogImage": catalog,
-		"ResyncInterval": resyncInterval,
+		"ResyncInterval": resyncInterval, "Channel": channel, "Approval": approval, "StartingCSV": startingCSV,
 	})
 	if err != nil {
 		return err
 	}
-	if _, err := kubectl(string(manifests), "apply", "-f", "-"); err != nil {
-		return err
-	}
-	for _, args := range [][]string{
-		{"-n", operatorNamespace, "wait", "subscription/sops-operator",
-			"--for=jsonpath={.status.state}=AtLatestKnown", "--timeout=300s"},
-		{"-n", operatorNamespace, "wait", "csv", "--all", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=300s"},
-		{"-n", operatorNamespace, "rollout", "status", "deployment/sops-operator-controller-manager", "--timeout=180s"},
-	} {
-		if _, err := kubectl("", args...); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err = kubectl(string(manifests), "apply", "-f", "-")
+	return err
+}
+
+// kubectl runs kubectl against the e2e cluster's context.
+func kubectl(stdin string, args ...string) (string, error) {
+	return run(stdin, "kubectl", append([]string{"--context", kubeContext}, args...)...)
 }
 
 // run executes a command from the repository root, feeding stdin when given. Errors include

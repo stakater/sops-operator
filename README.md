@@ -191,8 +191,11 @@ metadata:
   namespace: openshift-marketplace   # olm on vanilla Kubernetes
 spec:
   sourceType: grpc
-  image: ghcr.io/stakater/sops-operator-catalog:v0.0.1
+  image: ghcr.io/stakater/sops-operator-catalog:latest
   displayName: SOPS Operator
+  updateStrategy:
+    registryPoll:
+      interval: 1h                   # picks up new releases from the moving latest tag
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -204,13 +207,14 @@ spec:
   name: sops-operator
   source: sops-operator
   sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic     # Manual: approve each upgrade's InstallPlan yourself
 ```
 
-The bundle also installs the tenant-facing ClusterRoles `sops-key-owner` and `sops-secret-writer`.
+New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
+v0.0.1 → v0.0.2) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
+use an immutable catalog tag such as `v0.0.2` and change it deliberately.
 
-> [!NOTE]
-> The project is in alpha and no release has been published yet. Until then, build and install from source
-> ([Development](#development)).
+The bundle also installs the tenant-facing ClusterRoles `sops-key-owner` and `sops-secret-writer`.
 
 ### 2. Onboard a tenant (cluster admin)
 
@@ -399,6 +403,7 @@ yq, golangci-lint) are pinned in the Makefile and installed into `bin/`.
 make test               # unit and envtest tests with the RBAC authorizer
 make lint
 make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
+make test-upgrade       # upgrade paths through catalog/channels.yaml: published bundles, then this build
 make scorecard          # operator-sdk scorecard against the bundle
 ```
 

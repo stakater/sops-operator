@@ -28,11 +28,14 @@ metadata:
   name: sops-operator
   namespace: {{ .Namespace }}
 spec:
-  channel: alpha
+  channel: {{ .Channel }}
   name: sops-operator
   source: {{ .CatalogName }}
   sourceNamespace: {{ .Namespace }}
-  installPlanApproval: Automatic
+  installPlanApproval: {{ .Approval }}
+  {{- with .StartingCSV }}
+  startingCSV: {{ . }}
+  {{- end }}
   config:
     env:
       - name: RESYNC_INTERVAL

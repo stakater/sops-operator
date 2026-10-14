@@ -641,6 +641,11 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   CatalogSource named after its image tag (OLM caches catalog contents by name) and first removes the cluster
   RBAC of the previous install (OLM keeps it after the CSV is deleted). `make scorecard` runs the operator-sdk
   basic and OLM suites against the bundle.
+  `make test-upgrade` renders the real `catalog/channels.yaml` instead (published bundles from GHCR, this build
+  as `VERSION`) and runs `TestUpgrade`: for each path in its table it subscribes at the starting version with
+  manual approval, creates a tenant and a SopsSecret, approves OLM's InstallPlans up to the target version, and
+  checks that the upgraded operator decrypts a change into the same Secret with the same tenant key. The table is
+  derived from the channel graph and edited in every change that edits the graph.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
   generated files are current, builds the image without any write token, and pushes it to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token

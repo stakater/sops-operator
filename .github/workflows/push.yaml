@@ -130,12 +130,13 @@ jobs:
           cosign sign --yes "${ref}"
           echo "OPERATOR_REF=${ref}" >> "${GITHUB_ENV}"
 
-      # The bundle references the operator image by digest.
+      # The bundle references the operator image by digest. OLM's unpack Job pulls the bundle on a
+      # cluster node, so it is published for every platform the operator runs on.
       - name: Publish bundle image
         if: env.BUILD == 'true'
         run: |
           make bundle VERSION="${VERSION}" IMG="${OPERATOR_REF}"
-          docker buildx build -f bundle.Dockerfile --sbom=true --provenance=mode=max \
+          docker buildx build -f bundle.Dockerfile --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --metadata-file "${RUNNER_TEMP}/bundle.json" --push \
