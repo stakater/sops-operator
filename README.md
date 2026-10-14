@@ -247,11 +247,6 @@ subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }
 
 Tenant operators such as Stakater Tenant Operator or Capsule can apply this template automatically.
 
-> [!IMPORTANT]
-> Upgrading from v0.0.1 or v0.0.2, where every tenant's identity was the ServiceAccount `sops`: apply this
-> onboarding for each tenant. Until then its `SopsTenant` and `SopsSecret`s report `AccessDenied` and existing
-> Secrets stay as they are. Afterwards, remove the old bindings to `sops` and the `sops` ServiceAccount.
-
 ### 3. Create the tenant key (tenant admin)
 
 ```yaml

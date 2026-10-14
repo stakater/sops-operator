@@ -65,7 +65,7 @@ func TestTenantOnboarding(t *testing.T) {
 			t.Fatal("the operator created a ServiceAccount in a namespace it was not granted")
 		}
 
-		onboard(t, false, ns)
+		onboard(t, ns)
 		waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)
 		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: tenantSA}, &sa); err != nil {
 			t.Fatalf("tenant ServiceAccount: %v", err)

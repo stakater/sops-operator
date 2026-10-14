@@ -1,10 +1,6 @@
 # What the cluster admin applies for a tenant (DESIGN.md §5.2): the operator may create and act as
 # ServiceAccounts in the tenant namespace, and the tenant's ServiceAccount, which the operator
 # creates, owns its key and writes Secrets in each granted namespace.
-# Legacy renders the onboarding of releases before per-tenant ServiceAccounts: bindings to "sops".
-{{- $sa := printf "%s-sops" .TenantName }}
-{{- if .Legacy }}{{ $sa = "sops" }}{{ end }}
-{{- if not .Legacy }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -19,11 +15,10 @@ subjects:
     name: sops-operator-controller-manager
     namespace: {{ .OperatorNamespace }}
 ---
-{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ $sa }}-key-owner
+  name: {{ $.TenantSA }}-key-owner
   namespace: {{ .TenantNamespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -31,14 +26,14 @@ roleRef:
   name: sops-key-owner
 subjects:
   - kind: ServiceAccount
-    name: {{ $sa }}
+    name: {{ $.TenantSA }}
     namespace: {{ .TenantNamespace }}
 {{- range .WriteNamespaces }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ $sa }}-{{ $.TenantNamespace }}
+  name: {{ $.TenantSA }}-{{ $.TenantNamespace }}
   namespace: {{ . }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -46,6 +41,6 @@ roleRef:
   name: sops-secret-writer
 subjects:
   - kind: ServiceAccount
-    name: {{ $sa }}
+    name: {{ $.TenantSA }}
     namespace: {{ $.TenantNamespace }}
 {{- end }}

@@ -121,13 +121,12 @@ func apply(t *testing.T, manifests []byte) {
 }
 
 // onboard applies the cluster admin's onboarding for the tenant in tenantNamespace with Secret
-// write in writeNamespaces; legacy applies the onboarding of releases before per-tenant
-// ServiceAccounts.
-func onboard(t *testing.T, legacy bool, tenantNamespace string, writeNamespaces ...string) {
+// write in writeNamespaces.
+func onboard(t *testing.T, tenantNamespace string, writeNamespaces ...string) {
 	t.Helper()
 	apply(t, render(t, "onboarding.yaml", map[string]any{
-		"TenantNamespace": tenantNamespace, "TenantName": tenantName, "WriteNamespaces": writeNamespaces,
-		"OperatorNamespace": operatorNamespace, "Legacy": legacy,
+		"TenantNamespace": tenantNamespace, "TenantSA": tenantSA, "WriteNamespaces": writeNamespaces,
+		"OperatorNamespace": operatorNamespace,
 	}))
 }
 
@@ -135,14 +134,8 @@ func onboard(t *testing.T, legacy bool, tenantNamespace string, writeNamespaces 
 // waits for its key and returns the namespace and the key's recipient.
 func onboardedTenant(t *testing.T, tenantNamespace string, writeNamespaces ...string) (string, string) {
 	t.Helper()
-	return tenantOnboardedAs(t, false, tenantNamespace, writeNamespaces...)
-}
-
-// tenantOnboardedAs is onboardedTenant with the legacy onboarding of onboard.
-func tenantOnboardedAs(t *testing.T, legacy bool, tenantNamespace string, writeNamespaces ...string) (string, string) {
-	t.Helper()
 	namespace(t, tenantNamespace)
-	onboard(t, legacy, tenantNamespace, writeNamespaces...)
+	onboard(t, tenantNamespace, writeNamespaces...)
 	apply(t, render(t, "sopstenant.yaml", map[string]any{"Name": tenantName, "Namespace": tenantNamespace}))
 	tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNamespace}}
 	waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)
