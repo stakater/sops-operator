@@ -137,8 +137,8 @@ flowchart TB
 
     CA -->|installs| OP
     OP -->|creates| SA
-    CA -.->|"grants: read key"| KEY
-    CA -.->|"grants: write Secrets"| OUT
+    CA -.->|"RoleBinding in team-a-system:<br/>may use the tenant ServiceAccount"| OP
+    CA -.->|"RoleBinding in team-a-system: may read its key<br/>RoleBinding in team-a-foo: may write Secrets"| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts, commits"| FILE
