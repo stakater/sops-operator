@@ -131,7 +131,6 @@ flowchart TB
         OUT[("Secret #lt;name#gt;<br/>plaintext")]
     end
 
-    CA -->|installs| OP
     OP -->|creates| SA
     CA -.->|"RoleBinding in the tenant namespace:<br/>may use the tenant ServiceAccount"| OP
     CA -.->|"RoleBinding in the tenant namespace: may read its key<br/>RoleBinding in each application namespace: may write Secrets"| SA

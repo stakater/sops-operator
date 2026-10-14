@@ -135,7 +135,6 @@ flowchart TB
         OUT[("Secret #lt;name#gt;<br/>plaintext")]
     end
 
-    CA -->|installs| OP
     OP -->|creates| SA
     CA -.->|"RoleBinding in the tenant namespace:<br/>may use the tenant ServiceAccount"| OP
     CA -.->|"RoleBinding in the tenant namespace: may read its key<br/>RoleBinding in each application namespace: may write Secrets"| SA
@@ -165,13 +164,28 @@ decisions.
 
 ## Who does what
 
-| Role | Owns | Cannot |
-|---|---|---|
-| **Cluster admin** | Installing the operator; onboarding tenants; granting each tenant the namespaces it may write to | Needs no access to tenant keys or plaintext |
-| **Tenant admin** | `SopsTenant` and the tenant key; sharing the public key; rotation | Grant the tenant new namespaces |
-| **Developer** | Writing and encrypting `SopsSecret`s | Read keys; decrypt files; target another namespace |
-| **GitOps tool** | Applying encrypted `SopsSecret`s | See plaintext or keys |
-| **Operator** | Decrypting and writing Secrets, only as a tenant identity | Access any Secret on its own |
+**Cluster admin**, once per tenant ([step 2](#2-onboard-the-tenant-cluster-admin)):
+
+- Let the operator use the tenant's ServiceAccount in the tenant namespace (`sops-operator-tenant`).
+- Let the tenant's ServiceAccount read and create its key (`sops-key-owner`).
+- Grant each namespace the tenant may write Secrets to (`sops-secret-writer`).
+
+Never needs access to tenant keys or plaintext.
+
+**Tenant admin** ([step 3](#3-create-the-tenant-key-tenant-admin)):
+
+- Create the `SopsTenant`.
+- Give developers the public key for their `.sops.yaml`.
+- Back up and rotate the key.
+
+Cannot grant the tenant new namespaces.
+
+**Developer** ([step 4](#4-write-and-encrypt-a-secret-developer)):
+
+- Write a `SopsSecret` with its scope, encrypt it with `sops`, and commit it.
+- Check its `Ready` reason when a Secret does not appear.
+
+Cannot read keys, decrypt files or target another namespace.
 
 ## Quick start
 
