@@ -93,12 +93,12 @@ Kubernetes API: SopsSecret ──► operator: authorize → load key → decryp
 
 | Actor | Kind | Owns | Cannot |
 |---|---|---|---|
-| **Cluster admin** | Human (platform team) | Operator installation (OLM). Tenant onboarding: the RoleBindings that grant the tenant `sops` ServiceAccount key ownership in the tenant namespace and Secret write in each namespace the tenant may target. Break-glass private keys (offline). | — |
+| **Cluster admin** | Human (platform team) | Operator installation (OLM). Tenant onboarding: the RoleBindings that let the operator act in the tenant namespace and grant the tenant ServiceAccount (`<tenant>-sops`) key ownership in the tenant namespace and Secret write in each namespace the tenant may target. Break-glass private keys (offline). | — |
 | **Tenant admin** | Human (team lead / tenant owner) | `SopsTenant` and its key Secret in the tenant namespace. Distributing the public key. Key rotation. | Grant the tenant access to namespaces. |
 | **Developer** | Human | `SopsSecret` files in Git and objects in the namespaces they work in. Encrypting with the public key. | Read keys or tenants; decrypt or edit existing files; target a namespace other than the `SopsSecret`'s own. |
 | **GitOps tool** (Argo CD, Flux, CI) | Machine | Applying the still-encrypted `SopsSecret` from Git to the cluster. | See plaintext or keys. |
 | **Operator** | Machine | Decrypting and writing output Secrets — only by impersonating a tenant identity. | Access any Secret with its own identity. |
-| **Tenant identity** (`my-team-sops:sops`) | Machine (ServiceAccount) | The permissions the cluster admin granted: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
+| **Tenant identity** (`my-team-sops:my-team-sops`) | Machine (ServiceAccount) | The permissions the cluster admin granted: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
 
 ### 3.2 Boundaries
 
@@ -123,7 +123,7 @@ flowchart TB
     subgraph TNS["Namespace my-team-sops — controlled by tenant admin"]
         TEN["SopsTenant my-team"]
         KEY[("Secret my-team<br/>private key")]
-        SA["ServiceAccount sops<br/>tenant identity"]
+        SA["ServiceAccount my-team-sops<br/>tenant identity"]
     end
 
     subgraph PROD["Namespace my-app-prod — controlled by developers"]
@@ -153,8 +153,8 @@ flowchart TB
 | Action | Cluster admin | Tenant admin | Developer | GitOps tool | Operator |
 |---|---|---|---|---|---|
 | Install / upgrade the operator | ✅ | — | — | — | — |
-| Create the tenant `sops` ServiceAccount | — | triggers | — | — | ✅ |
-| Onboard a tenant (key-owner RoleBinding) | ✅ | — | — | — | — |
+| Create the tenant ServiceAccount (`<tenant>-sops`) | — | triggers | — | — | ✅ |
+| Onboard a tenant (operator and key-owner RoleBindings) | ✅ | — | — | — | — |
 | Grant a tenant Secret write in a namespace | ✅ | — | — | — | — |
 | Create / delete a `SopsTenant` | — | ✅ | — | — | — |
 | Generate the tenant key | — | triggers | — | — | ⚙️ |
@@ -194,9 +194,9 @@ sequenceDiagram
 
     Note over CA,OP: Onboarding (once per tenant)
     TA->>API: SopsTenant my-team
-    OP->>API: create ServiceAccount my-team-sops/sops
-    CA->>API: RoleBindings to my-team-sops/sops
-    OP->>API: create Secret my-team (as my-team-sops:sops)
+    CA->>API: RoleBindings: operator in my-team-sops, my-team-sops/my-team-sops to its roles
+    OP->>API: create ServiceAccount my-team-sops/my-team-sops
+    OP->>API: create Secret my-team (as my-team-sops:my-team-sops)
     TA->>DEV: public key (.sops.yaml)
 
     Note over CA,OP: Every secret change
@@ -204,10 +204,10 @@ sequenceDiagram
     DEV->>GIT: commit ciphertext
     GO->>GIT: pull
     GO->>API: apply SopsSecret (encrypted)
-    OP->>API: SubjectAccessReview: may my-team-sops:sops write here?
-    OP->>API: read key (as my-team-sops:sops)
+    OP->>API: SubjectAccessReview: may my-team-sops:my-team-sops write here?
+    OP->>API: read key (as my-team-sops:my-team-sops)
     OP->>OP: check recipient, decrypt and check scope, then values and MAC
-    OP->>API: apply Secret (as my-team-sops:sops)
+    OP->>API: apply Secret (as my-team-sops:my-team-sops)
     OP->>API: status Ready / Decrypted
 ```
 
@@ -347,15 +347,15 @@ Behaviour:
 ### 5.1 Flow for a `SopsSecret` in namespace X
 
 1. Resolve `tenantRef` → `my-team-sops/my-team`.
-2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:my-team-sops:sops` create Secrets in X?
+2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:my-team-sops:my-team-sops` create Secrets in X?
    If not → `AccessDenied`. Done before any decryption.
-3. Read the key Secret **impersonating** `my-team-sops:sops`.
+3. Read the key Secret **impersonating** `my-team-sops:my-team-sops`.
 4. Verify the file's recipients include the tenant key → else `NotRecipient`.
 5. Decrypt **only** the encrypted `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No other value of
    a document scoped elsewhere is decrypted. Then decrypt the values and verify the MAC → else `DecryptFailed`.
    Error messages never contain decrypted values (SOPS does not authenticate a value's type tag, and its parse
    errors quote the plaintext).
-6. Create or update the Secret in X **impersonating** `my-team-sops:sops` (D28). The API server enforces the cluster
+6. Create or update the Secret in X **impersonating** `my-team-sops:my-team-sops` (D28). The API server enforces the cluster
    admin's RoleBinding again.
 
 ### 5.2 RBAC objects
@@ -364,6 +364,7 @@ Shipped as static objects in the OLM bundle:
 
 | ClusterRole | Rules | Bound by | Where |
 |---|---|---|---|
+| `sops-operator-tenant` | `serviceaccounts`: `create`, `impersonate` | Cluster admin, to the operator | Each tenant namespace |
 | `sops-key-owner` | `secrets`: `get`, `create` | Cluster admin | Tenant namespace |
 | `sops-secret-writer` | `secrets`: `create`, `update` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
 | `sops-tenant-admin` | full access to `sopstenants`; aggregated to `admin` | — | — |
@@ -372,25 +373,40 @@ Shipped as static objects in the OLM bundle:
 
 The tenant-facing ClusterRoles are shipped from `config/tenant-rbac/` with exactly these names (not prefixed).
 
-The operator creates the tenant identity, the ServiceAccount `sops` with `automountServiceAccountToken: false`, in
-the namespace of each `SopsTenant` (D45). It never changes or deletes an existing one, and the ServiceAccount grants
+Each tenant has its own identity, the ServiceAccount `<tenant>-sops` in the tenant namespace (D46). The operator
+creates it, with `automountServiceAccountToken: false` and the labels `app.kubernetes.io/managed-by: sops-operator`,
+`app.kubernetes.io/component: tenant-identity` and `app.kubernetes.io/instance: <tenant>`, and reports its name in
+`status.serviceAccountName`. It never changes or deletes an existing ServiceAccount, and the ServiceAccount grants
 nothing until the cluster admin binds it.
 
-Cluster admin onboarding template (per tenant; can be applied automatically by Stakater Tenant Operator or Capsule):
+The operator has no cluster-wide permission on ServiceAccounts. RBAC cannot limit impersonation to a name pattern
+such as `*-sops`, so the cluster admin lets the operator create and act as ServiceAccounts per tenant namespace,
+with `sops-operator-tenant` (D46). Until then the tenant reports `AccessDenied`, naming the binding to create. Tenant
+namespaces hold tenant keys only, so the operator can act as nothing else there.
+
+Cluster admin onboarding template (per tenant; can be applied automatically by Stakater Tenant Operator or Capsule;
+`openshift-operators` is the namespace the operator is installed in):
 
 ```yaml
+# once per tenant namespace: the operator may create and act as tenant identities here
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-key-owner, namespace: my-team-sops }
+metadata: { name: sops-operator, namespace: my-team-sops }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-operator-tenant }
+subjects: [{ kind: ServiceAccount, name: sops-operator-controller-manager, namespace: openshift-operators }]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: my-team-sops-key-owner, namespace: my-team-sops }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
+subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }]
 ---
 # one per namespace the tenant may write to
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-my-team, namespace: my-app-prod }
+metadata: { name: my-team-sops-my-team-sops, namespace: my-app-prod }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
+subjects: [{ kind: ServiceAccount, name: my-team-sops, namespace: my-team-sops }]
 ```
 
 ### 5.3 Operator permissions
@@ -403,13 +419,6 @@ subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
 - apiGroups: [sops.stakater.com]
   resources: [sopstenants/status, sopssecrets/status]
   verbs: [get, update, patch]
-- apiGroups: [""]
-  resources: [serviceaccounts]
-  verbs: [impersonate]
-  resourceNames: [sops]
-- apiGroups: [""]
-  resources: [serviceaccounts]
-  verbs: [create]                     # tenant identities; create cannot be limited by name
 - apiGroups: [authorization.k8s.io]
   resources: [subjectaccessreviews]
   verbs: [create]
@@ -422,8 +431,9 @@ subjects: [{ kind: ServiceAccount, name: sops, namespace: my-team-sops }]
   verbs: [get, list, watch, create, update, patch]
 ```
 
-The operator has **no** permission on Secrets, Roles or RoleBindings. On ServiceAccounts it may only impersonate
-`sops` and create: it cannot read, change, delete or mint tokens for any ServiceAccount.
+The operator has **no** permission on Secrets, Roles or RoleBindings, and none on ServiceAccounts outside the tenant
+namespaces the cluster admin granted (`sops-operator-tenant`). There it may create and impersonate ServiceAccounts;
+it can never read, change, delete or mint tokens for any.
 Every Secret access is an impersonated call and appears in the Kubernetes audit log as the operator acting as the
 tenant identity.
 
@@ -440,7 +450,7 @@ happens, against an explicit grant, by a component other than the one asking.
 |---|---|---|
 | **Never trust, always verify** | Every key read and Secret write is an impersonated API call, checked against RBAC on each request. Every ciphertext is verified (recipient, MAC, scope) before use. | API server, SOPS cryptography |
 | **Explicit grants, default deny** | A tenant can write into a namespace only if the cluster admin created a RoleBinding there. No selectors, labels or naming conventions grant access. No grant → `AccessDenied`. | API server |
-| **Least privilege** | Operator has no Secret or RBAC permissions; on ServiceAccounts only create, and an unbound one grants nothing. `sops-secret-writer` cannot read Secrets. `sops-key-owner` is bound only in the key namespace. Developers can encrypt but not decrypt. | API server, public-key cryptography |
+| **Least privilege** | Operator has no Secret or RBAC permissions and no cluster-wide ServiceAccount permissions; it acts only in tenant namespaces the cluster admin granted. `sops-secret-writer` cannot read Secrets. `sops-key-owner` is bound only in the key namespace. Developers can encrypt but not decrypt. | API server, public-key cryptography |
 | **One identity per tenant** | Each tenant acts as its own ServiceAccount; no identity is shared across tenants. | API server |
 | **Separation of duties** | Cluster admin grants access but never handles tenant keys or plaintext. Tenant admin manages keys but cannot grant namespaces. Developer writes secrets but cannot read keys. | API server (RBAC per role) |
 | **Bind data to its destination** | Encrypted `scope` ties every ciphertext to one namespace and name. | SOPS cryptography + operator check |
@@ -497,7 +507,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Tenant admin account | Own tenant's private key; Secret write in the namespaces granted to the tenant | Other tenants; new namespace grants |
 | Tenant identity token | Same as the tenant's grants | Other tenants |
 | Git repository or GitOps tool | Ciphertext only; ability to apply or replay `SopsSecret`s it can already apply | Plaintext or keys |
-| Operator | Can act as any onboarded tenant identity, within each tenant's grants; can create ServiceAccounts, which grant nothing until bound | Any Secret outside tenant grants; RBAC changes; new grants; ServiceAccount tokens |
+| Operator | Can act as any ServiceAccount in tenant namespaces it was granted, within each tenant's grants; can create ServiceAccounts there, which grant nothing until bound | Any Secret outside tenant grants; RBAC changes; new grants; ServiceAccount tokens |
 | Cluster admin | Everything (inherent) | — |
 
 ### 6.5 Revocation
@@ -524,7 +534,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Developer reads keys | Key Secrets live in the dedicated tenant namespace; developers have no access. |
 | Tenant SA token stolen from a consumer namespace | No SA exists in consumer namespaces; the tenant SA lives in the tenant namespace with `automountServiceAccountToken: false`. |
 | Operator overwrites a Secret it does not own | Only manages Secrets it created; pre-existing Secrets → `Conflict`. |
-| Operator compromise reads all Secrets | No Secret RBAC; only impersonation of `sops` SAs, limited to cluster admin grants. |
+| Operator compromise reads all Secrets | No Secret RBAC; impersonation only in tenant namespaces the cluster admin granted, limited to tenant grants. |
 | GitOps tool prunes output Secrets | Tracking labels never copied; ownerReference to the `SopsSecret`. |
 | Plaintext committed to Git | Pre-commit `sops filestatus` / `sops-checker`; documented workflow. |
 
@@ -537,7 +547,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Anyone allowed to write `SopsSecret`s in a namespace can apply their own values (public key encryption). | Same power as writing a Secret; controlled by RBAC on `sopssecrets`. |
 | Replay of an older, validly encrypted `SopsSecret`. | Equivalent to a Git revert; controlled by GitOps and RBAC on manual applies. |
 | Drift on output Secrets is corrected only at the next resync. | Configurable interval. |
-| `sops-key-owner` grants `get` on all Secrets in the tenant namespace. | Tenant namespace is dedicated to keys. |
+| `sops-key-owner` grants `get` on all Secrets in the tenant namespace, so tenants sharing a namespace can read each other's keys. | Tenant namespace is dedicated to keys; per-tenant key access is planned for tenants sharing a namespace. |
 | Plaintext in output Secrets. | Outside the operator: enable etcd encryption at rest; restrict `get secrets` in consumer namespaces. |
 
 ---
@@ -546,10 +556,9 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 
 ### 8.1 Onboarding
 
-1. Tenant admin creates `SopsTenant` → operator creates the `sops` ServiceAccount → `Ready/AccessDenied`, naming
-   the RoleBinding to create.
-2. Cluster admin applies the onboarding template for the tenant (§5.2) → operator generates the key →
-   `Ready/KeyGenerated`. The cluster admin may also onboard first; the order does not matter.
+1. Cluster admin applies the onboarding template for the tenant (§5.2).
+2. Tenant admin creates `SopsTenant` → operator creates the `<tenant>-sops` ServiceAccount and generates the key →
+   `Ready/KeyGenerated`. Without step 1 the tenant reports `Ready/AccessDenied`, naming the RoleBinding to create.
 3. Tenant admin reads `age.pub` from the key Secret and commits it to the team's `.sops.yaml`.
 
 ### 8.2 Developer: create or change a secret
@@ -677,7 +686,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D5 | `SopsTenant` is namespaced; key Secret has the same name; generated if missing (`generateKey`) | Self-service via namespace RBAC; predictable key location. |
 | D6 | Generated keys are age post-quantum hybrid | Ciphertext lives in Git history indefinitely ("harvest now, decrypt later"). |
 | D7 | No public key or `.sops.yaml` in the CR | Public key is derivable from the key Secret; repos own their `.sops.yaml`. |
-| D8 | Namespace access is granted only by cluster admin RoleBindings to the tenant `sops` SA | Single source of truth enforced by the API server; no binding CRD, no selectors. |
+| D8 | Namespace access is granted only by cluster admin RoleBindings to the tenant ServiceAccount | Single source of truth enforced by the API server; no binding CRD, no selectors. |
 | D9 | Operator has zero standing privileges; all Secret access through impersonation | Compromise of the operator does not expose or allow tampering with arbitrary Secrets. |
 | D10 | SubjectAccessReview before decrypting | Nothing is decrypted for namespaces the tenant cannot write to; clear status. |
 | D11 | One `SopsSecret` → one Secret with the same name in the same namespace | Simplest mapping; mirrors a Secret manifest. |
@@ -695,7 +704,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D23 | e2e on kind; CI on pull requests and pushes | Reproducible locally and in CI. |
 | D24 | Authoritative enforcement lives in the API server and in cryptography; operator-side checks exist for early, clear failures (except the scope check) | Keeps the trusted computing base small (§6.3). |
 | D25 | Module `github.com/stakater/sops-operator`; images `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` | Stakater organization. |
-| D26 | Several `SopsTenant`s may share a namespace; they share its `sops` identity and grants | Separate key namespaces when reach must differ. |
+| D26 | Several `SopsTenant`s may share a namespace; each has its own ServiceAccount and grants (D46) | Reach can differ per tenant; key access is still namespace-wide (`sops-key-owner`), so separate key namespaces until per-tenant key access exists. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
 | D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update; a rejected update falls back to create, and `AlreadyExists` → `Conflict`. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
 | D29 | Files are key-sorted byte-wise (`yq 'sort_keys(..)'`) before encryption; the operator rebuilds the document as byte-sorted JSON | The SOPS MAC is order-dependent and the API server returns keys sorted byte-wise. |
@@ -714,7 +723,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
 | D43 | OLM e2e installs the pull request's bundle from a catalog that lists only that bundle, through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config) as a fresh install, independent of which versions `channels.yaml` promotes, and works with kind's standard local registry. Upgrades along the channel graph are tested per release, against the real catalog. |
 | D44 | A push to `main` publishes only what `catalog/channels.yaml` lists, and only when `catalog/` changes; the version comes from the channels file, not from git tags or the Makefile | Version rollout is a reviewed change to one file; no image is pushed for unreleased code and no published version is overwritten (Hestia's flow pushes images on every merge under the next version's tag). |
-| D45 | The operator creates each tenant's `sops` ServiceAccount (create only, never update or delete); the cluster admin creates only the RoleBindings | Onboarding is RoleBindings only. The cost, `create` on ServiceAccounts in every namespace (RBAC cannot limit create by name), grants nothing: an unbound ServiceAccount has no permissions and the operator cannot mint tokens. |
+| D45 | The operator creates each tenant's ServiceAccount (create only, never update or delete); the cluster admin creates only RoleBindings | Onboarding is RoleBindings only, and the identity exists as an object the bindings refer to. An unbound ServiceAccount grants nothing. |
+| D46 | Each tenant's ServiceAccount is `<tenant>-sops`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where the cluster admin bound `sops-operator-tenant` to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). Breaking: tenants onboarded for v0.0.1/v0.0.2 (bindings to `sops`) need the new onboarding. |
 
 ---
 
@@ -727,4 +737,4 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |
-| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:sops` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `age.pub` (D39). |
+| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `age.pub` (D39). |

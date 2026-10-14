@@ -113,7 +113,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("SopsTenant %s is not ready", tenantName)}, nil
 	}
 
-	allowed, err := identity.CanWriteSecrets(ctx, r.Client, ref.Namespace, s.Namespace)
+	allowed, err := identity.CanWriteSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
 	if err != nil {
 		return outcome{}, err
 	}
@@ -122,7 +122,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 			message: fmt.Sprintf("tenant %s is not granted Secret write in namespace %s", tenantName, s.Namespace)}, nil
 	}
 
-	tc, err := r.Identities.ClientFor(ref.Namespace)
+	tc, err := r.Identities.ClientFor(ref.Namespace, ref.Name)
 	if err != nil {
 		return outcome{}, err
 	}

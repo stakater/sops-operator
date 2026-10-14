@@ -39,7 +39,8 @@ func TestAccessRevocation(t *testing.T) {
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		before := outputSecret(t, prod)
-		deleteObject(t, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "sops-" + tenantNS, Namespace: prod}})
+		grant := metav1.ObjectMeta{Name: tenantSA + "-" + tenantNS, Namespace: prod}
+		deleteObject(t, &rbacv1.RoleBinding{ObjectMeta: grant})
 		waitForReason(t, s, sopsv1alpha1.ReasonAccessDenied)
 		assertGolden(t, s, "namespace grant removed")
 		// The operator can no longer write there, so the existing Secret stays as it was (DESIGN.md §6.5).
@@ -58,7 +59,8 @@ func TestAccessRevocation(t *testing.T) {
 			StringData: map[string]string{"password": password},
 		})
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
-		deleteObject(t, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "sops-key-owner", Namespace: tenantNS}})
+		keyGrant := metav1.ObjectMeta{Name: tenantSA + "-key-owner", Namespace: tenantNS}
+		deleteObject(t, &rbacv1.RoleBinding{ObjectMeta: keyGrant})
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNS}}
 		waitForReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
 		waitForMessage(t, s, sopsv1alpha1.ReasonTenantNotReady, "is not ready")

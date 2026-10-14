@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -106,4 +107,28 @@ func TestDefaults(t *testing.T) {
 			t.Fatal("generateKey does not default to true")
 		}
 	})
+}
+
+// The tenant name is used in the "app.kubernetes.io/instance" label of its ServiceAccount.
+func TestSopsTenantValidation(t *testing.T) {
+	ns := env.Namespace(t, "validation")
+	for _, tc := range []struct {
+		name  string
+		len   int
+		valid bool
+	}{
+		{"shall accept a 63-character name", 63, true},
+		{"shall reject a 64-character name", 64, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", tc.len), Namespace: ns}}
+			err := env.Admin.Create(context.Background(), tenant)
+			if tc.valid && err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if !tc.valid && !apierrors.IsInvalid(err) {
+				t.Fatalf("got %v, want Invalid", err)
+			}
+		})
+	}
 }

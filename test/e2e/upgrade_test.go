@@ -38,9 +38,14 @@ import (
 // customer can run, the path OLM takes to the channel head, reduced to the smallest set that
 // traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
 // each channel head is `make test-e2e`.
-var upgradePaths = []struct{ channel, from, to string }{
+// legacyOnboarding marks a from version that predates per-tenant ServiceAccounts: the tenant is
+// onboarded with bindings to "sops", and the new onboarding is applied after the upgrade.
+var upgradePaths = []struct {
+	channel, from, to string
+	legacyOnboarding  bool
+}{
 	// alpha: v0.0.1 --replaces--> v0.0.2 (head); the only edge and the previous head.
-	{channel: "alpha", from: "0.0.1", to: "0.0.2"},
+	{channel: "alpha", from: "0.0.1", to: "0.0.2", legacyOnboarding: true},
 }
 
 const (
@@ -67,7 +72,7 @@ func TestUpgrade(t *testing.T) {
 				installAt(t, p.channel, p.from)
 
 				prod := namespace(t, "e2e-upgrade-prod")
-				tenantNS, recipient := onboardedTenant(t, "e2e-upgrade-tenant", prod)
+				tenantNS, recipient := tenantOnboardedAs(t, p.legacyOnboarding, "e2e-upgrade-tenant", prod)
 				secret := sopsSecret{
 					Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
 					StringData: map[string]string{"password": "v1"},
@@ -78,6 +83,10 @@ func TestUpgrade(t *testing.T) {
 				keyBefore := tenantKey(t, tenantNS)
 
 				upgradeTo(t, p.to)
+				if p.legacyOnboarding {
+					// The release notes ask the cluster admin to apply the new onboarding (DESIGN.md D46).
+					onboard(t, false, tenantNS, prod)
+				}
 
 				// The new operator reconciles the SopsSecret created before the upgrade: it decrypts a
 				// change with the tenant key the earlier version generated, into the same Secret.

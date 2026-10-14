@@ -17,13 +17,11 @@ limitations under the License.
 package controller
 
 // Operator permissions (DESIGN.md §5.3). The operator has no permission on Secrets; it reads
-// tenant keys and writes Secrets only by impersonating tenant identities. It creates each
-// tenant's "sops" ServiceAccount; create cannot be limited by name, and an unbound
-// ServiceAccount grants nothing.
+// tenant keys and writes Secrets only by impersonating tenant identities. It has no cluster-wide
+// permission on ServiceAccounts: the cluster admin grants it create and impersonate in each
+// tenant namespace (ClusterRole sops-operator-tenant).
 //
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create
 // +kubebuilder:rbac:groups=sops.stakater.com,resources=sopstenants;sopssecrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=sops.stakater.com,resources=sopstenants/status;sopssecrets/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=impersonate,resourceNames=sops
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch

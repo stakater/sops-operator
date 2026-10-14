@@ -35,6 +35,11 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Observed generation"
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ServiceAccountName is the tenant identity the operator acts as: the ServiceAccount the cluster
+	// admin binds to grant this tenant access.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 	// UsedBy is the number of SopsSecrets referencing this tenant.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Used by"
 	// +optional
@@ -48,6 +53,7 @@ type SopsTenantStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="the name must be at most 63 characters; it is a label value on the tenant's ServiceAccount"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Used By",type=integer,JSONPath=`.status.usedBy`
@@ -63,6 +69,14 @@ type SopsTenant struct {
 	Spec SopsTenantSpec `json:"spec,omitempty"`
 	// +optional
 	Status SopsTenantStatus `json:"status,omitempty"`
+}
+
+// ServiceAccountSuffix is appended to a tenant's name to form its ServiceAccount name.
+const ServiceAccountSuffix = "-sops"
+
+// TenantServiceAccountName returns the name of the ServiceAccount of the tenant named tenant.
+func TenantServiceAccountName(tenant string) string {
+	return tenant + ServiceAccountSuffix
 }
 
 // ShouldGenerateKey reports whether a missing key Secret should be generated.

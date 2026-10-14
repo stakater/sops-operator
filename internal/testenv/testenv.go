@@ -130,12 +130,30 @@ func (e *Env) Namespace(t testing.TB, prefix string) string {
 	return ns.Name
 }
 
-// Onboard does what the cluster admin's onboarding template does (DESIGN.md §5.2): it lets the
-// tenant's "sops" ServiceAccount, which the operator creates, own keys in the tenant namespace
-// and write Secrets in each of writeNamespaces.
-func (e *Env) Onboard(t testing.TB, tenantNamespace string, writeNamespaces ...string) {
+// AllowOperator lets the operator create and act as ServiceAccounts in tenantNamespace, as the
+// first RoleBinding of the cluster admin's onboarding template does (DESIGN.md §5.2).
+func (e *Env) AllowOperator(t testing.TB, tenantNamespace string) {
 	t.Helper()
-	subjects := []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "sops", Namespace: tenantNamespace}}
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "sops-operator", Namespace: tenantNamespace},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-operator-tenant"},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: OperatorUser}},
+	}
+	if err := e.Admin.Create(context.Background(), binding); err != nil {
+		t.Fatalf("allow operator: %v", err)
+	}
+}
+
+// Onboard does what the cluster admin's onboarding template does (DESIGN.md §5.2): it lets the
+// operator act in tenantNamespace and lets the ServiceAccount of the tenant named tenant, which
+// the operator creates, own keys in the tenant namespace and write Secrets in each of
+// writeNamespaces.
+func (e *Env) Onboard(t testing.TB, tenantNamespace, tenant string, writeNamespaces ...string) {
+	t.Helper()
+	e.AllowOperator(t, tenantNamespace)
+	subjects := []rbacv1.Subject{{
+		Kind: rbacv1.ServiceAccountKind, Name: sopsv1alpha1.TenantServiceAccountName(tenant), Namespace: tenantNamespace,
+	}}
 	objs := []client.Object{
 		&rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "sops-key-owner", Namespace: tenantNamespace},

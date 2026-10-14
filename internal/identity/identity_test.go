@@ -29,8 +29,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestTenantIdentity(t *testing.T) {
-	t.Run("shall act as the sops ServiceAccount", func(t *testing.T) {
-		if got := identity.UserName("my-team-sops"); got != "system:serviceaccount:my-team-sops:sops" {
+	t.Run("shall act as the tenant's own ServiceAccount", func(t *testing.T) {
+		if got := identity.UserName("my-team-sops", "my-team"); got != "system:serviceaccount:my-team-sops:my-team-sops" {
 			t.Fatalf("UserName = %q", got)
 		}
 	})
@@ -43,14 +43,14 @@ func TestTenantIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		f := identity.NewFactory(env.OperatorConfig, env.Scheme)
-		c, err := f.ClientFor(tenantNS)
+		c, err := f.ClientFor(tenantNS, "my-team")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(key), &corev1.Secret{}); !apierrors.IsForbidden(err) {
 			t.Fatalf("before onboarding: got %v, want Forbidden", err)
 		}
-		env.Onboard(t, tenantNS)
+		env.Onboard(t, tenantNS, "my-team")
 		if err := c.Get(ctx, client.ObjectKeyFromObject(key), &corev1.Secret{}); err != nil {
 			t.Fatalf("after onboarding: %v", err)
 		}
@@ -61,10 +61,10 @@ func TestTenantIdentity(t *testing.T) {
 		tenantNS := env.Namespace(t, "tenant")
 		granted := env.Namespace(t, "granted")
 		other := env.Namespace(t, "other")
-		env.Onboard(t, tenantNS, granted)
+		env.Onboard(t, tenantNS, "my-team", granted)
 
 		for ns, want := range map[string]bool{granted: true, other: false} {
-			got, err := identity.CanWriteSecrets(ctx, env.Operator, tenantNS, ns)
+			got, err := identity.CanWriteSecrets(ctx, env.Operator, tenantNS, "my-team", ns)
 			if err != nil {
 				t.Fatalf("CanWriteSecrets(%s): %v", ns, err)
 			}

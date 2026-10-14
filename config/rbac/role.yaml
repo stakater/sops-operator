@@ -6,20 +6,6 @@ metadata:
 rules:
 - apiGroups:
   - ""
-  resources:
-  - serviceaccounts
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resourceNames:
-  - sops
-  resources:
-  - serviceaccounts
-  verbs:
-  - impersonate
-- apiGroups:
-  - ""
   - events.k8s.io
   resources:
   - events
