@@ -396,23 +396,47 @@ extend a tenant's reach and stay with the cluster admin.
 # is the operator's ServiceAccount, in the namespace of its Subscription (openshift-operators here).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-operator, namespace: team-a-system }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-operator-tenant }
-subjects: [{ kind: ServiceAccount, name: sops-operator-controller-manager, namespace: openshift-operators }]
+metadata:
+  name: sops-operator
+  namespace: team-a-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-operator-tenant
+subjects:
+  - kind: ServiceAccount
+    name: sops-operator-controller-manager
+    namespace: openshift-operators
 ---
 # Once per tenant: the tenant ServiceAccount owns its key.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: team-a-key-owner, namespace: team-a-system }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: team-a-sops-tenant, namespace: team-a-system }]
+metadata:
+  name: team-a-key-owner
+  namespace: team-a-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-key-owner
+subjects:
+  - kind: ServiceAccount
+    name: team-a-sops-tenant
+    namespace: team-a-system
 ---
 # One per namespace the tenant may write to.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: team-a-secret-writer, namespace: team-a-prod }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: team-a-sops-tenant, namespace: team-a-system }]
+metadata:
+  name: team-a-secret-writer
+  namespace: team-a-prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-secret-writer
+subjects:
+  - kind: ServiceAccount
+    name: team-a-sops-tenant
+    namespace: team-a-system
 ```
 
 ### 5.3 Operator permissions

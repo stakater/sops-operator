@@ -235,22 +235,46 @@ RoleBinding names are free; only `roleRef` and `subjects` matter.
 # (openshift-operators in step 1).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: sops-operator, namespace: team-a-system }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-operator-tenant }
-subjects: [{ kind: ServiceAccount, name: sops-operator-controller-manager, namespace: openshift-operators }]
+metadata:
+  name: sops-operator
+  namespace: team-a-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-operator-tenant
+subjects:
+  - kind: ServiceAccount
+    name: sops-operator-controller-manager
+    namespace: openshift-operators
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: team-a-key-owner, namespace: team-a-system }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-key-owner }
-subjects: [{ kind: ServiceAccount, name: team-a-sops-tenant, namespace: team-a-system }]
+metadata:
+  name: team-a-key-owner
+  namespace: team-a-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-key-owner
+subjects:
+  - kind: ServiceAccount
+    name: team-a-sops-tenant
+    namespace: team-a-system
 ---
 # One per namespace the tenant may write Secrets to
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: team-a-secret-writer, namespace: team-a-foo }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sops-secret-writer }
-subjects: [{ kind: ServiceAccount, name: team-a-sops-tenant, namespace: team-a-system }]
+metadata:
+  name: team-a-secret-writer
+  namespace: team-a-foo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sops-secret-writer
+subjects:
+  - kind: ServiceAccount
+    name: team-a-sops-tenant
+    namespace: team-a-system
 ```
 
 The first two RoleBindings only grant permissions the built-in `admin` role already holds in `team-a-system`, so the
