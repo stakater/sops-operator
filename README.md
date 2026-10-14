@@ -118,12 +118,12 @@ flowchart TB
     subgraph TNS["Tenant namespace"]
         TEN["SopsTenant"]
         SA["Tenant ServiceAccount"]
-        KEY[("Secret<br/>tenant key")]
+        KEY["Secret<br/>tenant key"]
     end
 
     subgraph APP["Application namespace"]
         SS["SopsSecret"]
-        OUT[("Secret<br/>decrypted values")]
+        OUT["Secret<br/>decrypted values"]
     end
 
     CA -.->|grant| SA

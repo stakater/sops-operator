@@ -122,13 +122,13 @@ flowchart TB
 
     subgraph TNS["Tenant namespace — controlled by tenant admin"]
         TEN["SopsTenant #lt;tenant#gt;"]
-        KEY[("Secret #lt;tenant#gt;<br/>private key")]
+        KEY["Secret #lt;tenant#gt;<br/>private key"]
         SA["ServiceAccount #lt;tenant#gt;-sops-tenant<br/>tenant identity"]
     end
 
     subgraph APP["Application namespace — controlled by developers"]
         SS["SopsSecret #lt;name#gt;"]
-        OUT[("Secret #lt;name#gt;<br/>plaintext")]
+        OUT["Secret #lt;name#gt;<br/>plaintext"]
     end
 
     OP -->|creates| SA
