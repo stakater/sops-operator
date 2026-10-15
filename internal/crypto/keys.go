@@ -23,17 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"filippo.io/age"
 )
 
 // KeyFileField is the field of a tenant key Secret that holds the age identities.
 const KeyFileField = "age.agekey"
-
-// PublicKeyField is the field of a tenant key Secret that holds the primary public key (recipient),
-// written when the operator generates the key. When present it must match the primary identity.
-const PublicKeyField = "age.pub"
 
 // ErrKeyInvalid reports a key file that is empty or contains an unsupported or corrupt identity.
 var ErrKeyInvalid = errors.New("invalid key file")
@@ -83,17 +78,12 @@ func ParseKeyFile(data []byte) (*KeySet, error) {
 	return ks, nil
 }
 
-// GenerateKeyFile generates a post-quantum hybrid age identity and renders it in the
-// age-keygen file format.
-func GenerateKeyFile(now time.Time) (keyFile []byte, recipient string, err error) {
+// GenerateKeyFile generates a post-quantum hybrid age identity and returns it as a key file that
+// holds only the private key, and its public key.
+func GenerateKeyFile() (keyFile []byte, recipient string, err error) {
 	id, err := age.GenerateHybridIdentity()
 	if err != nil {
 		return nil, "", fmt.Errorf("generate age identity: %w", err)
 	}
-	recipient = id.Recipient().String()
-	var b bytes.Buffer
-	fmt.Fprintf(&b, "# created: %s\n", now.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "# public key: %s\n", recipient)
-	fmt.Fprintf(&b, "%s\n", id.String())
-	return b.Bytes(), recipient, nil
+	return []byte(id.String() + "\n"), id.Recipient().String(), nil
 }

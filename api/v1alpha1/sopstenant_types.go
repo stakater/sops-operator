@@ -40,10 +40,14 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
-	// KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+	// KeySecretName is the Secret in the tenant namespace that holds the tenant's private key.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
 	// +optional
 	KeySecretName string `json:"keySecretName,omitempty"`
+	// PublicKey is the public key (age recipient) of the primary key: the value to list in .sops.yaml.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Public key"
+	// +optional
+	PublicKey string `json:"publicKey,omitempty"`
 	// UsedBy is the number of SopsSecrets referencing this tenant.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Used by"
 	// +optional

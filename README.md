@@ -212,8 +212,8 @@ spec:
 ```
 
 New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
-v0.0.3 → v0.0.4) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
-use an immutable catalog tag such as `v0.0.4` and change it deliberately.
+v0.0.4 → v0.0.5) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
+use an immutable catalog tag such as `v0.0.5` and change it deliberately.
 
 The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-secret-writer`.
@@ -301,10 +301,11 @@ NAME     READY   REASON         USED BY   AGE
 team-a   True    KeyGenerated   0         5s
 ```
 
-The key is in the Secret `team-a-sops-keys`. Read its public key and commit it to the team's `.sops.yaml`:
+The private key stays in the Secret `team-a-sops-keys` (field `age.agekey`); never copy it out. The public key is
+in the tenant's status. Read it and commit it to the team's `.sops.yaml`:
 
 ```bash
-kubectl get secret team-a-sops-keys -n team-a-system -o jsonpath='{.data.age\.pub}' | base64 -d
+kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```
 
 ```yaml
@@ -317,7 +318,7 @@ creation_rules:
       - age1pq1...   # team-a
 ```
 
-To use an existing key, create the Secret `team-a-system/team-a` with your identity in `age.agekey` first, and
+To use an existing key, create the Secret `team-a-sops-keys` in `team-a-system` with your private key in `age.agekey` first, and
 set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
@@ -399,7 +400,7 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 
 ## Operations
 
-- **Key rotation**: prepend a new identity to `age.agekey`, add its public key to `.sops.yaml`, and run
+- **Key rotation**: prepend a new private key to `age.agekey`, add the new `status.publicKey` to `.sops.yaml`, and run
   `sops updatekeys` on each file. When every `SopsSecret` reports `Decrypted`, remove the old identity.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
