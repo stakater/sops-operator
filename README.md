@@ -347,6 +347,13 @@ yq -i 'sort_keys(..)' team-a-foo/db-credentials.sops.yaml
 sops encrypt -i team-a-foo/db-credentials.sops.yaml
 ```
 
+If `.sops.yaml` is not in the current directory or a parent, for example one per environment, pass it with
+`--config` (before `encrypt`); the file can then be anywhere:
+
+```bash
+sops --config environments/stage/.sops.yaml encrypt -i team-a-foo/db-credentials.sops.yaml
+```
+
 Check the result before committing:
 
 ```bash
@@ -370,8 +377,8 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 > - Quote `stringData` values. Unquoted values such as `0123` are rejected instead of being silently changed.
 > - Set the scope explicitly when the namespace is injected later, for example by kustomize.
 > - Developers encrypt but cannot decrypt: to change a value, rewrite the file and encrypt it again.
-> - `sops` looks for `.sops.yaml` in the current directory and its parents, not in the file's directory. If the
->   config is elsewhere, pass it: `sops --config path/to/.sops.yaml encrypt -i <file>`.
+> - `sops` looks for `.sops.yaml` in the current directory and its parents, not in the file's directory. Use
+>   `--config` when you run it from elsewhere.
 > - Do not pass `--age`: `sops` then ignores `.sops.yaml`, and the file is missing `mac_only_encrypted`, which the
 >   `SopsSecret` schema rejects. It cannot be added afterwards; encrypt again from plaintext.
 
