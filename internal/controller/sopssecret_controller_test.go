@@ -50,7 +50,7 @@ func TestSecretRejection(t *testing.T) {
 	dev := env.Namespace(t, "dev")
 	ungranted := env.Namespace(t, "ungranted")
 	tenantNS, recipient := onboardedTenant(t, prod, dev)
-	_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+	_, otherRecipient, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}

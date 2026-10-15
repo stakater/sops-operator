@@ -212,8 +212,8 @@ spec:
 ```
 
 New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
-v0.0.3 → v0.0.4) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
-use an immutable catalog tag such as `v0.0.4` and change it deliberately.
+v0.0.4 → v0.0.5) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
+use an immutable catalog tag such as `v0.0.5` and change it deliberately.
 
 The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-secret-writer`.
@@ -301,10 +301,11 @@ NAME     READY   REASON         USED BY   AGE
 team-a   True    KeyGenerated   0         5s
 ```
 
-The key is in the Secret `team-a-sops-keys`. Read its public key and commit it to the team's `.sops.yaml`:
+The private key stays in the Secret `team-a-sops-keys` (field `age.agekey`); never copy it out. The public key is
+in the tenant's status. Read it and commit it to the team's `.sops.yaml`:
 
 ```bash
-kubectl get secret team-a-sops-keys -n team-a-system -o jsonpath='{.data.age\.pub}' | base64 -d
+kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```
 
 ```yaml
@@ -317,7 +318,7 @@ creation_rules:
       - age1pq1...   # team-a
 ```
 
-To use an existing key, create the Secret `team-a-system/team-a` with your identity in `age.agekey` first, and
+To use an existing key, create the Secret `team-a-sops-keys` in `team-a-system` with your private key in `age.agekey` first, and
 set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
@@ -338,10 +339,26 @@ spec:
     password: "s3cr3t"
 ```
 
+Encrypt it from inside the repository, so `sops` finds `.sops.yaml`:
+
 ```bash
 yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' team-a-foo/db-credentials.sops.yaml
 yq -i 'sort_keys(..)' team-a-foo/db-credentials.sops.yaml
 sops encrypt -i team-a-foo/db-credentials.sops.yaml
+```
+
+If `.sops.yaml` is not in the current directory or a parent, for example one per environment, pass it with
+`--config` (before `encrypt`); the file can then be anywhere:
+
+```bash
+sops --config environments/stage/.sops.yaml encrypt -i team-a-foo/db-credentials.sops.yaml
+```
+
+Check the result before committing:
+
+```bash
+sops filestatus team-a-foo/db-credentials.sops.yaml          # {"encrypted":true}
+yq '.sops.mac_only_encrypted' team-a-foo/db-credentials.sops.yaml   # true
 git add team-a-foo/db-credentials.sops.yaml && git commit -m "Add database credentials"
 ```
 
@@ -360,6 +377,10 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 > - Quote `stringData` values. Unquoted values such as `0123` are rejected instead of being silently changed.
 > - Set the scope explicitly when the namespace is injected later, for example by kustomize.
 > - Developers encrypt but cannot decrypt: to change a value, rewrite the file and encrypt it again.
+> - `sops` looks for `.sops.yaml` in the current directory and its parents, not in the file's directory. Use
+>   `--config` when you run it from elsewhere.
+> - Do not pass `--age`: `sops` then ignores `.sops.yaml`, and the file is missing `mac_only_encrypted`, which the
+>   `SopsSecret` schema rejects. It cannot be added afterwards; encrypt again from plaintext.
 
 ## Reference
 
@@ -399,7 +420,7 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 
 ## Operations
 
-- **Key rotation**: prepend a new identity to `age.agekey`, add its public key to `.sops.yaml`, and run
+- **Key rotation**: prepend a new private key to `age.agekey`, add the new `status.publicKey` to `.sops.yaml`, and run
   `sops updatekeys` on each file. When every `SopsSecret` reports `Decrypted`, remove the old identity.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.

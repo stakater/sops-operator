@@ -39,9 +39,10 @@ import (
 // traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
 // each channel head is `make test-e2e`.
 var upgradePaths = []struct{ channel, from, to string }{
-	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 (head). Not tested:
-	// v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps the key in a Secret
-	// named after the tenant (D48); none was deployed beyond trials. Paths start from v0.0.4.
+	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 --replaces--> v0.0.5
+	// (head). Not tested: v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps
+	// the key in a Secret named after the tenant (D48); none was deployed beyond trials.
+	{channel: "alpha", from: "0.0.4", to: "0.0.5"},
 }
 
 const (
@@ -181,7 +182,7 @@ func approveUntilSucceeded(t *testing.T, csv string, approve func(csvs []string)
 
 func csvName(version string) string { return "sops-operator.v" + version }
 
-// tenantKey returns the tenant's key Secret, named after the SopsTenant.
+// tenantKey returns the tenant's key Secret.
 func tenantKey(t *testing.T, tenantNamespace string) *corev1.Secret {
 	t.Helper()
 	var key corev1.Secret

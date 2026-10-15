@@ -9,3 +9,5 @@ entries:
     replaces: sops-operator.v0.0.2
   - name: sops-operator.v0.0.4
     replaces: sops-operator.v0.0.3
+  - name: sops-operator.v0.0.5
+    replaces: sops-operator.v0.0.4
