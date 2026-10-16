@@ -1,86 +1,43 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package document_test
 
 import (
-	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
-	"sigs.k8s.io/yaml"
-
-	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
-	"github.com/stakater/sops-operator/internal/crypto"
-	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 	"github.com/stakater/sops-operator/internal/document"
 )
 
-// encryptedSopsSecret builds a SopsSecret the way a developer would (sorted plaintext, then
-// sops encrypt) and returns it as the API server would hand it to the operator.
-func encryptedSopsSecret(t *testing.T, spec map[string]any) (*sopsv1alpha1.SopsSecret, *crypto.KeySet) {
-	t.Helper()
-	keyFile, recipient, err := crypto.GenerateKeyFile()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ks, err := crypto.ParseKeyFile(keyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// JSON output is valid YAML with keys sorted byte-wise, like `yq -i 'sort_keys(..)'`.
-	plain, err := json.Marshal(map[string]any{
-		"apiVersion": "sops.stakater.com/v1alpha1",
-		"kind":       "SopsSecret",
-		"metadata":   map[string]any{"name": "db-creds", "namespace": "my-app-prod"},
-		"spec":       spec,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	enc, err := cryptotest.Encrypt(plain, recipient)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var s sopsv1alpha1.SopsSecret
-	if err := yaml.Unmarshal(enc, &s); err != nil {
-		t.Fatal(err)
-	}
-	// Round-trip through JSON like the API server.
-	raw, err := json.Marshal(&s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stored sopsv1alpha1.SopsSecret
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		t.Fatal(err)
-	}
-	return &stored, ks
-}
+const scope = "my-app-prod/db-creds"
 
-func decrypt(t *testing.T, s *sopsv1alpha1.SopsSecret, ks *crypto.KeySet) (*document.Payload, error) {
-	t.Helper()
-	doc, err := document.Canonical(s)
-	if err != nil {
-		t.Fatalf("Canonical: %v", err)
-	}
-	plain, err := crypto.Decrypt(doc, ks, document.ScopeFor("my-app-prod", "db-creds"))
-	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
-	}
-	return document.ParsePlain(plain)
-}
-
-func TestSopsSecretDocument(t *testing.T) {
-	t.Run("shall decrypt after a round trip through the Kubernetes API", func(t *testing.T) {
-		s, ks := encryptedSopsSecret(t, map[string]any{
-			"tenantRef":  map[string]any{"name": "my-team", "namespace": "my-team-sops"},
-			"scope":      "my-app-prod/db-creds",
-			"data":       map[string]any{"cert": "AAEC"}, // bytes 0x00 0x01 0x02
-			"stringData": map[string]any{"password": "hunter2"},
-		})
-		p, err := decrypt(t, s, ks)
+func TestPayload(t *testing.T) {
+	t.Run("shall read the scope, data and stringData", func(t *testing.T) {
+		p, err := document.Parse([]byte(`scope: my-app-prod/db-creds
+data:
+  cert: AAEC # bytes 0x00 0x01 0x02
+stringData:
+  password: "hunter2"
+`), scope)
 		if err != nil {
-			t.Fatalf("ParsePlain: %v", err)
+			t.Fatalf("Parse: %v", err)
 		}
-		if p.Scope != document.ScopeFor("my-app-prod", "db-creds") {
+		if p.Scope != scope {
 			t.Fatalf("scope = %q", p.Scope)
 		}
 		if string(p.Data["password"]) != "hunter2" || string(p.Data["cert"]) != "\x00\x01\x02" {
@@ -88,35 +45,22 @@ func TestSopsSecretDocument(t *testing.T) {
 		}
 	})
 
-	t.Run("shall keep keys in byte order", func(t *testing.T) {
-		// Natural ordering (digit runs, punctuation first) differs from byte order for these keys.
-		s, ks := encryptedSopsSecret(t, map[string]any{
-			"tenantRef": map[string]any{"name": "my-team", "namespace": "my-team-sops"},
-			"scope":     "my-app-prod/db-creds",
-			"stringData": map[string]any{
-				"key2": "a", "key10": "b", "APIKEY": "c", "API_KEY": "d", "Z": "e", "_a": "f",
-				"PG_HOST": "g", "PGPASSWORD": "h",
-			},
-		})
-		p, err := decrypt(t, s, ks)
-		if err != nil {
-			t.Fatalf("ParsePlain: %v", err)
+	t.Run("shall check the scope before other values", func(t *testing.T) {
+		// A copied file with an invalid value is rejected by scope, without naming the decrypted scope.
+		_, err := document.Parse([]byte("scope: my-app-prod/db-creds\nstringData:\n  port: 5432\n"), "my-app-dev/db-creds")
+		if !errors.Is(err, document.ErrScopeMismatch) {
+			t.Fatalf("got %v, want ErrScopeMismatch", err)
 		}
-		if string(p.Data["key10"]) != "b" || string(p.Data["PGPASSWORD"]) != "h" {
-			t.Fatal("payload values do not match the plaintext")
+		if strings.Contains(err.Error(), "my-app-prod") {
+			t.Fatalf("error reveals the decrypted scope: %q", err)
 		}
 	})
 
 	t.Run("shall reject unquoted scalars", func(t *testing.T) {
-		// SOPS parses unquoted scalars before encrypting, so 0123 would become 83: refuse them.
-		for name, value := range map[string]any{"port": 5432, "pin": 0o123, "enabled": true} {
+		// YAML parses unquoted scalars (0123 becomes 83): refuse them instead of converting.
+		for name, value := range map[string]string{"port": "5432", "pin": "0123", "enabled": "true"} {
 			t.Run(name, func(t *testing.T) {
-				s, ks := encryptedSopsSecret(t, map[string]any{
-					"tenantRef":  map[string]any{"name": "my-team", "namespace": "my-team-sops"},
-					"scope":      "my-app-prod/db-creds",
-					"stringData": map[string]any{name: value},
-				})
-				_, err := decrypt(t, s, ks)
+				_, err := document.Parse([]byte("scope: "+scope+"\nstringData:\n  "+name+": "+value+"\n"), scope)
 				if err == nil || !strings.Contains(err.Error(), "stringData."+name) || !strings.Contains(err.Error(), "quoted") {
 					t.Fatalf("want an error asking to quote stringData.%s, got %v", name, err)
 				}
@@ -124,21 +68,40 @@ func TestSopsSecretDocument(t *testing.T) {
 		}
 	})
 
-	t.Run("shall reject invalid base64 without revealing the value", func(t *testing.T) {
-		const secretValue = "not-base64-%%%"
-		_, err := document.ParsePlain([]byte("spec:\n  scope: a/b\n  data:\n    token: " + secretValue + "\n"))
-		if err == nil {
-			t.Fatal("want error for invalid base64")
-		}
-		if !strings.Contains(err.Error(), "token") || strings.Contains(err.Error(), secretValue) {
-			t.Fatalf("error %q must name the key and not contain the value", err)
+	t.Run("shall name the key of invalid base64 without its value", func(t *testing.T) {
+		const secretValue = "not-base64!"
+		_, err := document.Parse([]byte("scope: "+scope+"\ndata:\n  token: "+secretValue+"\n"), scope)
+		if err == nil || !strings.Contains(err.Error(), "data.token") || strings.Contains(err.Error(), secretValue) {
+			t.Fatalf("want an error naming data.token without its value, got %v", err)
 		}
 	})
 
 	t.Run("shall reject nested values", func(t *testing.T) {
-		_, err := document.ParsePlain([]byte("spec:\n  scope: a/b\n  stringData:\n    nested:\n      x: y\n"))
+		_, err := document.Parse([]byte("scope: "+scope+"\nstringData:\n  nested:\n    x: y\n"), scope)
 		if err == nil || !strings.Contains(err.Error(), "nested") {
-			t.Fatalf("want error naming the nested key, got %v", err)
+			t.Fatalf("want an error naming the nested key, got %v", err)
+		}
+	})
+
+	t.Run("shall reject a key in both data and stringData", func(t *testing.T) {
+		_, err := document.Parse([]byte("scope: "+scope+"\ndata:\n  k: AAEC\nstringData:\n  k: v\n"), scope)
+		if err == nil || !strings.Contains(err.Error(), "both") {
+			t.Fatalf("want an error naming the duplicate key, got %v", err)
+		}
+	})
+
+	t.Run("shall reject unknown fields", func(t *testing.T) {
+		// A misspelt field would otherwise deliver an empty Secret.
+		_, err := document.Parse([]byte("scope: "+scope+"\nstringdata:\n  k: v\n"), scope)
+		if err == nil || !strings.Contains(err.Error(), "stringdata") {
+			t.Fatalf("want an error naming the unknown field, got %v", err)
+		}
+	})
+
+	t.Run("shall require data or stringData", func(t *testing.T) {
+		_, err := document.Parse([]byte("scope: "+scope+"\n"), scope)
+		if err == nil || !strings.Contains(err.Error(), "data or stringData") {
+			t.Fatalf("want an error asking for data or stringData, got %v", err)
 		}
 	})
 }

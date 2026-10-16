@@ -138,28 +138,20 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is invalid", tenantName)}, nil
 	}
 
-	doc, err := document.Canonical(s)
-	if err != nil {
-		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
-	}
-	want := document.ScopeFor(s.Namespace, s.Name)
-	plain, err := crypto.Decrypt(doc, keys, want)
+	plain, err := crypto.Decrypt(s.Spec.Encrypted, keys)
 	switch {
-	case errors.Is(err, crypto.ErrScopeMismatch):
-		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: err.Error()}, nil
 	case errors.Is(err, crypto.ErrNotRecipient):
 		return outcome{reason: sopsv1alpha1.ReasonNotRecipient,
 			message: fmt.Sprintf("the document is not encrypted for the key of tenant %s", tenantName)}, nil
 	case err != nil:
 		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
 	}
-	payload, err := document.ParsePlain(plain)
-	if err != nil {
+	payload, err := document.Parse(plain, document.ScopeFor(s.Namespace, s.Name))
+	switch {
+	case errors.Is(err, document.ErrScopeMismatch):
+		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: err.Error()}, nil
+	case err != nil:
 		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
-	}
-	if payload.Scope != want {
-		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch,
-			message: fmt.Sprintf("the document is scoped to a different namespace or name than %q", want)}, nil
 	}
 
 	uid, err := secretwriter.Write(ctx, tc, desiredSecret(s, payload), s.Status.SecretUID)

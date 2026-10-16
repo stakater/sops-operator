@@ -161,22 +161,30 @@ type sopsSecret struct {
 	StringData                             map[string]string
 }
 
-// encryptSopsSecret renders and encrypts the sopssecret.yaml fixture for recipient, as a developer would.
+// encryptSopsSecret encrypts the payload.yaml fixture for recipient and renders it into the
+// sopssecret.yaml fixture, as a developer would.
 func encryptSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha1.SopsSecret {
+	t.Helper()
+	encrypted, err := cryptotest.Encrypt(render(t, "payload.yaml", s), recipient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sopsSecretWith(t, s, encrypted)
+}
+
+// sopsSecretWith renders the sopssecret.yaml fixture for s with the armored age file encrypted.
+func sopsSecretWith(t *testing.T, s sopsSecret, encrypted string) *sopsv1alpha1.SopsSecret {
 	t.Helper()
 	if s.DeletionPolicy == "" {
 		s.DeletionPolicy = string(sopsv1alpha1.DeletionPolicyDelete)
 	}
-	data := map[string]any{
-		"Name": s.Name, "Namespace": s.Namespace, "Scope": s.Scope, "DeletionPolicy": s.DeletionPolicy,
-		"TenantName": tenantName, "TenantNamespace": s.TenantNamespace, "StringData": s.StringData,
-	}
-	encrypted, err := cryptotest.Encrypt(render(t, "sopssecret.yaml", data), recipient)
-	if err != nil {
-		t.Fatal(err)
-	}
+	indented := "    " + strings.ReplaceAll(strings.TrimSuffix(encrypted, "\n"), "\n", "\n    ")
+	manifest := render(t, "sopssecret.yaml", map[string]any{
+		"Name": s.Name, "Namespace": s.Namespace, "DeletionPolicy": s.DeletionPolicy,
+		"TenantName": tenantName, "TenantNamespace": s.TenantNamespace, "Encrypted": indented,
+	})
 	var out sopsv1alpha1.SopsSecret
-	if err := yaml.Unmarshal(encrypted, &out); err != nil {
+	if err := yaml.Unmarshal(manifest, &out); err != nil {
 		t.Fatal(err)
 	}
 	return &out

@@ -38,11 +38,18 @@ import (
 // customer can run, the path OLM takes to the channel head, reduced to the smallest set that
 // traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
 // each channel head is `make test-e2e`.
-var upgradePaths = []struct{ channel, from, to string }{
-	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 --replaces--> v0.0.5
+//
+// secrets is false on paths from a version whose SopsSecret format the target no longer reads: the
+// test then creates the SopsSecret after the upgrade, and checks the tenant key carries over.
+var upgradePaths = []struct {
+	channel, from, to string
+	secrets           bool
+}{
+	// alpha: v0.0.1 --replaces--> … --replaces--> v0.0.4 --replaces--> v0.0.5 --replaces--> v0.0.6
 	// (head). Not tested: v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps
-	// the key in a Secret named after the tenant (D48); none was deployed beyond trials.
-	{channel: "alpha", from: "0.0.4", to: "0.0.5"},
+	// the key in a Secret named after the tenant (D48); none was deployed beyond trials. v0.0.4 and
+	// v0.0.5 read SOPS files, v0.0.6 reads age files (D49).
+	{channel: "alpha", from: "0.0.4", to: "0.0.6", secrets: false},
 }
 
 const (
@@ -64,7 +71,7 @@ func TestUpgrade(t *testing.T) {
 		t.Skip("upgrade paths run with make test-upgrade")
 	}
 	for _, p := range upgradePaths {
-		t.Run(fmt.Sprintf("shall upgrade %s from v%s to v%s and keep serving existing Secrets", p.channel, p.from, p.to),
+		t.Run(fmt.Sprintf("shall upgrade %s from v%s to v%s and keep serving tenants", p.channel, p.from, p.to),
 			func(t *testing.T) {
 				installAt(t, p.channel, p.from)
 
@@ -74,23 +81,31 @@ func TestUpgrade(t *testing.T) {
 					Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
 					StringData: map[string]string{"password": "v1"},
 				}
-				s := createSopsSecret(t, recipient, secret)
-				waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
-				before := outputSecret(t, prod)
+				var s *sopsv1alpha1.SopsSecret
+				var before *corev1.Secret
+				if p.secrets {
+					s = createSopsSecret(t, recipient, secret)
+					waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
+					before = outputSecret(t, prod)
+				}
 				keyBefore := tenantKey(t, tenantNS)
 
 				upgradeTo(t, p.to)
 
-				// The new operator reconciles the SopsSecret created before the upgrade: it decrypts a
-				// change with the tenant key the earlier version generated, into the same Secret.
+				// The new operator decrypts with the tenant key the earlier version generated: a change
+				// to the SopsSecret created before the upgrade into the same Secret, or a new one.
 				secret.StringData = map[string]string{"password": "v2"}
-				next := encryptSopsSecret(t, recipient, secret)
-				update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
+				if p.secrets {
+					next := encryptSopsSecret(t, recipient, secret)
+					update(t, s, func() { s.Spec = next.Spec })
+				} else {
+					s = createSopsSecret(t, recipient, secret)
+				}
 				poll(t, "the upgraded operator to deliver the new value", func() (bool, error) {
 					return string(outputSecret(t, prod).Data["password"]) == "v2", nil
 				})
 				waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
-				if after := outputSecret(t, prod); after.UID != before.UID {
+				if after := outputSecret(t, prod); before != nil && after.UID != before.UID {
 					t.Fatal("the upgrade recreated the output Secret instead of keeping it")
 				}
 				keyAfter := tenantKey(t, tenantNS)

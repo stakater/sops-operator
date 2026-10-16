@@ -1,8 +1,8 @@
 # SOPS Operator — Design
 
-Status: **Draft** · Last updated: 2026-10-09
+Status: **Draft** · Last updated: 2026-10-16
 
-A Kubernetes operator that decrypts [SOPS](https://github.com/getsops/sops)-encrypted resources in-cluster into
+A Kubernetes operator that decrypts [age](https://age-encryption.org)-encrypted resources in-cluster into
 plain Kubernetes Secrets, with self-service for tenants and zero standing privileges for the operator.
 
 ---
@@ -17,7 +17,7 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
   Kubernetes API server against an explicit grant made by the cluster admin.
 - **No cross-tenant or cross-namespace leakage**, including copying ciphertext between namespaces of the same tenant.
 - GitOps-friendly: one-way flow Git → cluster, one owner per Secret, health visible to Argo CD / Flux.
-- Long-term maintainability: small API, standard tooling (SOPS CLI, age), OLM distribution.
+- Long-term maintainability: small API, standard tooling (the age CLI), OLM distribution.
 
 ### Non-goals (v1)
 
@@ -33,17 +33,18 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
 
 ## 2. Background facts
 
-### SOPS and age
+### age
 
-- SOPS encrypts **values** in YAML/JSON and leaves keys and structure readable, so Git diffs stay reviewable.
-- Each file has a random **data key**. Values are encrypted with AES-256-GCM using the data key, with the value's
-  path in the document as additional authenticated data — a value cannot be moved to another key.
-- The data key is encrypted once per **recipient** and stored in the file's `sops:` metadata block.
-- A **MAC** over the values, encrypted with the data key, detects tampering. With `mac_only_encrypted: true` the MAC
-  covers only encrypted values, which is required because Kubernetes adds fields to stored objects.
+- A `SopsSecret` holds one **age file** in ASCII armor (`age -a`). Its plaintext, the **payload**, is a small YAML
+  document: the scope and the Secret's `data` and `stringData` (§4.3). One string fits a manifest and a Helm value.
+- Each file has a random **file key**, wrapped once per **recipient** in the file's header. The payload is encrypted
+  with ChaCha20-Poly1305 in chunks, with a key derived from the file key, and the header is authenticated with a
+  MAC from the same key. A changed, reordered or truncated file fails to decrypt.
+- Recipient stanzas do not name their recipient: the operator learns that a file is not for a tenant only by
+  failing to unwrap it with the tenant's identities (`NotRecipient`).
 - Anyone with a recipient's **public** key can encrypt. Decrypting — and therefore editing an existing file — requires
   a **private** key.
-- **age** key types (age v1.3.2, SOPS v3.13.3 as of this writing):
+- **age** key types (age v1.3.2 as of this writing):
 
   | Type | Recipient | Used here |
   |---|---|---|
@@ -54,8 +55,8 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
 
 - An age identity file contains only private keys; the public key is derived from them. The `# public key:` line
   written by `age-keygen` is a comment and is never trusted.
-- SOPS exposes in-memory identity loading per master key (`age.ParsedIdentities.Import` / `ApplyToMasterKey`), so
-  tenants' keys never need to pass through process-wide environment variables or files.
+- The age library takes identities in memory per call (`age.Decrypt(r, identities...)`), so tenants' keys never
+  need to pass through process-wide environment variables or files.
 
 ### Git is not a KMS
 
@@ -64,7 +65,7 @@ The operator never talks to Git. A GitOps tool (Argo CD, Flux), CI, or a person 
 `SopsSecret` to the API server; the operator watches the API.
 
 ```
-dev: write → sops encrypt → git push
+dev: write → age -a → git push
                                 │
 Argo CD / Flux / CI: apply (still encrypted)
                                 │
@@ -111,7 +112,7 @@ flowchart TB
     DEV(["Developer"])
 
     subgraph GIT["Git repository — ciphertext only"]
-        FILE["#lt;name#gt;.sops.yaml<br/>encrypted values + encrypted scope"]
+        FILE["SopsSecret manifest or Helm value<br/>one age file: values + scope"]
     end
 
     GITOPS(["GitOps tool<br/>Argo CD / Flux"])
@@ -174,7 +175,7 @@ flowchart TB
 | Tenant ↔ tenant | Different keys, different tenant identities | Kubernetes RBAC: each tenant identity is granted only its own namespaces |
 | Key namespace ↔ consumer namespaces | Private keys never leave `team-a-system`; developers have no access there | Kubernetes RBAC |
 | Namespace ↔ namespace within a tenant | Ciphertext for `team-a-prod` cannot be used in `team-a-dev` | Cryptography: encrypted `scope`, checked after decryption |
-| Git ↔ cluster | Only ciphertext in Git and in the GitOps tool | SOPS encryption |
+| Git ↔ cluster | Only ciphertext in Git and in the GitOps tool | age encryption |
 | Humans ↔ plaintext | Developers encrypt but cannot decrypt | Public-key cryptography |
 | Operator ↔ Secrets | No standing access; every access is made as a tenant identity | Kubernetes RBAC + impersonation |
 
@@ -197,16 +198,16 @@ sequenceDiagram
     CA->>API: RoleBinding in each application namespace: Secret writer
     OP->>API: create ServiceAccount #lt;tenant#gt;-sops-tenant
     OP->>API: create key Secret (as #lt;tenant#gt;-sops-tenant)
-    TA->>DEV: public key (.sops.yaml)
+    TA->>DEV: public key (status.publicKey)
 
     Note over CA,OP: Every secret change
-    DEV->>DEV: write values + scope, sops encrypt
+    DEV->>DEV: write values + scope, age -r <public key> -a
     DEV->>GIT: commit ciphertext
     GO->>GIT: pull
     GO->>API: apply SopsSecret (encrypted)
     OP->>API: SubjectAccessReview: may #lt;tenant#gt;-sops-tenant write here?
     OP->>API: read key (as #lt;tenant#gt;-sops-tenant)
-    OP->>OP: check recipient, decrypt and check scope, then values and MAC
+    OP->>OP: decrypt and authenticate, check scope, then read values
     OP->>API: apply Secret (as #lt;tenant#gt;-sops-tenant)
     OP->>API: status Ready / Decrypted
 ```
@@ -246,7 +247,7 @@ status:
 | `spec.generateKey` | `true` | Generate a post-quantum age key when reading the key Secret returns `404 Not Found`. Any other error never triggers generation. Set `false` for bring-your-own keys and during disaster recovery. |
 | `status.serviceAccountName` | — | The tenant's ServiceAccount, `<tenant>-sops-tenant` (D46). |
 | `status.keySecretName` | — | The tenant's key Secret, `<tenant>-sops-keys` (D48). |
-| `status.publicKey` | — | Public key of the primary key, derived from the key Secret: the value to list in `.sops.yaml` (D39). Empty while the key is not usable. |
+| `status.publicKey` | — | Public key of the primary key, derived from the key Secret: the recipient developers encrypt for (D39). Empty while the key is not usable. |
 | `status.usedBy` | — | Number of `SopsSecret`s referencing this tenant. |
 | `status.conditions[Ready]` | — | Reasons: `KeyLoaded`, `KeyGenerated`, `KeyMissing`, `KeyInvalid`, `AccessDenied` (tenant not onboarded). |
 
@@ -277,7 +278,7 @@ stringData:
   not replaced.
 - **No ownerReference**: deleting the tenant never deletes the key.
 - The key Secret holds private keys only. The operator derives the primary public key and reports it in the
-  tenant's `status.publicKey` (D39), where anyone allowed to read the `SopsTenant` finds it for `.sops.yaml` without
+  tenant's `status.publicKey` (D39), where anyone allowed to read the `SopsTenant` finds it to encrypt for without
   access to the key Secret. Generated key files have no comment lines; comments in bring-your-own key files are
   ignored, as is an `age.pub` field written by v0.0.4 and earlier.
 
@@ -297,16 +298,16 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  scope: ENC[AES256_GCM,...]         # encrypted; decrypts to "team-a-prod/db-creds"
+  encrypted: |                       # age -r <status.publicKey> -a
+    -----BEGIN AGE ENCRYPTED FILE-----
+    ...
+    -----END AGE ENCRYPTED FILE-----
   deletionPolicy: Delete             # Delete (default) | Retain
   template:                          # optional; metadata for the output Secret
     metadata:
       labels: {}
       annotations: {}
   type: Opaque
-  data: {}                           # binary values (base64), encrypted
-  stringData: {}                     # text values, encrypted
-sops: { ... }                        # written by `sops encrypt`
 status:
   observedGeneration: 1
   lastSyncTime: "2026-10-09T10:00:00Z"
@@ -317,15 +318,23 @@ status:
       reason: Decrypted
 ```
 
+The payload, before encryption:
+
+```yaml
+scope: team-a-prod/db-creds          # the SopsSecret's <namespace>/<name>
+data: {}                             # binary values (base64)
+stringData: {}                       # text values, quoted
+```
+
 | Field | Required | Meaning |
 |---|---|---|
-| `spec.tenantRef` | yes | Tenant whose key decrypts this file. |
-| `spec.scope` | yes | **Encrypted** `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
+| `spec.tenantRef` | yes | Tenant whose key decrypts `spec.encrypted`. |
+| `spec.encrypted` | yes | ASCII-armored age file of the payload. The schema checks that it starts with the armor header (leading whitespace allowed) and is at most 1.5 MiB, etcd's default object size limit. |
 | `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
 | `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels are not copied. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
-| `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
-| `sops` | yes | SOPS metadata written by `sops encrypt`. Must contain `mac`, `lastmodified`, `version`, at least one `age` recipient, `encrypted_regex: ^(data|stringData|scope)$` and `mac_only_encrypted: true`. Only age recipients in a single key group are supported; other key types are rejected by the schema. |
+| payload `scope` | yes | `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
+| payload `data` / `stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. `stringData` values must be quoted strings. No other field is allowed. |
 
 Status reasons: `Decrypted`, `Suspended`, `TenantNotFound`, `TenantNotReady`, `AccessDenied`, `NotRecipient`,
 `ScopeMismatch`, `DecryptFailed`, `Conflict`, `ApplyFailed` (e.g. type validation, size limit).
@@ -354,11 +363,11 @@ Behaviour:
 2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:team-a-system:team-a-sops-tenant` create Secrets in X?
    If not → `AccessDenied`. Done before any decryption.
 3. Read the key Secret **impersonating** `team-a-system:team-a-sops-tenant`.
-4. Verify the file's recipients include the tenant key → else `NotRecipient`.
-5. Decrypt **only** the encrypted `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No other value of
-   a document scoped elsewhere is decrypted. Then decrypt the values and verify the MAC → else `DecryptFailed`.
-   Error messages never contain decrypted values (SOPS does not authenticate a value's type tag, and its parse
-   errors quote the plaintext).
+4. Decrypt `spec.encrypted` with the tenant's identities → `NotRecipient` if none unwraps the file key,
+   `DecryptFailed` if it is not an age file or fails authentication.
+5. Read **only** the payload's `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No value of a payload
+   scoped elsewhere is read. Then read the values → `DecryptFailed` if the payload is invalid. Error messages name
+   fields and keys but never contain decrypted values.
 6. Create or update the Secret in X **impersonating** `team-a-system:team-a-sops-tenant` (D28). The API server enforces the cluster
    admin's RoleBinding again.
 
@@ -481,12 +490,12 @@ happens, against an explicit grant, by a component other than the one asking.
 
 | Principle | Mechanism | Enforced by |
 |---|---|---|
-| **Never trust, always verify** | Every key read and Secret write is an impersonated API call, checked against RBAC on each request. Every ciphertext is verified (recipient, MAC, scope) before use. | API server, SOPS cryptography |
+| **Never trust, always verify** | Every key read and Secret write is an impersonated API call, checked against RBAC on each request. Every ciphertext is verified (recipient, authentication, scope) before use. | API server, age cryptography |
 | **Explicit grants, default deny** | A tenant can write into a namespace only if the cluster admin created a RoleBinding there. No selectors, labels or naming conventions grant access. No grant → `AccessDenied`. | API server |
 | **Least privilege** | Operator has no Secret or RBAC permissions and no cluster-wide ServiceAccount permissions; it acts only in tenant namespaces that granted it `sops-operator-tenant`. `sops-secret-writer` cannot read Secrets. `sops-key-owner` is bound only in the key namespace. Developers can encrypt but not decrypt. | API server, public-key cryptography |
 | **One identity per tenant** | Each tenant acts as its own ServiceAccount; no identity is shared across tenants. | API server |
 | **Separation of duties** | Cluster admin grants access but never handles tenant keys or plaintext. Tenant admin manages keys but cannot grant namespaces. Developer writes secrets but cannot read keys. | API server (RBAC per role) |
-| **Bind data to its destination** | Encrypted `scope` ties every ciphertext to one namespace and name. | SOPS cryptography + operator check |
+| **Bind data to its destination** | The encrypted `scope` ties every ciphertext to one namespace and name. | age cryptography + operator check |
 | **Assume breach** | Every component's compromise is bounded (§6.4). | Design |
 | **Continuous verification** | Grants and keys are re-checked on every reconcile and periodic resync, not cached as decisions. A revoked grant takes effect at the next reconcile. | Operator, API server |
 | **Full auditability** | Impersonated calls appear in the Kubernetes audit log with both the operator and the tenant identity. Decisions are visible in status conditions and events. | API server audit log |
@@ -502,7 +511,7 @@ flowchart LR
     C -->|no| X2["AccessDenied"]
     C -->|yes| D{"3. Impersonated key read<br/>RBAC: sops-key-owner"}
     D -->|no| X3["TenantNotReady"]
-    D -->|yes| E{"4. Recipient + MAC<br/>SOPS cryptography"}
+    D -->|yes| E{"4. Recipient + authentication<br/>age cryptography"}
     E -->|fail| X4["NotRecipient / DecryptFailed"]
     E -->|ok| F{"5. Scope matches<br/>namespace/name?"}
     F -->|no| X5["ScopeMismatch"]
@@ -516,7 +525,7 @@ flowchart LR
 | 1 | Caller may create `SopsSecret` in the namespace | API server (RBAC) | Yes |
 | 2 | Tenant is granted the namespace | Operator (SubjectAccessReview) | No — early, clear failure; check 6 is authoritative |
 | 3 | Tenant identity may read its key | API server (RBAC via impersonation) | Yes |
-| 4 | File encrypted for this tenant and untampered | SOPS / age cryptography | Yes |
+| 4 | File encrypted for this tenant and untampered | age cryptography | Yes |
 | 5 | Ciphertext bound to this namespace and name | Operator, on a cryptographically protected value | Yes, given a correct operator |
 | 6 | Tenant identity may write Secrets in the namespace | API server (RBAC via impersonation) | Yes |
 
@@ -527,7 +536,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Component | Trusted for |
 |---|---|
 | Kubernetes API server, RBAC and etcd | Enforcing grants; storing Secrets (with encryption at rest) |
-| SOPS and age libraries | Correct cryptography |
+| age library | Correct cryptography |
 | Operator binary | Performing the scope check (5); not leaking plaintext; impersonating only the tenant named in `tenantRef` |
 | Operator image supply chain | Signed images (cosign), SBOM and provenance; pinned by digest in the OLM bundle |
 | Nodes and kubelet | Delivering Secrets to workloads |
@@ -549,7 +558,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 |---|---|
 | Remove a namespace RoleBinding | Next reconcile → `AccessDenied`. The already-written Secret remains (the operator can no longer delete it); the cluster admin removes it if required. |
 | Delete the tenant's key-owner RoleBinding | All `SopsSecret`s of the tenant → `TenantNotReady`; nothing more is decrypted. |
-| Remove a recipient from a file (`sops updatekeys`) | That key can no longer decrypt the new version of the file. |
+| Encrypt a payload again without a recipient | That key can no longer decrypt the new version of the file. |
 | Remove an identity from the key Secret | Files encrypted only for that identity → `NotRecipient`. |
 
 ---
@@ -563,13 +572,13 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Developer in `mallory-ns` references another tenant's key | No cluster admin grant in `mallory-ns` → `AccessDenied`; the write would be denied by the API server anyway. |
 | Tenant admin targets a namespace of another tenant | Tenants cannot grant themselves namespaces; only the cluster admin's RoleBinding does. |
 | Developer copies a prod `SopsSecret` into a dev namespace of the same tenant | Encrypted `scope` decrypts to `team-a-prod/…` → `ScopeMismatch`. |
-| Developer edits `scope` or splices ciphertext between files | Requires the private key; per-file data keys, path-bound values and the MAC make splicing fail. |
+| Developer edits `scope` or splices ciphertext between files | age authenticates the whole file, so any change fails. A new scope needs a new payload, which is the same as writing new values (§7.2). |
 | Developer reads keys | Key Secrets live in the dedicated tenant namespace; developers have no access. |
 | Tenant SA token stolen from a consumer namespace | No SA exists in consumer namespaces; the tenant SA lives in the tenant namespace with `automountServiceAccountToken: false`. |
 | Operator overwrites a Secret it does not own | Only manages Secrets it created; pre-existing Secrets → `Conflict`. |
 | Operator compromise reads all Secrets | No Secret RBAC; impersonation only in tenant namespaces that granted it, limited to tenant grants. |
 | GitOps tool prunes output Secrets | Tracking labels never copied; ownerReference to the `SopsSecret`. |
-| Plaintext committed to Git | Pre-commit `sops filestatus` / `sops-checker`; documented workflow. |
+| Plaintext committed to Git | The schema rejects a `spec.encrypted` that is not an age file; the documented workflow deletes the plaintext file after encrypting it. |
 
 ### 7.2 Accepted risks
 
@@ -592,41 +601,36 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 1. Cluster admin applies the onboarding RoleBindings for the tenant (§5.2).
 2. Tenant admin creates the `SopsTenant` → operator creates the `<tenant>-sops-tenant` ServiceAccount and generates
    the key → `Ready/KeyGenerated`. A missing RoleBinding → `Ready/AccessDenied`, naming it.
-3. Tenant admin reads `status.publicKey` from the `SopsTenant` and commits it to the team's `.sops.yaml`.
+3. Tenant admin reads `status.publicKey` from the `SopsTenant` and commits it to the team's repository as
+   `<tenant>.pub`.
 
 ### 8.2 Developer: create or change a secret
 
 ```yaml
-# .sops.yaml (committed)
-creation_rules:
-  - path_regex: \.sops\.ya?ml$
-    encrypted_regex: ^(data|stringData|scope)$
-    mac_only_encrypted: true
-    age:
-      - age1pq1...team-a          # tenant public key
-      - age1pq1...breakglass     # platform break-glass recipient
+# db-creds.yaml: plaintext payload, never committed
+scope: team-a-prod/db-creds
+stringData:
+  password: "s3cr3t"
 ```
 
 ```bash
-# write plaintext SopsSecret (never commit this state), then:
-yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' prod/db-creds.sops.yaml
-yq -i 'sort_keys(..)' prod/db-creds.sops.yaml
-sops encrypt -i prod/db-creds.sops.yaml
-git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
+# team-a.pub (committed): the tenant public key and the platform break-glass recipient, one per line
+age -R team-a.pub -a -o db-creds.age db-creds.yaml && rm db-creds.yaml
+yq -i '.spec.encrypted = load_str("db-creds.age")' prod/db-creds.yaml
+git add prod/db-creds.yaml && git commit -m "add db-creds"
 ```
 
-- If the namespace is injected by kustomize, set the scope explicitly: `yq -i '.spec.scope = "team-a-prod/db-creds"'`.
-- Keys must be sorted byte-wise before encryption (`yq sort_keys` does this). The SOPS MAC depends on key order and
-  the Kubernetes API returns objects with keys sorted byte-wise; an unsorted file fails with `DecryptFailed`.
-- `stringData` values must be quoted strings. SOPS parses unquoted scalars before encrypting (`0123` would become
-  `83`), so the operator rejects them with `DecryptFailed` instead of writing a changed value.
-- Developers cannot `sops edit` (requires the private key). To change a value, rewrite and re-encrypt the file.
-- Pre-commit: `sops filestatus <file>` must report `{"encrypted":true}`.
+- The scope is the `SopsSecret`'s namespace and name, also when the namespace is injected later by kustomize or Helm.
+- With Helm, the armored file is a chart value and the template renders it into `spec.encrypted` (README).
+- `stringData` values must be quoted strings. YAML parses unquoted scalars (`0123` would become `83`), so the
+  operator rejects them with `DecryptFailed` instead of writing a changed value.
+- Developers cannot decrypt (requires the private key). To change a value, write the payload again and encrypt it.
 
 ### 8.3 Key rotation (manual)
 
 1. Tenant admin prepends a new private key to `age.agekey`; `status.publicKey` shows its public key.
-2. Recipients in `.sops.yaml` are updated; a key holder runs `sops updatekeys -y <file>` for each file.
+2. The new public key replaces the old one in `<tenant>.pub`. Each payload is encrypted again for it, by whoever
+   holds the plaintext or by the tenant admin (`age -d -i` with the old key, then `age -R <tenant>.pub -a`).
 3. When every `SopsSecret` is `Decrypted` with the new key, remove the old identity.
 
 ### 8.4 Migration from existing Secrets
@@ -643,7 +647,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 
 ## 9. Delivery
 
-- **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `getsops/sops/v3`, `filippo.io/age`. Tools pinned and checksum-verified by `hack/bootstrap-tools.sh`: operator-sdk v1.42.3, opm v1.74.0.
+- **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `filippo.io/age`. Tools pinned and checksum-verified by `hack/bootstrap-tools.sh`: operator-sdk v1.42.3, opm v1.74.0.
 - **Distribution**: OLM only. Bundle + file-based catalog images; channels `alpha` → `stable`; install mode
   `AllNamespaces`; no webhooks and no OLM dependencies (compatible with OLM v0 `Subscription` and OLM v1
   `ClusterExtension`). Validation with CEL in the CRDs.
@@ -676,8 +680,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   Golden files no test compares any more fail the run.
   e2e tests are organised by **use case**: one file and one top-level test per use case, named after the feature
   or rule it checks (`TestTenantOnboarding` in `tenant_onboarding_test.go`, `TestSecretDecryption`,
-  `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestSopsCLIWorkflow` with the
-  pinned `sops` and `yq` CLIs, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
+  `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestAgeCLIWorkflow` with the
+  pinned `age` CLI, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
   `TestOperatorRestart`; the operator runs with a 10s resync interval during e2e), one subtest per expected
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
@@ -712,13 +716,13 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | Use SOPS instead of Sealed Secrets | Readable diffs, multiple recipients, no single cluster key, works outside Kubernetes. |
+| D1 | Use SOPS instead of Sealed Secrets (file format superseded by D49) | Readable diffs, multiple recipients, no single cluster key, works outside Kubernetes. |
 | D2 | Build a new operator | Existing operators require cluster-wide Secret RBAC or lack tenant isolation and ciphertext scoping. |
 | D3 | Go + operator-sdk, distributed via OLM only | Operator ecosystem fit (OpenShift, OperatorHub). Helm can be generated from `config/` later. |
 | D4 | v1 backend: age key in a Kubernetes Secret; OpenBao later | No infrastructure dependency; backend stays pluggable. |
 | D5 | `SopsTenant` is namespaced; its key Secret is `<tenant>-sops-keys` (D48); generated if missing (`generateKey`) | Self-service via namespace RBAC; predictable key location. |
 | D6 | Generated keys are age post-quantum hybrid | Ciphertext lives in Git history indefinitely ("harvest now, decrypt later"). |
-| D7 | No `.sops.yaml` in the CR; the public key is only reported in status (D39) | Repos own their `.sops.yaml`; the public key is derived from the key Secret, never configured. |
+| D7 | No recipient list in the CR; the public key is only reported in status (D39) | Repos own whom they encrypt for; the public key is derived from the key Secret, never configured. |
 | D8 | Namespace access is granted only by cluster admin RoleBindings to the tenant ServiceAccount | Single source of truth enforced by the API server; no binding CRD, no selectors. |
 | D9 | Operator has zero standing privileges; all Secret access through impersonation | Compromise of the operator does not expose or allow tampering with arbitrary Secrets. |
 | D10 | SubjectAccessReview before decrypting | Nothing is decrypted for namespaces the tenant cannot write to; clear status. |
@@ -726,8 +730,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D12 | No adoption, merge or create-once; foreign Secret → `Conflict` | GitOps is one-way with one owner per Secret. |
 | D13 | `deletionPolicy: Delete \| Retain` | Standard GitOps prune plus a safety net. |
 | D14 | `data` and `stringData`, no `immutable` | Binary and text values; Secret manifests convert with minimal change. Immutable conflicts with updates from Git. |
-| D15 | Required encrypted `spec.scope` | Prevents copying ciphertext to another namespace or name of the same tenant. |
-| D16 | `sops` metadata is mutable; integrity comes from SOPS cryptography | Legitimate edits rewrite it; whole-file replacement and replay are accepted risks. |
+| D15 | Required encrypted scope, in the payload since D49 | Prevents copying ciphertext to another namespace or name of the same tenant. |
+| D16 | `sops` metadata is mutable; integrity comes from SOPS cryptography (superseded by D49) | Legitimate edits rewrite it; whole-file replacement and replay are accepted risks. |
 | D17 | Operator has no Git access | Avoids becoming a GitOps engine and holding Git credentials next to keys. |
 | D18 | Key generated only on `404 Not Found`; never overwritten or deleted (RBAC: `get`, `create` only). To replace a bad key, delete it and let it be generated again. | Ease of use; a wrong generation is recoverable by restoring the old key. |
 | D19 | No finalizer on `SopsTenant`; no ownerReference on the key | The key must survive tenant deletion; recreating the tenant reuses it. |
@@ -740,14 +744,14 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D26 | Several `SopsTenant`s may share a namespace; each has its own ServiceAccount and grants (D46) | Reach can differ per tenant; key access is still namespace-wide (`sops-key-owner`), so separate key namespaces until per-tenant key access exists. |
 | D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
 | D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update; a rejected update falls back to create, and `AlreadyExists` → `Conflict`. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
-| D29 | Files are key-sorted byte-wise (`yq 'sort_keys(..)'`) before encryption; the operator rebuilds the document as byte-sorted JSON | The SOPS MAC is order-dependent and the API server returns keys sorted byte-wise. |
+| D29 | Files are key-sorted byte-wise (`yq 'sort_keys(..)'`) before encryption; the operator rebuilds the document as byte-sorted JSON (superseded by D49: the payload is decrypted as written) | The SOPS MAC is order-dependent and the API server returns keys sorted byte-wise. |
 | D30 | `Retain` means "no ownerReference"; no finalizer on `SopsSecret` | Deletion needs no Secret access and no extra verbs. |
-| D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
+| D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema (superseded by D49) | Unsupported files are rejected at apply time, not at decryption. |
 | D32 | Tenant-facing ClusterRoles shipped from `config/tenant-rbac/` with fixed names | Onboarding templates reference stable names. |
 | D33 | operator-sdk and opm are pinned and installed per project into `bin/` with checksum verification | Reproducible builds locally and in CI; no reliance on globally installed tools. |
 | D34 | Own CI workflows instead of the shared Stakater pipeline; PR images pushed with `GITHUB_TOKEN` from an isolated job | Pull-request code never runs with a write token and no long-lived registry secret is needed; the shared pipeline exposed its registry token to PR code. |
-| D35 | The scope is verified before any other value is decrypted; decryption errors carry fixed messages | Copied ciphertext with a tampered type tag must not leak plaintext through error messages. |
-| D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
+| D35 | The scope is verified before any other value is read; decryption errors carry fixed messages | Copied ciphertext must be rejected for its scope alone, and errors must not leak plaintext. Since D49 the whole payload is decrypted in memory, but no value is read before the scope matches. |
+| D36 | `stringData` accepts only quoted strings | YAML parses unquoted scalars (`0123` becomes `83`), which would silently change values. |
 | D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
 | D38 | The SopsSecret reconciler reads SopsSecrets uncached (API reader) | A cache that has not seen the last status write would report `Conflict` for the operator's own Secret (found by e2e). |
 | D39 | The key Secret holds only private keys (`age.agekey`, no comment lines); the primary public key is reported in `SopsTenant` `status.publicKey` | One place per kind of key, nothing to keep in sync. Reading the public key needs only `get` on the `SopsTenant`, not on a Secret that also holds the private key. Replaces the `age.pub` field of v0.0.4 and earlier, which is now ignored. |
@@ -760,6 +764,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D46 | Each tenant's ServiceAccount is `<tenant>-sops-tenant`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where `sops-operator-tenant` is bound to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). |
 | D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
 | D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret. |
+| D49 | `spec.encrypted` holds one ASCII-armored age file of a payload (`scope`, `data`, `stringData`); SOPS and `.sops.yaml` are no longer used. No compatibility with the SOPS format of v0.0.5 and earlier; nothing was deployed with it. | One string per Secret fits a Helm value and needs only the `age` CLI. The SOPS format spread a Secret over several fields and the `sops:` block, and failed in ways users hit: `.sops.yaml` lookup from the working directory, `--age` dropping `mac_only_encrypted`, key order for the MAC. age authenticates the whole file, so scope binding and tamper detection hold. Costs: diffs no longer show which key changed, and `sops edit` is gone. Removes the SOPS dependency and its cloud KMS SDKs from the operator. |
 
 ---
 
@@ -767,9 +772,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 
 | # | Question |
 |---|---|
-| Q2 | Minimum SOPS version that supports `age1pq1` recipients (needs age ≥ 1.3). |
 | Q5 | Namespace-wide scope (`team-a-prod/*`) for files reused under several names — v1 or later? |
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |
-| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops-tenant` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `status.publicKey` (D39). |
+| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops-tenant` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Since D49 files are age files, so a KMS key store would be an age identity backed by the KMS (or an age plugin) rather than a SOPS key type. Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `status.publicKey` (D39). |

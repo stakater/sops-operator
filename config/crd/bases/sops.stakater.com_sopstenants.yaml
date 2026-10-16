@@ -131,7 +131,7 @@ spec:
                 type: integer
               publicKey:
                 description: 'PublicKey is the public key (age recipient) of the primary
-                  key: the value to list in .sops.yaml.'
+                  key: the recipient to encrypt for.'
                 type: string
               serviceAccountName:
                 description: |-

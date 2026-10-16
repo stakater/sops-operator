@@ -3,7 +3,7 @@
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.0.5
+VERSION ?= 0.0.6
 OPERATOR_NAME ?= sops-operator
 CATALOG_DIR_PATH ?= catalog
 DOCKER_REPO_BASE ?= ghcr.io/stakater
@@ -156,8 +156,8 @@ endif
 	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG)
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the operator installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
-	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) \
+test-e2e: setup-test-e2e age e2e-images ## Run the e2e tests against the operator installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
+	KIND_CLUSTER=$(KIND_CLUSTER) AGE=$(AGE) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) \
 		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update)
 
 .PHONY: test-upgrade
@@ -205,7 +205,7 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KIND ?= $(LOCALBIN)/kind
-SOPS ?= $(LOCALBIN)/sops
+AGE ?= $(LOCALBIN)/age
 YQ ?= $(LOCALBIN)/yq
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
@@ -214,7 +214,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
 KIND_VERSION ?= v0.33.0
-SOPS_VERSION ?= v3.13.3
+AGE_VERSION ?= v1.3.2
 YQ_VERSION ?= v4.53.6
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.18.0
@@ -224,10 +224,10 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 ENVTEST_K8S_VERSION ?= 1.31.0
 GOLANGCI_LINT_VERSION ?= v2.1.0
 
-.PHONY: sops
-sops: $(SOPS) ## Download the sops CLI locally if necessary (used by e2e tests like a developer would).
-$(SOPS): $(LOCALBIN)
-	$(call go-install-tool,$(SOPS),github.com/getsops/sops/v3/cmd/sops,$(SOPS_VERSION))
+.PHONY: age
+age: $(AGE) ## Download the age CLI locally if necessary (used by e2e tests like a developer would).
+$(AGE): $(LOCALBIN)
+	$(call go-install-tool,$(AGE),filippo.io/age/cmd/age,$(AGE_VERSION))
 
 .PHONY: yq
 yq: $(YQ) ## Download yq locally if necessary.
