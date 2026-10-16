@@ -97,11 +97,8 @@ func normalize(u map[string]any, known map[string]string) error {
 	redact(u, "data")
 	redact(u, "stringData")
 	if spec, ok := u["spec"].(map[string]any); ok {
-		redact(spec, "data")
-		redact(spec, "stringData")
-		setIfPresent(spec, "scope", Encrypted)
+		setIfPresent(spec, "encrypted", Encrypted)
 	}
-	setIfPresent(u, "sops", Encrypted)
 
 	if status, ok := u["status"].(map[string]any); ok {
 		uid(status, "secretUID")

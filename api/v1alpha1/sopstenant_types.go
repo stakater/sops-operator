@@ -44,7 +44,7 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
 	// +optional
 	KeySecretName string `json:"keySecretName,omitempty"`
-	// PublicKey is the public key (age recipient) of the primary key: the value to list in .sops.yaml.
+	// PublicKey is the public key (age recipient) of the primary key: the recipient to encrypt for.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Public key"
 	// +optional
 	PublicKey string `json:"publicKey,omitempty"`

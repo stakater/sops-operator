@@ -65,7 +65,7 @@ func TestSecretDecryption(t *testing.T) {
 		// The developer re-encrypts the file with a new value and the GitOps tool applies it.
 		secret.StringData = map[string]string{"password": "v2"}
 		next := encryptSopsSecret(t, recipient, secret)
-		update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
+		update(t, s, func() { s.Spec = next.Spec })
 		poll(t, "the Secret to hold the new value", func() (bool, error) {
 			return string(outputSecret(t, prod).Data["password"]) == "v2", nil
 		})

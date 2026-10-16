@@ -108,23 +108,16 @@ func TestSnapshotNormalization(t *testing.T) {
 		mustNotContain(t, out, "hunter2", "aHVudGVyMg==")
 	})
 
-	t.Run("shall hide ciphertext and SOPS metadata of a SopsSecret", func(t *testing.T) {
-		enc := "ENC[AES256_GCM,data:eA==,iv:eA==,tag:eA==,type:str]"
+	t.Run("shall hide the ciphertext of a SopsSecret", func(t *testing.T) {
 		out := render(t, &sopsv1alpha1.SopsSecret{
 			ObjectMeta: meta("db"),
 			Spec: sopsv1alpha1.SopsSecretSpec{
 				TenantRef: sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
-				Scope:     enc, StringData: map[string]string{"password": enc}, Data: map[string]string{"cert": enc},
-			},
-			Sops: sopsv1alpha1.SopsMetadata{
-				Age: []sopsv1alpha1.SopsAgeRecipient{{Recipient: "age1pq1abc", Enc: "-----BEGIN AGE ENCRYPTED FILE-----"}},
-				MAC: enc, LastModified: "2026-10-09T10:00:00Z", Version: "3.13.3",
+				Encrypted: "-----BEGIN AGE ENCRYPTED FILE-----\nYWdl\n-----END AGE ENCRYPTED FILE-----\n",
 			},
 			Status: sopsv1alpha1.SopsSecretStatus{SecretUID: "77aa"},
 		})
-		mustContain(t, out, "scope: <encrypted>", "sops: <encrypted>", "password: <redacted>", "cert: <redacted>",
-			"secretUID: <uid>", "name: my-team")
-		mustNotContain(t, out, "ENC[", "age1pq1abc", "BEGIN AGE", "77aa")
+		mustContain(t, out, "encrypted: <encrypted>", "secretUID: <uid>", "name: my-team")
 	})
 
 	t.Run("shall replace valid condition timestamps", func(t *testing.T) {

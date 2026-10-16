@@ -17,11 +17,9 @@ package v1alpha1_test
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,7 +27,6 @@ import (
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
-	"github.com/stakater/sops-operator/internal/document"
 )
 
 // samplesDir holds the samples OLM publishes as alm-examples: the OpenShift console pre-fills its
@@ -95,15 +92,11 @@ func TestConfigSamples(t *testing.T) {
 		}
 	})
 
-	// A sample with placeholder ciphertext would report DecryptFailed. A real SOPS document for a
-	// key nobody holds reports NotRecipient, which tells the user to encrypt for their tenant key.
-	t.Run("shall ship a SopsSecret sample encrypted with sops", func(t *testing.T) {
+	// A sample with placeholder ciphertext would report DecryptFailed. A real age file for a key
+	// nobody holds reports NotRecipient, which tells the user to encrypt for their tenant key.
+	t.Run("shall ship a SopsSecret sample encrypted with age", func(t *testing.T) {
 		var s sopsv1alpha1.SopsSecret
 		readYAML(t, requireSample(t, samples, "SopsSecret"), &s)
-		doc, err := document.Canonical(&s)
-		if err != nil {
-			t.Fatal(err)
-		}
 		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
@@ -112,38 +105,10 @@ func TestConfigSamples(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = crypto.Decrypt(doc, keys, document.ScopeFor(s.Namespace, s.Name))
-		if !errors.Is(err, crypto.ErrNotRecipient) {
-			t.Fatalf("want ErrNotRecipient from a valid SOPS document, got %v", err)
-		}
-		// Without the key, decryption stops at the recipients; check every value is real ciphertext.
-		values := map[string]string{"spec.scope": s.Spec.Scope, "sops.mac": s.Sops.MAC}
-		for k, v := range s.Spec.StringData {
-			values["spec.stringData."+k] = v
-		}
-		for k, v := range s.Spec.Data {
-			values["spec.data."+k] = v
-		}
-		for path, v := range values {
-			if !isSopsCiphertext(v) {
-				t.Errorf("%s is not SOPS ciphertext: %s", path, v)
-			}
+		if _, err := crypto.Decrypt(s.Spec.Encrypted, keys); !errors.Is(err, crypto.ErrNotRecipient) {
+			t.Fatalf("want ErrNotRecipient from a valid age file, got %v", err)
 		}
 	})
-}
-
-// sopsCiphertext matches a value written by `sops encrypt`: AES-256-GCM with a 32-byte IV and a
-// 16-byte tag, base64-encoded.
-var sopsCiphertext = regexp.MustCompile(`^ENC\[AES256_GCM,data:([A-Za-z0-9+/=]+),iv:([A-Za-z0-9+/=]+),tag:([A-Za-z0-9+/=]+),type:str\]$`)
-
-func isSopsCiphertext(v string) bool {
-	m := sopsCiphertext.FindStringSubmatch(v)
-	if m == nil {
-		return false
-	}
-	iv, errIV := base64.StdEncoding.DecodeString(m[2])
-	tag, errTag := base64.StdEncoding.DecodeString(m[3])
-	return errIV == nil && errTag == nil && len(iv) == 32 && len(tag) == 16
 }
 
 func readYAML(t *testing.T, path string, into any) {

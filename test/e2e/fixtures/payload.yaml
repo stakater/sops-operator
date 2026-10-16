@@ -1,0 +1,6 @@
+# Plaintext before `age -r <recipient> -a`.
+scope: {{ .Scope }}
+stringData:
+{{- range $key, $value := .StringData }}
+  {{ $key }}: {{ printf "%q" $value }}
+{{- end }}

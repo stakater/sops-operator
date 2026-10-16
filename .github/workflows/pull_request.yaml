@@ -123,7 +123,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # kind, kustomize, controller-gen, operator-sdk, opm, sops and yq; all pinned in the Makefile.
+      # kind, kustomize, controller-gen, operator-sdk, opm, age and yq; all pinned in the Makefile.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: bin
