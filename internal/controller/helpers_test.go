@@ -2,7 +2,6 @@ package controller_test
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"regexp"
 	"testing"
@@ -92,15 +91,9 @@ func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope stri
 	}
 }
 
-// tampered changes the lastmodified timestamp of a base64-encoded SOPS file, which the MAC covers.
-func tampered(t *testing.T, value string) string {
-	t.Helper()
-	file, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed := regexp.MustCompile(`"lastmodified": "[^"]*"`).ReplaceAll(file, []byte(`"lastmodified": "2020-01-01T00:00:00Z"`))
-	return base64.StdEncoding.EncodeToString(changed)
+// tampered changes the lastmodified timestamp of a SOPS JSON file, which the MAC covers.
+func tampered(value string) string {
+	return regexp.MustCompile(`"lastmodified":"[^"]*"`).ReplaceAllString(value, `"lastmodified":"2020-01-01T00:00:00Z"`)
 }
 
 // update applies mutate to obj and updates it, retrying on conflicts with the operator's writes.

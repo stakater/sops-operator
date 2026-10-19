@@ -34,7 +34,7 @@ It is built on two principles:
 
 ### 🌿 Plain SOPS, one value per secret, any GitOps tool
 
-Each secret is an ordinary SOPS file, made with the standard `sops` CLI and your `.sops.yaml`, in base64: one value
+Each secret is an ordinary SOPS file, made with the standard `sops` CLI and your `.sops.yaml`, as JSON on one line: one value
 that a Helm values file can hold per environment. Argo CD, Flux or a CI job applies it like any other manifest,
 with nothing to install. **Plaintext never passes through the
 delivery pipeline**, and the operator needs no Git access or Git credentials.
@@ -340,7 +340,7 @@ stringData:
 Encrypt it from the repository root into one value, then delete the plaintext:
 
 ```bash
-sops encrypt --output-type json environments/stage/db-credentials.plain.yaml | base64 | tr -d '\n'
+sops encrypt --output-type json environments/stage/db-credentials.plain.yaml | jq -c .
 rm environments/stage/db-credentials.plain.yaml
 ```
 
@@ -356,7 +356,7 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  encrypted: ewoJInNjb3BlIjogIkVOQ1tBRVMyNTZfR0NNLGRhdGE6...
+  encrypted: '{"scope":"ENC[AES256_GCM,data:fuR3...,type:str]","stringData":{...},"sops":{...}}'
 ```
 
 Once your GitOps tool applies it:
@@ -372,6 +372,8 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 > [!TIP]
 > - The scope is the `SopsSecret`'s namespace and name; a value copied elsewhere is rejected with `ScopeMismatch`.
 > - Quote `stringData` values. Unquoted values such as `0123` are rejected instead of being silently changed.
+> - Put the value in single quotes. Unquoted, YAML reads the JSON as a mapping and the API server rejects the
+>   `SopsSecret` (`spec.encrypted` must be a string). In a Helm template, render it with `toJson`.
 > - Ignore `*.plain.yaml` in `.gitignore`, so a forgotten plaintext file is never committed.
 > - Every value in the file must be encrypted: do not use `encrypted_regex` or `unencrypted_suffix` in these rules.
 > - `sops` looks for `.sops.yaml` from the current directory upwards; run it from the repository root, or pass
@@ -385,7 +387,7 @@ Each secret is one value, so a chart takes it from the environment's values file
 ```yaml
 # environments/stage/values.yaml
 secrets:
-  db-credentials: ewoJInNjb3BlIjogIkVOQ1tBRVMyNTZfR0NNLGRhdGE6...
+  db-credentials: '{"scope":"ENC[AES256_GCM,data:fuR3...,type:str]","stringData":{...},"sops":{...}}'
 ```
 
 ```yaml
@@ -400,14 +402,14 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  encrypted: {{ $encrypted }}
+  encrypted: {{ $encrypted | toJson }}
 {{- end }}
 ```
 
 A tenant admin can read a value back with the private key:
 
 ```bash
-yq '.secrets.db-credentials' environments/stage/values.yaml | base64 -d \
+yq '.secrets.db-credentials' environments/stage/values.yaml \
   | sops decrypt --input-type json --output-type yaml /dev/stdin
 ```
 
@@ -418,7 +420,7 @@ yq '.secrets.db-credentials' environments/stage/values.yaml | base64 -d \
 | Field | Default | Description |
 |---|---|---|
 | `spec.tenantRef` | required | The `SopsTenant` whose key decrypts the value. |
-| `spec.encrypted` | required | A SOPS file in base64: `sops encrypt --output-type json <file> \| base64`. YAML output works too. |
+| `spec.encrypted` | required | A SOPS file as JSON on one line: `sops encrypt --output-type json <file> \| jq -c .`. Any SOPS file in base64 works too. |
 | `spec.type` | `Opaque` | `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. |
 | `spec.template.metadata` | — | Labels and annotations for the Secret, for example for Reloader. |
 | `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
@@ -440,7 +442,7 @@ The file, before encryption:
 | `TenantNotFound` / `TenantNotReady` | The `SopsTenant` does not exist, or its key cannot be read or is invalid. |
 | `NotRecipient` | The value is not encrypted for the tenant's key. |
 | `ScopeMismatch` | The value was encrypted for another namespace or name. |
-| `DecryptFailed` | The value is not a base64 SOPS file, was modified, or holds unencrypted, unquoted or unknown fields. |
+| `DecryptFailed` | The value is not a SOPS file, was modified, or holds unencrypted, unquoted or unknown fields. |
 | `Conflict` | A Secret with this name exists and was not created by this `SopsSecret`. |
 | `ApplyFailed` | The API server rejected the Secret, for example an invalid TLS Secret. |
 | `Suspended` | Reconciliation is paused by annotation. |
@@ -462,10 +464,10 @@ The file, before encryption:
   export SOPS_AGE_KEY_FILE=old.agekey
   for f in environments/*/values.yaml; do
     for name in $(yq '.secrets | keys | .[]' "$f"); do
-      V=$(yq ".secrets[\"$name\"]" "$f" | base64 -d \
+      V=$(yq ".secrets[\"$name\"]" "$f" \
           | sops decrypt --input-type json --output-type json /dev/stdin \
           | sops encrypt --filename-override "$(dirname "$f")/$name.yaml" --input-type json --output-type json /dev/stdin \
-          | base64 | tr -d '\n') yq -i ".secrets[\"$name\"] = strenv(V)" "$f"
+          | jq -c .) yq -i ".secrets[\"$name\"] = strenv(V)" "$f"
     done
   done
   ```

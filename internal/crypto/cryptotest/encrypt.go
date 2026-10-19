@@ -15,11 +15,12 @@ limitations under the License.
 */
 
 // Package cryptotest encrypts documents the way the documented
-// `sops encrypt --output-type json <file> | base64` does. It is used by tests only.
+// `sops encrypt --output-type json <file> | jq -c .` does. It is used by tests only.
 package cryptotest
 
 import (
-	"encoding/base64"
+	"bytes"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 
@@ -78,11 +79,15 @@ func EncryptFile(plain []byte, opts Options, recipients ...string) ([]byte, erro
 	return json.NewStore(&config.JSONStoreConfig{}).EmitEncryptedFile(tree)
 }
 
-// Encrypt returns plain encrypted as the value a SopsSecret holds: a JSON sops file in base64.
+// Encrypt returns plain encrypted as the value a SopsSecret holds: a JSON sops file on one line.
 func Encrypt(plain []byte, recipients ...string) (string, error) {
 	file, err := EncryptFile(plain, Options{}, recipients...)
 	if err != nil {
 		return "", err
 	}
-	return base64.StdEncoding.EncodeToString(file), nil
+	var compact bytes.Buffer
+	if err := stdjson.Compact(&compact, file); err != nil {
+		return "", err
+	}
+	return compact.String(), nil
 }

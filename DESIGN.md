@@ -41,7 +41,7 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
 - The data key is encrypted once per **recipient** and stored in the file's `sops:` metadata block.
 - A **MAC** over the values, encrypted with the data key, detects tampering. It depends on the values and their order,
   so a SOPS file must be read exactly as `sops` wrote it. The operator therefore receives each file as one opaque
-  string (base64) and never as Kubernetes YAML, which the API server would reorder and extend (D49).
+  string (JSON on one line) and never as Kubernetes YAML, which the API server would reorder and extend (D49).
 - Anyone with a recipient's **public** key can encrypt. Decrypting — and therefore editing an existing file — requires
   a **private** key.
 - **age** key types (age v1.3.2, SOPS v3.13.3 as of this writing):
@@ -65,7 +65,7 @@ The operator never talks to Git. A GitOps tool (Argo CD, Flux), CI, or a person 
 `SopsSecret` to the API server; the operator watches the API.
 
 ```
-dev: write → sops encrypt | base64 → git push
+dev: write → sops encrypt | jq -c → git push
                                 │
 Argo CD / Flux / CI: apply (still encrypted)
                                 │
@@ -112,7 +112,7 @@ flowchart TB
     DEV(["Developer"])
 
     subgraph GIT["Git repository — ciphertext only"]
-        FILE["SopsSecret or Helm values<br/>one SOPS file per secret, in base64"]
+        FILE["SopsSecret or Helm values<br/>one SOPS file per secret, JSON on one line"]
     end
 
     GITOPS(["GitOps tool<br/>Argo CD / Flux"])
@@ -201,7 +201,7 @@ sequenceDiagram
     TA->>DEV: public key (.sops.yaml)
 
     Note over CA,OP: Every secret change
-    DEV->>DEV: write values + scope, sops encrypt | base64
+    DEV->>DEV: write values + scope, sops encrypt | jq -c
     DEV->>GIT: commit ciphertext
     GO->>GIT: pull
     GO->>API: apply SopsSecret (encrypted)
@@ -298,7 +298,7 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  encrypted: ewoJInNjb3BlIjog...      # sops encrypt --output-type json <file> | base64
+  encrypted: '{"scope":"ENC[...]",…}' # sops encrypt --output-type json <file> | jq -c .
   deletionPolicy: Delete             # Delete (default) | Retain
   template:                          # optional; metadata for the output Secret
     metadata:
@@ -318,7 +318,7 @@ status:
 | Field | Required | Meaning |
 |---|---|---|
 | `spec.tenantRef` | yes | Tenant whose key decrypts the value. |
-| `spec.encrypted` | yes | One SOPS file in base64 (JSON or YAML output), at most 1.5 MiB (etcd's default object size limit). Only age recipients in a single key group; every value must be encrypted. |
+| `spec.encrypted` | yes | One SOPS file as JSON on one line (or any SOPS file in base64), at most 1.5 MiB (etcd's default object size limit). Only age recipients in a single key group; every value must be encrypted. |
 | `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
 | `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels are not copied. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
@@ -618,7 +618,7 @@ creation_rules:
 
 ```bash
 # environments/prod/db-creds.plain.yaml (git-ignored): scope: team-a-prod/db-creds, stringData: {...}
-sops encrypt --output-type json environments/prod/db-creds.plain.yaml | base64 | tr -d '\n'
+sops encrypt --output-type json environments/prod/db-creds.plain.yaml | jq -c .
 rm environments/prod/db-creds.plain.yaml
 # put the value in spec.encrypted, or under secrets.db-creds in environments/prod/values.yaml, and commit
 ```
@@ -770,7 +770,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D46 | Each tenant's ServiceAccount is `<tenant>-sops-tenant`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where `sops-operator-tenant` is bound to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). |
 | D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
 | D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret. |
-| D49 | `spec.encrypted` holds one SOPS file in base64 (`sops encrypt --output-type json <file> \| base64`) whose plaintext is `scope`, `data` and `stringData`; the `sops` block and the encrypted fields leave the CRD. No compatibility with v0.0.5 and earlier; nothing was deployed with it. | One value per secret fits a Helm values file per environment, and only upstream `sops` and `.sops.yaml` are needed, with no tool of our own. Reading the file byte for byte keeps the MAC valid as written, so key sorting, `mac_only_encrypted` and the `--age` pitfall disappear. Costs: changing one key means encrypting the secret again, and diffs show only that a secret changed. |
+| D49 | `spec.encrypted` holds one SOPS file as JSON on one line (`sops encrypt --output-type json <file> \| jq -c .`; base64 also accepted) whose plaintext is `scope`, `data` and `stringData`; the `sops` block and the encrypted fields leave the CRD. No compatibility with v0.0.5 and earlier; nothing was deployed with it. | One value per secret fits a Helm values file per environment, and only upstream `sops` and `.sops.yaml` are needed, with no tool of our own. Reading the file byte for byte keeps the MAC valid as written, so key sorting, `mac_only_encrypted` and the `--age` pitfall disappear. JSON on one line rather than base64: base64 adds a third and hides nothing the sops file does not show anyway. Costs: changing one key means encrypting the secret again, diffs show only that a secret changed, and a value is about 5 KB with a post-quantum key, mostly the public key and wrapped data key sops stores per recipient. |
 
 ---
 

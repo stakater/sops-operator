@@ -32,7 +32,7 @@ import (
 )
 
 // Use case: a developer encrypts with the sops CLI exactly as documented (DESIGN.md §8.2) — the repo's
-// .sops.yaml picks the key by path, and `sops encrypt --output-type json <file> | base64` gives the
+// .sops.yaml picks the key by path, and `sops encrypt --output-type json <file> | jq -c .` gives the
 // value for the SopsSecret or a Helm values file — and the GitOps tool applies it. Later a tenant
 // admin re-encrypts the value for new recipients with the documented sops decrypt | sops encrypt pipe.
 func TestSopsCLIWorkflow(t *testing.T) {
@@ -49,7 +49,7 @@ func TestSopsCLIWorkflow(t *testing.T) {
 	var s *sopsv1alpha1.SopsSecret
 	t.Run("shall decrypt a value encrypted with the sops CLI", func(t *testing.T) {
 		value := shell(t, repo, nil,
-			`"$SOPS" encrypt --output-type json environments/e2e/db-creds.plain.yaml | base64 | tr -d '\n'`)
+			`"$SOPS" encrypt --output-type json environments/e2e/db-creds.plain.yaml | jq -c .`)
 		s = sopsSecretWith(t, sopsSecret{Name: "db-creds", Namespace: prod, TenantNamespace: tenantNS}, value)
 		if err := k8s.Create(context.Background(), s); err != nil {
 			t.Fatal(err)
@@ -75,10 +75,10 @@ func TestSopsCLIWorkflow(t *testing.T) {
 		writeFile(t, keyFile, string(tenantKey(t, tenantNS).Data[crypto.KeyFileField]))
 
 		value := shell(t, repo, []string{"VALUE=" + s.Spec.Encrypted, "SOPS_AGE_KEY_FILE=" + keyFile},
-			`printf %s "$VALUE" | base64 -d | "$SOPS" decrypt --input-type json --output-type json /dev/stdin `+
+			`printf %s "$VALUE" | "$SOPS" decrypt --input-type json --output-type json /dev/stdin `+
 				`| "$SOPS" encrypt --filename-override environments/e2e/db-creds.yaml `+
 				`--input-type json --output-type json /dev/stdin `+
-				`| base64 | tr -d '\n'`)
+				`| jq -c .`)
 		breakGlassKeys, err := crypto.ParseKeyFile(breakGlassFile)
 		if err != nil {
 			t.Fatal(err)

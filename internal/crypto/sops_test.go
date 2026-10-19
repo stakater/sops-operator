@@ -17,6 +17,7 @@ limitations under the License.
 package crypto_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -94,6 +95,27 @@ func TestDecryption(t *testing.T) {
 				sd, _ := doc["stringData"].(map[string]any)
 				if doc["scope"] != wantScope || sd["a"] != "one" || sd["b"] != "two" {
 					t.Fatal("decrypted values do not match the plaintext")
+				}
+			})
+		}
+	})
+
+	// The documented form: `sops encrypt --output-type json <file> | jq -c .`, one line without base64.
+	t.Run("shall decrypt the sops JSON file as text, compact or as written", func(t *testing.T) {
+		ks := newKeys(t)
+		file := sopsFile(t, plain, cryptotest.Options{}, ks.Recipients[0])
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(file)); err != nil {
+			t.Fatal(err)
+		}
+		for name, v := range map[string]string{"compact": compact.String(), "as written": file} {
+			t.Run(name, func(t *testing.T) {
+				got, err := crypto.DecryptValue(v, ks, wantScope)
+				if err != nil {
+					t.Fatalf("DecryptValue: %v", err)
+				}
+				if decrypted(t, got)["scope"] != wantScope {
+					t.Fatal("decrypted scope does not match the plaintext")
 				}
 			})
 		}
@@ -178,8 +200,10 @@ func TestDecryption(t *testing.T) {
 		}
 	})
 
-	t.Run("shall reject values that are not base64-encoded sops files", func(t *testing.T) {
-		for name, v := range map[string]string{"plaintext": plain, "base64 plaintext": value(plain)} {
+	t.Run("shall reject values that are not sops files", func(t *testing.T) {
+		for name, v := range map[string]string{
+			"plaintext": plain, "base64 plaintext": value(plain), "JSON plaintext": `{"scope": "a/b"}`,
+		} {
 			t.Run(name, func(t *testing.T) {
 				if _, err := crypto.DecryptValue(v, newKeys(t), wantScope); !errors.Is(err, crypto.ErrMalformed) {
 					t.Fatalf("got %v, want ErrMalformed", err)

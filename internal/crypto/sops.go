@@ -88,19 +88,23 @@ func ageKeys(tree sops.Tree) ([]*sopsage.MasterKey, error) {
 // scopePath is where the encrypted scope lives; SOPS authenticates each value with its path.
 var scopePath = []string{"scope"}
 
-// DecryptValue decrypts a SopsSecret value: a SOPS file in base64 (`sops encrypt ... | base64`),
-// JSON or YAML, read byte for byte so the MAC covers exactly what sops wrote. Whitespace in the base64
-// is ignored. It returns the plaintext document as JSON. Identities are applied in memory to this
-// file only.
+// DecryptValue decrypts a SopsSecret value: a SOPS file as JSON text, usually compacted to one line
+// (`sops encrypt --output-type json <file> | jq -c .`), or any SOPS file in base64. The file is read
+// as sops wrote it, so the MAC covers exactly what sops encrypted; whitespace between JSON tokens and
+// in base64 does not matter. It returns the plaintext document as JSON. Identities are applied in
+// memory to this file only.
 //
 // Every value must be encrypted. The encrypted scope is decrypted and compared with wantScope before
 // any other value, so a file copied elsewhere is rejected without decrypting its values. Errors never
 // contain decrypted values: SOPS does not authenticate a value's type tag, and its parse errors quote
 // the plaintext.
 func DecryptValue(encoded string, keys *KeySet, wantScope string) ([]byte, error) {
-	raw, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(encoded), ""))
-	if err != nil {
-		return nil, fmt.Errorf("%w: the value is not valid base64", ErrMalformed)
+	raw := []byte(strings.TrimSpace(encoded))
+	if !bytes.HasPrefix(raw, []byte("{")) {
+		var err error
+		if raw, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(encoded), "")); err != nil {
+			return nil, fmt.Errorf("%w: the value is neither a SOPS JSON file nor base64", ErrMalformed)
+		}
 	}
 	tree, err := load(raw)
 	if err != nil {

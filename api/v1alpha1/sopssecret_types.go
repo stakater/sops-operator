@@ -61,9 +61,9 @@ type SecretTemplateMetadata struct {
 type SopsSecretSpec struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Tenant"
 	TenantRef TenantReference `json:"tenantRef"`
-	// Encrypted is a SOPS file in base64 (`sops encrypt --output-type json <file> | base64`). Its
-	// plaintext holds the scope "<namespace>/<name>" this SopsSecret may be decrypted into, and the
-	// Secret's data and stringData.
+	// Encrypted is a SOPS file as JSON on one line (`sops encrypt --output-type json <file> | jq -c .`);
+	// any SOPS file in base64 is accepted too. Its plaintext holds the scope "<namespace>/<name>" this
+	// SopsSecret may be decrypted into, and the Secret's data and stringData.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1572864
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Encrypted",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}

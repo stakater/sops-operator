@@ -74,7 +74,7 @@ func TestSecretRejection(t *testing.T) {
 		}, sopsv1alpha1.ReasonNotRecipient},
 		{"shall report DecryptFailed when tampered with", func() *sopsv1alpha1.SopsSecret {
 			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "tp", prod+"/tp", value)
-			s.Spec.Encrypted = tampered(t, s.Spec.Encrypted)
+			s.Spec.Encrypted = tampered(s.Spec.Encrypted)
 			return s
 		}, sopsv1alpha1.ReasonDecryptFailed},
 		{"shall report ScopeMismatch when copied to another namespace", func() *sopsv1alpha1.SopsSecret {
