@@ -112,12 +112,12 @@ func TestSnapshotNormalization(t *testing.T) {
 		out := render(t, &sopsv1alpha1.SopsSecret{
 			ObjectMeta: meta("db"),
 			Spec: sopsv1alpha1.SopsSecretSpec{
-				TenantRef: sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
-				Encrypted: "-----BEGIN AGE ENCRYPTED FILE-----\nYWdl\n-----END AGE ENCRYPTED FILE-----\n",
+				TenantRef:     sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
+				EncryptedData: map[string]sopsv1alpha1.EncryptedValue{"password": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCg=="},
 			},
 			Status: sopsv1alpha1.SopsSecretStatus{SecretUID: "77aa"},
 		})
-		mustContain(t, out, "encrypted: <encrypted>", "secretUID: <uid>", "name: my-team")
+		mustContain(t, out, "password: <encrypted>", "secretUID: <uid>", "name: my-team")
 	})
 
 	t.Run("shall replace valid condition timestamps", func(t *testing.T) {

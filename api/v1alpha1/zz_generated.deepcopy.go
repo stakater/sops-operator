@@ -133,6 +133,13 @@ func (in *SopsSecretList) DeepCopyObject() runtime.Object {
 func (in *SopsSecretSpec) DeepCopyInto(out *SopsSecretSpec) {
 	*out = *in
 	out.TenantRef = in.TenantRef
+	if in.EncryptedData != nil {
+		in, out := &in.EncryptedData, &out.EncryptedData
+		*out = make(map[string]EncryptedValue, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	in.Template.DeepCopyInto(&out.Template)
 }
 

@@ -29,11 +29,11 @@ spec:
               - urn:alm:descriptor:com.tectonic.ui:select:Delete
               - urn:alm:descriptor:com.tectonic.ui:select:Retain
           - description: |-
-              Encrypted is an ASCII-armored age file encrypted for the tenant's public key. Its plaintext is
-              a YAML document with the scope "<namespace>/<name>" this SopsSecret may be decrypted into, and
-              the Secret's data and stringData.
-            displayName: Encrypted
-            path: encrypted
+              EncryptedData holds one encrypted value per key of the Secret: a binary age file encrypted for
+              the tenant's public key, in base64. Its plaintext is the line "<namespace>/<name>/<key>"
+              followed by the value.
+            displayName: Encrypted data
+            path: encryptedData
             x-descriptors:
               - urn:alm:descriptor:com.tectonic.ui:hidden
           - displayName: Secret metadata
@@ -110,15 +110,15 @@ spec:
             path: usedBy
         version: v1alpha1
   description: |
-    SOPS Operator turns age-encrypted `SopsSecret` resources committed to Git or kept in Helm values into
-    Kubernetes Secrets. Each holds one ASCII-armored age file, encrypted with `age -r <public key> -a`.
+    SOPS Operator turns `SopsSecret` resources committed to Git or kept in Helm values into Kubernetes Secrets. A
+    `SopsSecret` mirrors a Secret: `encryptedData` holds one age-encrypted value per key.
 
     - **Tenant keys**: a `SopsTenant` holds a post-quantum age key. The operator generates it when the key
       Secret does not exist, or uses a key you provide.
     - **Zero trust**: the operator holds no Secret permissions of its own. It reads keys and writes Secrets
       only through each tenant's identity, in the namespaces the cluster admin granted to that tenant.
-    - **Scoped ciphertext**: every encrypted payload carries a `<namespace>/<name>` scope, so ciphertext copied
-      to another namespace or name is rejected.
+    - **Scoped ciphertext**: every encrypted value carries a `<namespace>/<name>/<key>` scope, so ciphertext
+      copied to another namespace, name or key is rejected.
 
     Each tenant acts as its own ServiceAccount, `<tenant>-sops-tenant`, which the operator creates. To onboard
     a tenant, bind `sops-operator-tenant` to the operator and `sops-key-owner` to the tenant's ServiceAccount

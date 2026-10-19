@@ -17,17 +17,18 @@ limitations under the License.
 package crypto
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"filippo.io/age"
-	"filippo.io/age/armor"
 )
 
 var (
-	// ErrMalformed reports a value that is not an ASCII-armored age file.
+	// ErrMalformed reports a value that is not a base64-encoded age file.
 	ErrMalformed = errors.New("malformed age file")
 	// ErrNotRecipient reports a file that is not encrypted for any of the given keys.
 	ErrNotRecipient = errors.New("file is not encrypted for this key")
@@ -35,15 +36,22 @@ var (
 	ErrDecrypt = errors.New("decryption failed")
 )
 
-// Decrypt decrypts an ASCII-armored age file with the given keys and returns the plaintext.
-// Surrounding whitespace is ignored. age authenticates the whole file, so a modified file fails
-// with ErrDecrypt. Errors never contain decrypted data.
-func Decrypt(armored string, keys *KeySet) ([]byte, error) {
-	armored = strings.TrimSpace(armored)
-	if !strings.HasPrefix(armored, armor.Header) {
-		return nil, fmt.Errorf("%w: the value does not start with %q", ErrMalformed, armor.Header)
+// header starts every binary age file.
+const header = "age-encryption.org/v1\n"
+
+// DecryptValue decrypts a base64-encoded binary age file (`age ... | base64`) with the given keys and
+// returns the plaintext. Whitespace, including line breaks from wrapping base64 encoders, is
+// ignored. age authenticates the whole file, so a modified file fails with ErrDecrypt. Errors never
+// contain decrypted data.
+func DecryptValue(encoded string, keys *KeySet) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(encoded), ""))
+	if err != nil {
+		return nil, fmt.Errorf("%w: the value is not valid base64", ErrMalformed)
 	}
-	r, err := age.Decrypt(armor.NewReader(strings.NewReader(armored)), keys.Identities...)
+	if !bytes.HasPrefix(raw, []byte(header)) {
+		return nil, fmt.Errorf("%w: the value is not a binary age file encoded in base64", ErrMalformed)
+	}
+	r, err := age.Decrypt(bytes.NewReader(raw), keys.Identities...)
 	var noMatch *age.NoIdentityMatchError
 	switch {
 	case errors.As(err, &noMatch):

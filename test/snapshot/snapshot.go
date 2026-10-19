@@ -97,7 +97,7 @@ func normalize(u map[string]any, known map[string]string) error {
 	redact(u, "data")
 	redact(u, "stringData")
 	if spec, ok := u["spec"].(map[string]any); ok {
-		setIfPresent(spec, "encrypted", Encrypted)
+		replaceValues(spec, "encryptedData", Encrypted)
 	}
 
 	if status, ok := u["status"].(map[string]any); ok {
@@ -124,13 +124,16 @@ func setIfPresent(m map[string]any, key, value string) {
 	}
 }
 
-func redact(m map[string]any, key string) {
+func redact(m map[string]any, key string) { replaceValues(m, key, Redacted) }
+
+// replaceValues replaces every value of the map at m[key] with placeholder, keeping the keys.
+func replaceValues(m map[string]any, key, placeholder string) {
 	values, ok := m[key].(map[string]any)
 	if !ok {
 		return
 	}
 	for k := range values {
-		values[k] = Redacted
+		values[k] = placeholder
 	}
 }
 

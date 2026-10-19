@@ -196,7 +196,7 @@ func TestTenantKey(t *testing.T) {
 		target := env.Namespace(t, "target")
 		tenantNS, recipient := onboardedTenant(t, target)
 		for _, name := range []string{"a", "b"} {
-			s := encryptedSopsSecret(t, recipient, tenantNS, target, name, target+"/"+name, map[string]any{"k": "v"})
+			s := encryptedSopsSecret(t, recipient, tenantNS, target, name, target+"/"+name, map[string]string{"k": "v"})
 			if err := env.Admin.Create(ctx, s); err != nil {
 				t.Fatal(err)
 			}

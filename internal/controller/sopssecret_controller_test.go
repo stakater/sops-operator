@@ -54,7 +54,7 @@ func TestSecretRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := map[string]any{"password": "hunter2"}
+	value := map[string]string{"password": "hunter2"}
 
 	cases := []struct {
 		name   string
@@ -74,7 +74,7 @@ func TestSecretRejection(t *testing.T) {
 		}, sopsv1alpha1.ReasonNotRecipient},
 		{"shall report DecryptFailed when tampered with", func() *sopsv1alpha1.SopsSecret {
 			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "tp", prod+"/tp", value)
-			s.Spec.Encrypted = tampered(s.Spec.Encrypted)
+			s.Spec.EncryptedData["password"] = tampered(t, s.Spec.EncryptedData["password"])
 			return s
 		}, sopsv1alpha1.ReasonDecryptFailed},
 		{"shall report ScopeMismatch when copied to another namespace", func() *sopsv1alpha1.SopsSecret {
@@ -85,6 +85,12 @@ func TestSecretRejection(t *testing.T) {
 		{"shall report ScopeMismatch when copied under another name", func() *sopsv1alpha1.SopsSecret {
 			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "orig", prod+"/orig", value)
 			s.Name = "renamed"
+			return s
+		}, sopsv1alpha1.ReasonScopeMismatch},
+		{"shall report ScopeMismatch when values are moved to other keys", func() *sopsv1alpha1.SopsSecret {
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "sw", prod+"/sw", map[string]string{"password": "a", "username": "b"})
+			d := s.Spec.EncryptedData
+			d["password"], d["username"] = d["username"], d["password"]
 			return s
 		}, sopsv1alpha1.ReasonScopeMismatch},
 		{"shall report ApplyFailed when the Secret is invalid", func() *sopsv1alpha1.SopsSecret {
@@ -107,7 +113,7 @@ func TestSecretDecryption(t *testing.T) {
 	t.Run("shall write the decrypted Secret", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "hunter2"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "hunter2"})
 		s.Spec.Template.Metadata.Labels = map[string]string{"app": "billing", "argocd.argoproj.io/instance": "x"}
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
@@ -135,7 +141,7 @@ func TestSecretDecryption(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
 		name := "db-" + strings.Repeat("x", 70) // valid object name, too long for a label value
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, name, prod+"/"+name, map[string]any{"password": "x"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, name, prod+"/"+name, map[string]string{"password": "x"})
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 	})
@@ -144,11 +150,11 @@ func TestSecretDecryption(t *testing.T) {
 		ctx := context.Background()
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "v1"})
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 
-		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
+		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "v2"})
 		update(t, s, func() { s.Spec = next.Spec })
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
@@ -177,7 +183,7 @@ func TestSecretOwnership(t *testing.T) {
 		if err := env.Admin.Create(ctx, foreign); err != nil {
 			t.Fatal(err)
 		}
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "mine"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "mine"})
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
 		if string(outputSecret(t, prod).Data["password"]) != "foreign" {
@@ -190,7 +196,7 @@ func TestSecretOwnership(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
 		build := func() *sopsv1alpha1.SopsSecret {
-			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "v1"})
 			s.Spec.DeletionPolicy = sopsv1alpha1.DeletionPolicyRetain
 			return s
 		}
@@ -217,7 +223,7 @@ func TestSecretOwnership(t *testing.T) {
 		ctx := context.Background()
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "x"})
 		s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
@@ -246,7 +252,7 @@ func TestSecretOwnership(t *testing.T) {
 		ctx := context.Background()
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "x"})
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 
@@ -288,7 +294,7 @@ func TestSuspension(t *testing.T) {
 	t.Run("shall not apply a suspended SopsSecret", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "x"})
 		s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
@@ -301,11 +307,11 @@ func TestSuspension(t *testing.T) {
 	t.Run("shall hold changes while suspended and apply them on resume", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "v1"})
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 
-		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
+		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]string{"password": "v2"})
 		update(t, s, func() {
 			s.Spec = next.Spec
 			s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}

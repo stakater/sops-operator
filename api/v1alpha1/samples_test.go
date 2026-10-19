@@ -105,8 +105,10 @@ func TestConfigSamples(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := crypto.Decrypt(s.Spec.Encrypted, keys); !errors.Is(err, crypto.ErrNotRecipient) {
-			t.Fatalf("want ErrNotRecipient from a valid age file, got %v", err)
+		for key, value := range s.Spec.EncryptedData {
+			if _, err := crypto.DecryptValue(string(value), keys); !errors.Is(err, crypto.ErrNotRecipient) {
+				t.Errorf("encryptedData.%s: want ErrNotRecipient from a valid age file, got %v", key, err)
+			}
 		}
 	})
 }

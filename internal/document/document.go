@@ -14,97 +14,31 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package document reads the decrypted payload of a SopsSecret.
+// Package document reads the decrypted values of a SopsSecret.
 package document
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
-
-	"sigs.k8s.io/yaml"
 )
 
-// ErrScopeMismatch reports a payload whose scope is not the expected one.
+// ErrScopeMismatch reports a value whose scope line is not the expected one.
 var ErrScopeMismatch = errors.New("scope mismatch")
 
-// Payload is the decrypted content of a SopsSecret.
-type Payload struct {
-	Scope string
-	Data  map[string][]byte
-}
+// ScopeFor returns the scope line a value under key of a SopsSecret named name in namespace must
+// start with. Object names and Secret keys cannot contain "/", so the line is unambiguous.
+func ScopeFor(namespace, name, key string) string { return namespace + "/" + name + "/" + key }
 
-// ScopeFor returns the scope value a SopsSecret named name in namespace must carry.
-func ScopeFor(namespace, name string) string { return namespace + "/" + name }
-
-// Parse reads a decrypted payload, a YAML document with the fields scope, data and stringData,
-// and checks its scope is wantScope before reading any value, so a file copied elsewhere is
-// rejected for that reason alone. stringData values must be quoted strings: YAML parses unquoted
-// scalars (0123 becomes 83), so they are refused instead of being converted. Errors name keys but
-// never values.
-func Parse(plain []byte, wantScope string) (*Payload, error) {
-	raw, err := yaml.YAMLToJSON(plain)
-	if err != nil {
-		return nil, errors.New("the decrypted payload is not valid YAML")
+// Value checks that a decrypted value starts with the line wantScope and returns the bytes after
+// it, so a value copied to another namespace, name or key is rejected. A CR before the line feed
+// is ignored. Errors never contain decrypted data.
+func Value(plain []byte, wantScope string) ([]byte, error) {
+	line, value, found := bytes.Cut(plain, []byte("\n"))
+	if !found || string(bytes.TrimSuffix(line, []byte("\r"))) != wantScope {
+		// The decrypted line is not repeated: error messages never contain decrypted values.
+		return nil, fmt.Errorf("%w: the decrypted value does not start with the line %q; it was encrypted for "+
+			"another namespace, name or key, or without its scope line", ErrScopeMismatch, wantScope)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, errors.New("the decrypted payload must be a YAML mapping")
-	}
-	var scope string
-	if err := json.Unmarshal(fields["scope"], &scope); err != nil {
-		return nil, errors.New("the decrypted payload must hold a string scope")
-	}
-	if scope != wantScope {
-		// The decrypted scope is not repeated: error messages never contain decrypted values.
-		return nil, fmt.Errorf("%w: the document is scoped to a different namespace or name than %q", ErrScopeMismatch, wantScope)
-	}
-	// Field names are matched exactly: encoding/json would also accept a misspelt "stringdata".
-	var doc struct {
-		Data       map[string]any
-		StringData map[string]any
-	}
-	for name, value := range fields {
-		var into *map[string]any
-		switch name {
-		case "scope":
-			continue
-		case "data":
-			into = &doc.Data
-		case "stringData":
-			into = &doc.StringData
-		default:
-			return nil, fmt.Errorf("the decrypted payload has the unknown field %q; only scope, data and stringData are allowed", name)
-		}
-		if err := json.Unmarshal(value, into); err != nil {
-			return nil, fmt.Errorf("%s in the decrypted payload must be a mapping of keys to strings", name)
-		}
-	}
-	if len(doc.Data) == 0 && len(doc.StringData) == 0 {
-		return nil, errors.New("the decrypted payload must hold data or stringData")
-	}
-	p := &Payload{Scope: scope, Data: map[string][]byte{}}
-	for k, v := range doc.Data {
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("data.%s must be a base64 string", k)
-		}
-		b, err := base64.StdEncoding.DecodeString(s)
-		if err != nil {
-			return nil, fmt.Errorf("data.%s is not valid base64", k)
-		}
-		p.Data[k] = b
-	}
-	for k, v := range doc.StringData {
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("stringData.%s must be a quoted string", k)
-		}
-		if _, dup := p.Data[k]; dup {
-			return nil, fmt.Errorf("key %s appears in both data and stringData", k)
-		}
-		p.Data[k] = []byte(s)
-	}
-	return p, nil
+	return value, nil
 }

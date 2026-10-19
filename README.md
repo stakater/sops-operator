@@ -18,9 +18,9 @@
 
 ---
 
-SOPS Operator delivers secrets from Git to Kubernetes and OpenShift. Teams commit `SopsSecret` resources that hold
-one [age](https://age-encryption.org)-encrypted string, in a manifest or a Helm value; the operator decrypts them
-inside the cluster and writes the Kubernetes Secrets, for many teams on one cluster.
+SOPS Operator delivers secrets from Git to Kubernetes and OpenShift. Teams commit `SopsSecret` resources that look
+like Secrets, with one [age](https://age-encryption.org)-encrypted string per key, in a manifest or Helm values; the
+operator decrypts them inside the cluster and writes the Kubernetes Secrets, for many teams on one cluster.
 
 It is built on two principles:
 
@@ -32,10 +32,10 @@ It is built on two principles:
 
 ## GitOps first
 
-### 🌿 One encrypted string, any GitOps tool
+### 🌿 Shaped like a Secret, any GitOps tool
 
-A `SopsSecret` holds a single ASCII-armored age file, made with the standard `age` CLI, so it fits in a plain
-manifest or a Helm value. Argo CD, Flux or a CI job applies it like any other manifest, with nothing to install. **Plaintext never passes through the
+A `SopsSecret` mirrors a Secret: `encryptedData` has the Secret's keys, each with a one-line encrypted value made
+with the standard `age` CLI. Diffs show which key changed, and each value fits a Helm value. Argo CD, Flux or a CI job applies it like any other manifest, with nothing to install. **Plaintext never passes through the
 delivery pipeline**, and the operator needs no Git access or Git credentials.
 
 ### 🔁 One-way flow, one owner per Secret
@@ -74,9 +74,9 @@ creates, and no selector, label or naming convention grants access.
 
 ### 🎯 Ciphertext bound to its destination
 
-Every encrypted payload carries a **scope**, `<namespace>/<name>`, written by its author before encryption. A
-payload encrypted for `prod/db-creds` is rejected in `dev` or under another name, even within the same team and
-with the same key. The scope is verified before any value is used, and error messages never contain decrypted
+Every encrypted value carries a **scope**, `<namespace>/<name>/<key>`, written by its author before encryption. A
+value encrypted for `prod/db-creds/password` is rejected in `dev`, under another name or under another key, even
+within the same team and with the same key. The scope is verified before any value is used, and error messages never contain decrypted
 values.
 
 ### 🔑 One key per tenant, post-quantum by default
@@ -141,9 +141,9 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 1. Checks with a **SubjectAccessReview** that the tenant is granted the target namespace. Otherwise it reports
    `AccessDenied` and decrypts nothing.
 2. Reads the tenant key **as the tenant identity**. The API server authorizes the read.
-3. Decrypts the age file with the tenant key. age authenticates the whole file, so a modified one is rejected.
-4. Verifies that the **scope** in the payload matches the `SopsSecret`'s namespace and name, before reading any
-   value.
+3. Decrypts each value with the tenant key. age authenticates every value, so a modified one is rejected.
+4. Verifies that each value's **scope** matches the `SopsSecret`'s namespace and name and the value's key, before
+   using the value.
 5. Writes the Secret **as the tenant identity**. The API server authorizes the write again.
 
 Revoking a grant takes effect at the next reconcile. Grants and keys are re-checked every time, never cached as
@@ -313,24 +313,16 @@ set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
 
-Write the values and their scope, the namespace and name of the `SopsSecret`, to a plaintext file:
+Encrypt each value with [`hack/encrypt-value.sh`](hack/encrypt-value.sh). It reads the value from a hidden prompt,
+stdin or a file, never from the command line, and prints one line:
 
-```yaml
-# db-credentials.yaml: plaintext, never commit it
-scope: team-a-foo/db-credentials
-stringData:
-  username: "app"
-  password: "s3cr3t"
+```console
+$ hack/encrypt-value.sh team-a.pub team-a-foo/db-credentials password
+Value for password:
+YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IE5lVFNENnU1aHEwaXVJcVBs...
 ```
 
-Encrypt it for the tenant's public key, then delete the plaintext:
-
-```bash
-age -R team-a.pub -a -o db-credentials.age db-credentials.yaml
-rm db-credentials.yaml
-```
-
-Put the armored file in a `SopsSecret` and commit it:
+Put the values in a `SopsSecret` with the same keys as the Secret, and commit it:
 
 ```yaml
 # team-a-foo/db-credentials.yaml
@@ -343,11 +335,9 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  encrypted: |
-    -----BEGIN AGE ENCRYPTED FILE-----
-    YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IGJrVk52SVE3
-    ...
-    -----END AGE ENCRYPTED FILE-----
+  encryptedData:
+    username: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IHRudUJqMFRYTjdRdlJhRUI4...
+    password: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IE5lVFNENnU1aHEwaXVJcVBs...
 ```
 
 Once your GitOps tool applies the file:
@@ -361,28 +351,26 @@ db-credentials   team-a    True    Decrypted   8s
 The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and deleted with it.
 
 > [!TIP]
-> - Quote `stringData` values. Unquoted values such as `0123` are rejected instead of being silently changed.
-> - The payload allows only `scope`, `data` (base64 values) and `stringData`; a misspelt field is rejected.
-> - Developers encrypt but cannot decrypt: to change a value, write the plaintext again and encrypt it again.
-> - `yq -i '.spec.encrypted = load_str("db-credentials.age")' team-a-foo/db-credentials.yaml` fills in the file.
+> - Pass a file for multi-line or binary values: `hack/encrypt-value.sh team-a.pub team-a-foo/tls tls.crt tls.crt`.
+> - Without the script, encrypt the line `<namespace>/<name>/<key>` followed by the value:
+>   `printf 'team-a-foo/db-credentials/password\n%s' "$PASSWORD" | age -R team-a.pub | base64 | tr -d '\n'`.
+> - Developers encrypt but cannot decrypt: to change a value, encrypt the new value and replace the line.
 
 #### With Helm
 
-The encrypted string is one value per secret, so a chart can take it from its values file:
+Each encrypted value is one line, so a chart can take them from its values file:
 
 ```yaml
 # values.yaml
 secrets:
-  db-credentials: |
-    -----BEGIN AGE ENCRYPTED FILE-----
-    YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IGJrVk52SVE3
-    ...
-    -----END AGE ENCRYPTED FILE-----
+  db-credentials:
+    username: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IHRudUJqMFRYTjdRdlJhRUI4...
+    password: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IE5lVFNENnU1aHEwaXVJcVBs...
 ```
 
 ```yaml
 # templates/sopssecrets.yaml
-{{- range $name, $encrypted := .Values.secrets }}
+{{- range $name, $values := .Values.secrets }}
 ---
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsSecret
@@ -392,12 +380,12 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  encrypted: |
-    {{- $encrypted | nindent 4 }}
+  encryptedData:
+    {{- toYaml $values | nindent 4 }}
 {{- end }}
 ```
 
-The scope inside each payload must still match the release namespace and the key's name: a value copied to
+Each value's scope must still match the release namespace, the secret's name and the key: a value copied to
 another environment's values file is rejected with `ScopeMismatch`.
 
 ## Reference
@@ -406,19 +394,12 @@ another environment's values file is rejected with `ScopeMismatch`.
 
 | Field | Default | Description |
 |---|---|---|
-| `spec.tenantRef` | required | The `SopsTenant` whose key decrypts `spec.encrypted`. |
-| `spec.encrypted` | required | ASCII-armored age file (`age -a`) of the payload below. |
+| `spec.tenantRef` | required | The `SopsTenant` whose key decrypts the values. |
+| `spec.encryptedData` | required | The Secret's keys, each with a binary age file in base64 (`age ... \| base64`) of the line `<namespace>/<name>/<key>` followed by the value. |
 | `spec.type` | `Opaque` | `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. |
 | `spec.template.metadata` | — | Labels and annotations for the Secret, for example for Reloader. |
 | `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
 | `sops.stakater.com/suspend: "true"` | — | Annotation that pauses reconciliation. |
-
-The payload, before encryption:
-
-| Field | Description |
-|---|---|
-| `scope` | Required. `<namespace>/<name>` of the `SopsSecret` this payload may be decrypted into. |
-| `stringData` / `data` | One required. Quoted text / base64 values, as on a Secret. |
 
 ### Status reasons
 
@@ -427,9 +408,9 @@ The payload, before encryption:
 | `Decrypted` | The Secret is up to date. |
 | `AccessDenied` | The tenant is not granted this namespace. |
 | `TenantNotFound` / `TenantNotReady` | The `SopsTenant` does not exist, or its key cannot be read or is invalid. |
-| `NotRecipient` | `spec.encrypted` is not encrypted for the tenant's key. |
-| `ScopeMismatch` | The payload was encrypted for another namespace or name. |
-| `DecryptFailed` | `spec.encrypted` is not an age file or was modified, or the payload is invalid (unknown fields, unquoted values). |
+| `NotRecipient` | A value is not encrypted for the tenant's key. |
+| `ScopeMismatch` | A value was encrypted for another namespace, name or key, or without its scope line. |
+| `DecryptFailed` | A value is not a base64-encoded age file, or was modified. |
 | `Conflict` | A Secret with this name exists and was not created by this `SopsSecret`. |
 | `ApplyFailed` | The API server rejected the Secret, for example an invalid TLS Secret. |
 | `Suspended` | Reconciliation is paused by annotation. |
@@ -445,7 +426,7 @@ The payload, before encryption:
 ## Operations
 
 - **Key rotation**: prepend a new private key to `age.agekey` and publish the new `status.publicKey`. Files for the
-  old key keep working; encrypt each payload again for the new key. When every `SopsSecret` reports `Decrypted`
+  old key keep working; encrypt each value again for the new key. When every `SopsSecret` reports `Decrypted`
   after that, remove the old identity.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.

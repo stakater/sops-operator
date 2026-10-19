@@ -154,34 +154,37 @@ func onboardedTenant(t *testing.T, tenantNamespace string, writeNamespaces ...st
 	return tenantNamespace, ks.Recipients[0]
 }
 
-// sopsSecret encrypts the sopssecret.yaml fixture for recipient and creates it.
+// sopsSecret describes a SopsSecret; Scope is "<namespace>/<name>", the start of each value's scope line.
 type sopsSecret struct {
 	Name, Namespace, Scope, DeletionPolicy string
 	TenantNamespace                        string
 	StringData                             map[string]string
 }
 
-// encryptSopsSecret encrypts the payload.yaml fixture for recipient and renders it into the
-// sopssecret.yaml fixture, as a developer would.
+// encryptSopsSecret encrypts each value of s for recipient with its scope line "<Scope>/<key>" and
+// renders the sopssecret.yaml fixture, as a developer would.
 func encryptSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha1.SopsSecret {
 	t.Helper()
-	encrypted, err := cryptotest.Encrypt(render(t, "payload.yaml", s), recipient)
-	if err != nil {
-		t.Fatal(err)
+	encrypted := map[string]string{}
+	for key, value := range s.StringData {
+		enc, err := cryptotest.Encrypt([]byte(s.Scope+"/"+key+"\n"+value), recipient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encrypted[key] = enc
 	}
 	return sopsSecretWith(t, s, encrypted)
 }
 
-// sopsSecretWith renders the sopssecret.yaml fixture for s with the armored age file encrypted.
-func sopsSecretWith(t *testing.T, s sopsSecret, encrypted string) *sopsv1alpha1.SopsSecret {
+// sopsSecretWith renders the sopssecret.yaml fixture for s with the given encryptedData.
+func sopsSecretWith(t *testing.T, s sopsSecret, encryptedData map[string]string) *sopsv1alpha1.SopsSecret {
 	t.Helper()
 	if s.DeletionPolicy == "" {
 		s.DeletionPolicy = string(sopsv1alpha1.DeletionPolicyDelete)
 	}
-	indented := "    " + strings.ReplaceAll(strings.TrimSuffix(encrypted, "\n"), "\n", "\n    ")
 	manifest := render(t, "sopssecret.yaml", map[string]any{
 		"Name": s.Name, "Namespace": s.Namespace, "DeletionPolicy": s.DeletionPolicy,
-		"TenantName": tenantName, "TenantNamespace": s.TenantNamespace, "Encrypted": indented,
+		"TenantName": tenantName, "TenantNamespace": s.TenantNamespace, "EncryptedData": encryptedData,
 	})
 	var out sopsv1alpha1.SopsSecret
 	if err := yaml.Unmarshal(manifest, &out); err != nil {

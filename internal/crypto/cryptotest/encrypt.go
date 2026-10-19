@@ -14,27 +14,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cryptotest encrypts payloads the way the documented `age -r <recipient> -a` command
+// Package cryptotest encrypts values the way the documented `age -R <recipients> | base64` command
 // does. It is used by tests only.
 package cryptotest
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
 	"filippo.io/age"
-	"filippo.io/age/armor"
 )
 
-// Encrypt encrypts plain for the given age recipients and returns the ASCII-armored file.
+// Encrypt encrypts plain for the given age recipients and returns the binary age file in base64.
 func Encrypt(plain []byte, recipients ...string) (string, error) {
 	rs, err := age.ParseRecipients(strings.NewReader(strings.Join(recipients, "\n")))
 	if err != nil {
 		return "", fmt.Errorf("parse recipients: %w", err)
 	}
-	var out strings.Builder
-	a := armor.NewWriter(&out)
-	w, err := age.Encrypt(a, rs...)
+	var out bytes.Buffer
+	w, err := age.Encrypt(&out, rs...)
 	if err != nil {
 		return "", fmt.Errorf("encrypt: %w", err)
 	}
@@ -44,8 +44,5 @@ func Encrypt(plain []byte, recipients ...string) (string, error) {
 	if err := w.Close(); err != nil {
 		return "", fmt.Errorf("encrypt: %w", err)
 	}
-	if err := a.Close(); err != nil {
-		return "", fmt.Errorf("armor: %w", err)
-	}
-	return out.String(), nil
+	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }

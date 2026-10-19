@@ -27,12 +27,12 @@ import (
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
 
-// Use case: a developer encrypts with the age CLI exactly as documented (DESIGN.md §8.2) — the
-// public key from the SopsTenant status, then `age -r <public key> -a` — and the GitOps tool applies
-// the SopsSecret holding the armored file.
+// Use case: a developer encrypts each value as documented (DESIGN.md §8.2) — the public key from the
+// SopsTenant status, then hack/encrypt-value.sh, which runs the age CLI — and the GitOps tool applies
+// the SopsSecret holding the encrypted values.
 func TestAgeCLIWorkflow(t *testing.T) {
 	t.Parallel()
-	t.Run("shall decrypt a file encrypted with the age CLI", func(t *testing.T) {
+	t.Run("shall decrypt values encrypted with the age CLI", func(t *testing.T) {
 		t.Parallel()
 		prod := namespace(t, "e2e-cli-prod")
 		tenantNS, _ := onboardedTenant(t, "e2e-cli-tenant", prod)
@@ -40,27 +40,23 @@ func TestAgeCLIWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-
 		dir := t.TempDir()
-		// Written as a person would: unsorted, with a comment.
-		writeFile(t, filepath.Join(dir, "db-creds.yaml"), `scope: `+prod+`/db-creds
-stringData:
-  username: "app"
-  password: "hunter2" # rotated quarterly
-`)
-		runIn(t, dir, envOr("AGE", "age"), "-r", strings.TrimSpace(publicKey), "-a", "-o", "db-creds.age", "db-creds.yaml")
-		encrypted, err := os.ReadFile(filepath.Join(dir, "db-creds.age"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(dir, "team.pub"), publicKey+"\n")
+		const caCert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+		writeFile(t, filepath.Join(dir, "ca.crt"), caCert)
 
-		s := sopsSecretWith(t, sopsSecret{Name: "db-creds", Namespace: prod, TenantNamespace: tenantNS}, string(encrypted))
+		script := filepath.Join(repoRoot(), "hack", "encrypt-value.sh")
+		target := prod + "/db-creds"
+		s := sopsSecretWith(t, sopsSecret{Name: "db-creds", Namespace: prod, TenantNamespace: tenantNS}, map[string]string{
+			"password": runIn(t, dir, password, script, "team.pub", target, "password"),
+			"ca.crt":   runIn(t, dir, "", script, "team.pub", target, "ca.crt", "ca.crt"),
+		})
 		if err := k8s.Create(context.Background(), s); err != nil {
 			t.Fatal(err)
 		}
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		out := outputSecret(t, prod)
-		if string(out.Data["password"]) != password || string(out.Data["username"]) != "app" {
+		if string(out.Data["password"]) != password || string(out.Data["ca.crt"]) != caCert {
 			t.Fatal("output Secret does not hold the values encrypted with the age CLI")
 		}
 		assertGolden(t, s, "decrypted")
@@ -77,12 +73,18 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// runIn runs a developer tool in dir.
-func runIn(t *testing.T, dir, name string, args ...string) {
+// runIn runs a developer tool in dir with stdin and returns its standard output.
+func runIn(t *testing.T, dir, stdin, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Env = append(os.Environ(), "AGE="+envOr("AGE", "age"))
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%s %v: %v\n%s", name, args, err, stderr.String())
 	}
+	return strings.TrimSpace(string(out))
 }

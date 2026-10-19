@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -138,23 +140,24 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is invalid", tenantName)}, nil
 	}
 
-	plain, err := crypto.Decrypt(s.Spec.Encrypted, keys)
-	switch {
-	case errors.Is(err, crypto.ErrNotRecipient):
-		return outcome{reason: sopsv1alpha1.ReasonNotRecipient,
-			message: fmt.Sprintf("the document is not encrypted for the key of tenant %s", tenantName)}, nil
-	case err != nil:
-		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
-	}
-	payload, err := document.Parse(plain, document.ScopeFor(s.Namespace, s.Name))
-	switch {
-	case errors.Is(err, document.ErrScopeMismatch):
-		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: err.Error()}, nil
-	case err != nil:
-		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
+	data := make(map[string][]byte, len(s.Spec.EncryptedData))
+	for _, key := range slices.Sorted(maps.Keys(s.Spec.EncryptedData)) {
+		plain, err := crypto.DecryptValue(string(s.Spec.EncryptedData[key]), keys)
+		switch {
+		case errors.Is(err, crypto.ErrNotRecipient):
+			return outcome{reason: sopsv1alpha1.ReasonNotRecipient,
+				message: fmt.Sprintf("encryptedData.%s is not encrypted for the key of tenant %s", key, tenantName)}, nil
+		case err != nil:
+			return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: fmt.Sprintf("encryptedData.%s: %v", key, err)}, nil
+		}
+		value, err := document.Value(plain, document.ScopeFor(s.Namespace, s.Name, key))
+		if err != nil {
+			return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: fmt.Sprintf("encryptedData.%s: %v", key, err)}, nil
+		}
+		data[key] = value
 	}
 
-	uid, err := secretwriter.Write(ctx, tc, desiredSecret(s, payload), s.Status.SecretUID)
+	uid, err := secretwriter.Write(ctx, tc, desiredSecret(s, data), s.Status.SecretUID)
 	switch {
 	case errors.Is(err, secretwriter.ErrConflict):
 		return outcome{reason: sopsv1alpha1.ReasonConflict,
@@ -170,7 +173,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid}, nil
 }
 
-func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
+func desiredSecret(s *sopsv1alpha1.SopsSecret, data map[string][]byte) *corev1.Secret {
 	labels := withoutTracking(s.Spec.Template.Metadata.Labels)
 	labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
 	annotations := withoutTracking(s.Spec.Template.Metadata.Annotations)
@@ -187,7 +190,7 @@ func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secr
 			Annotations: annotations,
 		},
 		Type: secretType,
-		Data: p.Data,
+		Data: data,
 	}
 	if s.Spec.DeletionPolicy != sopsv1alpha1.DeletionPolicyRetain {
 		out.OwnerReferences = []metav1.OwnerReference{{

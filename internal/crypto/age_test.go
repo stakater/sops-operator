@@ -17,15 +17,15 @@ limitations under the License.
 package crypto_test
 
 import (
+	"encoding/base64"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 )
 
-const plain = "scope: my-app-prod/db-creds\nstringData:\n  password: hunter2\n"
+const plain = "my-app-prod/db-creds/password\nhunter2"
 
 func newKeys(t *testing.T) *crypto.KeySet {
 	t.Helper()
@@ -50,9 +50,9 @@ func encrypt(t *testing.T, recipients ...string) string {
 }
 
 func TestDecryption(t *testing.T) {
-	t.Run("shall decrypt an armored age file", func(t *testing.T) {
+	t.Run("shall decrypt a base64-encoded age file", func(t *testing.T) {
 		ks := newKeys(t)
-		got, err := crypto.Decrypt(encrypt(t, ks.Recipients[0]), ks)
+		got, err := crypto.DecryptValue(encrypt(t, ks.Recipients[0]), ks)
 		if err != nil {
 			t.Fatalf("Decrypt: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestDecryption(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := crypto.Decrypt(encrypt(t, oldRecipient), rotated); err != nil {
+		if _, err := crypto.DecryptValue(encrypt(t, oldRecipient), rotated); err != nil {
 			t.Fatalf("decrypting with the second identity: %v", err)
 		}
 	})
@@ -84,48 +84,54 @@ func TestDecryption(t *testing.T) {
 		a, b := newKeys(t), newKeys(t)
 		enc := encrypt(t, a.Recipients[0], b.Recipients[0])
 		for name, ks := range map[string]*crypto.KeySet{"first": a, "second": b} {
-			if _, err := crypto.Decrypt(enc, ks); err != nil {
+			if _, err := crypto.DecryptValue(enc, ks); err != nil {
 				t.Fatalf("decrypting with the %s recipient's key: %v", name, err)
 			}
 		}
 	})
 
-	// Helm and YAML block scalars add or keep newlines and indentation around the value.
-	t.Run("shall accept surrounding whitespace", func(t *testing.T) {
+	// GNU base64 wraps lines and YAML block scalars keep newlines.
+	t.Run("shall accept whitespace and line breaks", func(t *testing.T) {
 		ks := newKeys(t)
-		got, err := crypto.Decrypt("\n  "+encrypt(t, ks.Recipients[0])+"\n\n", ks)
+		enc := encrypt(t, ks.Recipients[0])
+		got, err := crypto.DecryptValue("\n  "+enc[:76]+"\n"+enc[76:]+"\n", ks)
 		if err != nil {
-			t.Fatalf("Decrypt: %v", err)
+			t.Fatalf("DecryptValue: %v", err)
 		}
 		if string(got) != plain {
-			t.Fatal("decrypted payload does not match the plaintext")
+			t.Fatal("decrypted value does not match the plaintext")
 		}
 	})
 
 	t.Run("shall reject a file not encrypted for the key", func(t *testing.T) {
 		owner, other := newKeys(t), newKeys(t)
-		if _, err := crypto.Decrypt(encrypt(t, other.Recipients[0]), owner); !errors.Is(err, crypto.ErrNotRecipient) {
+		if _, err := crypto.DecryptValue(encrypt(t, other.Recipients[0]), owner); !errors.Is(err, crypto.ErrNotRecipient) {
 			t.Fatalf("got %v, want ErrNotRecipient", err)
 		}
 	})
 
 	t.Run("shall detect tampering", func(t *testing.T) {
 		ks := newKeys(t)
-		enc := encrypt(t, ks.Recipients[0])
-		lines := strings.Split(enc, "\n")
-		// The last line before the footer holds the end of the payload; change one character.
-		i := len(lines) - 3
-		r := []rune(lines[i])
-		r[0] = map[bool]rune{true: 'B', false: 'A'}[r[0] == 'A']
-		lines[i] = string(r)
-		if _, err := crypto.Decrypt(strings.Join(lines, "\n"), ks); !errors.Is(err, crypto.ErrDecrypt) {
+		raw, err := base64.StdEncoding.DecodeString(encrypt(t, ks.Recipients[0]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw[len(raw)-1] ^= 1 // the last byte belongs to the payload's authentication tag
+		if _, err := crypto.DecryptValue(base64.StdEncoding.EncodeToString(raw), ks); !errors.Is(err, crypto.ErrDecrypt) {
 			t.Fatalf("got %v, want ErrDecrypt", err)
 		}
 	})
 
-	t.Run("shall reject plaintext", func(t *testing.T) {
-		if _, err := crypto.Decrypt(plain, newKeys(t)); !errors.Is(err, crypto.ErrMalformed) {
-			t.Fatalf("got %v, want ErrMalformed", err)
+	t.Run("shall reject values that are not base64-encoded age files", func(t *testing.T) {
+		for name, value := range map[string]string{
+			"plaintext":        plain,
+			"base64 plaintext": base64.StdEncoding.EncodeToString([]byte(plain)),
+		} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := crypto.DecryptValue(value, newKeys(t)); !errors.Is(err, crypto.ErrMalformed) {
+					t.Fatalf("got %v, want ErrMalformed", err)
+				}
+			})
 		}
 	})
 }

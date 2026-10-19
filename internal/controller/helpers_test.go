@@ -2,8 +2,7 @@ package controller_test
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -70,37 +69,36 @@ func onboardedTenant(t *testing.T, writeNS ...string) (string, string) {
 	return tenantNS, ks.Recipients[0]
 }
 
-// encryptedSopsSecret builds a SopsSecret named name in ns, encrypted for recipient with the given scope.
-func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope string, stringData map[string]any) *sopsv1alpha1.SopsSecret {
+// encryptedSopsSecret builds a SopsSecret named name in ns whose values are encrypted for recipient,
+// each with the scope line "<scope>/<key>".
+func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope string, values map[string]string) *sopsv1alpha1.SopsSecret {
 	t.Helper()
-	// JSON is valid YAML.
-	plain, err := json.Marshal(map[string]any{"scope": scope, "stringData": stringData})
-	if err != nil {
-		t.Fatal(err)
-	}
-	enc, err := cryptotest.Encrypt(plain, recipient)
-	if err != nil {
-		t.Fatal(err)
+	data := map[string]sopsv1alpha1.EncryptedValue{}
+	for key, value := range values {
+		enc, err := cryptotest.Encrypt([]byte(scope+"/"+key+"\n"+value), recipient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data[key] = sopsv1alpha1.EncryptedValue(enc)
 	}
 	return &sopsv1alpha1.SopsSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: sopsv1alpha1.SopsSecretSpec{
-			TenantRef: sopsv1alpha1.TenantReference{Name: tenantName, Namespace: tenantNS},
-			Encrypted: enc,
+			TenantRef:     sopsv1alpha1.TenantReference{Name: tenantName, Namespace: tenantNS},
+			EncryptedData: data,
 		},
 	}
 }
 
-// tampered changes one character of the payload at the end of an armored age file.
-func tampered(armored string) string {
-	lines := strings.Split(armored, "\n")
-	i := len(lines) - 3 // the last line before the footer and the final newline
-	c := byte('A')
-	if lines[i][0] == 'A' {
-		c = 'B'
+// tampered flips a bit in the authentication tag at the end of a base64-encoded age file.
+func tampered(t *testing.T, value sopsv1alpha1.EncryptedValue) sopsv1alpha1.EncryptedValue {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(string(value))
+	if err != nil {
+		t.Fatal(err)
 	}
-	lines[i] = string(c) + lines[i][1:]
-	return strings.Join(lines, "\n")
+	raw[len(raw)-1] ^= 1
+	return sopsv1alpha1.EncryptedValue(base64.StdEncoding.EncodeToString(raw))
 }
 
 // update applies mutate to obj and updates it, retrying on conflicts with the operator's writes.

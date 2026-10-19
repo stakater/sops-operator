@@ -29,15 +29,15 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// armored has the shape of `age -a` output; the API server checks the shape, not the ciphertext.
-const armored = "-----BEGIN AGE ENCRYPTED FILE-----\nYWdlLWVuY3J5cHRpb24ub3JnL3YxCg==\n-----END AGE ENCRYPTED FILE-----\n"
+// encrypted has the shape of `age ... | base64` output; the API server checks the shape, not the ciphertext.
+const encrypted = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCg=="
 
 func validSopsSecret(ns string) *sopsv1alpha1.SopsSecret {
 	return &sopsv1alpha1.SopsSecret{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "s-", Namespace: ns},
 		Spec: sopsv1alpha1.SopsSecretSpec{
-			TenantRef: sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
-			Encrypted: armored,
+			TenantRef:     sopsv1alpha1.TenantReference{Name: "my-team", Namespace: "my-team-sops"},
+			EncryptedData: map[string]sopsv1alpha1.EncryptedValue{"password": encrypted},
 		},
 	}
 }
@@ -50,9 +50,11 @@ func TestSopsSecretValidation(t *testing.T) {
 		valid  bool
 	}{
 		{"shall accept a valid SopsSecret", func(*sopsv1alpha1.SopsSecret) {}, true},
-		{"shall accept leading whitespace before the armor", func(s *sopsv1alpha1.SopsSecret) { s.Spec.Encrypted = "\n  " + armored }, true},
-		{"shall reject a missing encrypted value", func(s *sopsv1alpha1.SopsSecret) { s.Spec.Encrypted = "" }, false},
-		{"shall reject plaintext", func(s *sopsv1alpha1.SopsSecret) { s.Spec.Encrypted = "scope: a/b\nstringData:\n  k: v\n" }, false},
+		{"shall reject a SopsSecret without values", func(s *sopsv1alpha1.SopsSecret) { s.Spec.EncryptedData = nil }, false},
+		{"shall reject a plaintext value", func(s *sopsv1alpha1.SopsSecret) { s.Spec.EncryptedData["password"] = "hunter2" }, false},
+		{"shall reject an ASCII-armored value", func(s *sopsv1alpha1.SopsSecret) {
+			s.Spec.EncryptedData["password"] = "-----BEGIN AGE ENCRYPTED FILE-----\nYWdl\n-----END AGE ENCRYPTED FILE-----\n"
+		}, false},
 		{"shall reject the service-account-token type", func(s *sopsv1alpha1.SopsSecret) { s.Spec.Type = corev1.SecretTypeServiceAccountToken }, false},
 		{"shall accept the TLS type", func(s *sopsv1alpha1.SopsSecret) { s.Spec.Type = corev1.SecretTypeTLS }, true},
 		{"shall reject an unknown deletionPolicy", func(s *sopsv1alpha1.SopsSecret) { s.Spec.DeletionPolicy = "Orphan" }, false},

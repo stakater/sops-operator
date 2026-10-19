@@ -57,17 +57,22 @@ type SecretTemplateMetadata struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+// EncryptedValue is a binary age file in base64 (`age -R <recipients> | base64`).
+// +kubebuilder:validation:MaxLength=1572864
+// +kubebuilder:validation:XValidation:rule="self.startsWith('YWdlLWVuY3J5cHRpb24ub3JnL3Yx')",message="each value must be a binary age file in base64 (age ... | base64)"
+type EncryptedValue string
+
 // SopsSecretSpec is the encrypted definition of one Secret with the same name and namespace.
 type SopsSecretSpec struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Tenant"
 	TenantRef TenantReference `json:"tenantRef"`
-	// Encrypted is an ASCII-armored age file encrypted for the tenant's public key. Its plaintext is
-	// a YAML document with the scope "<namespace>/<name>" this SopsSecret may be decrypted into, and
-	// the Secret's data and stringData.
-	// +kubebuilder:validation:MaxLength=1572864
-	// +kubebuilder:validation:XValidation:rule="self.matches('^\\\\s*-----BEGIN AGE ENCRYPTED FILE-----')",message="encrypted must be an ASCII-armored age file (age -a)"
-	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Encrypted",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
-	Encrypted string `json:"encrypted"`
+	// EncryptedData holds one encrypted value per key of the Secret: a binary age file encrypted for
+	// the tenant's public key, in base64. Its plaintext is the line "<namespace>/<name>/<key>"
+	// followed by the value.
+	// +kubebuilder:validation:MinProperties=1
+	// +kubebuilder:validation:MaxProperties=256
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Encrypted data",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
+	EncryptedData map[string]EncryptedValue `json:"encryptedData"`
 	// +kubebuilder:default=Delete
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Deletion policy",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:select:Delete","urn:alm:descriptor:com.tectonic.ui:select:Retain"}
 	// +optional
