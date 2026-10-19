@@ -1,0 +1,6 @@
+# Plaintext before `sops encrypt --output-type json`.
+scope: {{ .Scope }}
+stringData:
+{{- range $key, $value := .StringData }}
+  {{ $key }}: {{ printf "%q" $value }}
+{{- end }}

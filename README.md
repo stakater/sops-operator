@@ -18,9 +18,9 @@
 
 ---
 
-SOPS Operator delivers secrets from Git to Kubernetes and OpenShift. Teams commit
-[SOPS](https://getsops.io)-encrypted `SopsSecret` resources; the operator decrypts them inside the cluster and
-writes the Kubernetes Secrets, for many teams on one cluster.
+SOPS Operator delivers secrets from Git to Kubernetes and OpenShift. Teams encrypt each secret with the standard
+[SOPS](https://getsops.io) CLI into one value, kept in a `SopsSecret` or a Helm values file per environment; the
+operator decrypts it inside the cluster and writes the Kubernetes Secret, for many teams on one cluster.
 
 It is built on two principles:
 
@@ -32,10 +32,11 @@ It is built on two principles:
 
 ## GitOps first
 
-### 🌿 Plain SOPS, any GitOps tool
+### 🌿 Plain SOPS, one value per secret, any GitOps tool
 
-Files are ordinary SOPS documents with readable diffs, encrypted with the standard `sops` CLI. Argo CD, Flux or a
-CI job applies them like any other manifest, with nothing to install. **Plaintext never passes through the
+Each secret is an ordinary SOPS file, made with the standard `sops` CLI and your `.sops.yaml`, as JSON on one line: one value
+that a Helm values file can hold per environment. Argo CD, Flux or a CI job applies it like any other manifest,
+with nothing to install. **Plaintext never passes through the
 delivery pipeline**, and the operator needs no Git access or Git credentials.
 
 ### 🔁 One-way flow, one owner per Secret
@@ -74,7 +75,7 @@ creates, and no selector, label or naming convention grants access.
 
 ### 🎯 Ciphertext bound to its destination
 
-Every file carries an **encrypted scope**, `<namespace>/<name>`, written by its author before encryption. A file
+Every secret carries an **encrypted scope**, `<namespace>/<name>`, written by its author before encryption. A secret
 encrypted for `prod/db-creds` is rejected in `dev` or under another name, even within the same team and with the
 same key. The scope is verified before any other value is decrypted, and error messages never contain decrypted
 values.
@@ -141,7 +142,8 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 1. Checks with a **SubjectAccessReview** that the tenant is granted the target namespace. Otherwise it reports
    `AccessDenied` and decrypts nothing.
 2. Reads the tenant key **as the tenant identity**. The API server authorizes the read.
-3. Verifies that the file is encrypted for this tenant and is untampered (SOPS MAC).
+3. Verifies that the SOPS file is encrypted for this tenant, that every value in it is encrypted, and that it is
+   untampered (SOPS MAC, over the file exactly as `sops` wrote it).
 4. Decrypts **only the scope** first and verifies that it matches the `SopsSecret`'s namespace and name.
 5. Decrypts the values and writes the Secret **as the tenant identity**. The API server authorizes the write
    again.
@@ -169,7 +171,7 @@ Cannot grant the tenant new namespaces.
 
 **Developer** ([step 4](#4-write-and-encrypt-a-secret-developer)):
 
-- Write a `SopsSecret` with its scope, encrypt it with `sops`, and commit it.
+- Write the secret with its scope, encrypt it with `sops`, and commit the value.
 - Check its `Ready` reason when a Secret does not appear.
 
 Cannot read keys, decrypt files or target another namespace.
@@ -212,8 +214,8 @@ spec:
 ```
 
 New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
-v0.0.4 → v0.0.5) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
-use an immutable catalog tag such as `v0.0.5` and change it deliberately.
+v0.0.5 → v0.0.6) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
+use an immutable catalog tag such as `v0.0.6` and change it deliberately.
 
 The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-secret-writer`.
@@ -302,7 +304,8 @@ team-a   True    KeyGenerated   0         5s
 ```
 
 The private key stays in the Secret `team-a-sops-keys` (field `age.agekey`); never copy it out. The public key is
-in the tenant's status. Read it and commit it to the team's `.sops.yaml`:
+in the tenant's status. Read it and commit it to the repository's `.sops.yaml`, in the rule for the environment
+whose cluster runs the tenant:
 
 ```bash
 kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
@@ -311,11 +314,12 @@ kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```yaml
 # .sops.yaml
 creation_rules:
-  - path_regex: \.sops\.ya?ml$
-    encrypted_regex: ^(data|stringData|scope)$
-    mac_only_encrypted: true
+  - path_regex: ^environments/stage/
     age:
-      - age1pq1...   # team-a
+      - age1pq1...   # team-a on the stage cluster
+  - path_regex: ^environments/prod/
+    age:
+      - age1pq1...   # team-a on the prod cluster
 ```
 
 To use an existing key, create the Secret `team-a-sops-keys` in `team-a-system` with your private key in `age.agekey` first, and
@@ -323,8 +327,26 @@ set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
 
+Write the secret in the environment's directory, so `.sops.yaml` picks that environment's key:
+
 ```yaml
-# team-a-foo/db-credentials.sops.yaml, before encryption: never commit this state
+# environments/stage/db-credentials.plain.yaml: plaintext, never commit it
+scope: team-a-foo/db-credentials
+stringData:
+  username: "app"
+  password: "s3cr3t"
+```
+
+Encrypt it from the repository root into one value, then delete the plaintext:
+
+```bash
+sops encrypt --output-type json environments/stage/db-credentials.plain.yaml | jq -c .
+rm environments/stage/db-credentials.plain.yaml
+```
+
+Put the value in a `SopsSecret` and commit it:
+
+```yaml
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsSecret
 metadata:
@@ -334,35 +356,10 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  stringData:
-    username: "app"
-    password: "s3cr3t"
+  encrypted: '{"scope":"ENC[AES256_GCM,data:fuR3...,type:str]","stringData":{...},"sops":{...}}'
 ```
 
-Encrypt it from inside the repository, so `sops` finds `.sops.yaml`:
-
-```bash
-yq -i '.spec.scope = .metadata.namespace + "/" + .metadata.name' team-a-foo/db-credentials.sops.yaml
-yq -i 'sort_keys(..)' team-a-foo/db-credentials.sops.yaml
-sops encrypt -i team-a-foo/db-credentials.sops.yaml
-```
-
-If `.sops.yaml` is not in the current directory or a parent, for example one per environment, pass it with
-`--config` (before `encrypt`); the file can then be anywhere:
-
-```bash
-sops --config environments/stage/.sops.yaml encrypt -i team-a-foo/db-credentials.sops.yaml
-```
-
-Check the result before committing:
-
-```bash
-sops filestatus team-a-foo/db-credentials.sops.yaml          # {"encrypted":true}
-yq '.sops.mac_only_encrypted' team-a-foo/db-credentials.sops.yaml   # true
-git add team-a-foo/db-credentials.sops.yaml && git commit -m "Add database credentials"
-```
-
-Once your GitOps tool applies the file:
+Once your GitOps tool applies it:
 
 ```console
 $ kubectl get sopssecret -n team-a-foo
@@ -373,14 +370,48 @@ db-credentials   team-a    True    Decrypted   8s
 The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and deleted with it.
 
 > [!TIP]
-> - Sort keys before encrypting (`yq 'sort_keys(..)'`): the SOPS MAC depends on key order.
+> - The scope is the `SopsSecret`'s namespace and name; a value copied elsewhere is rejected with `ScopeMismatch`.
 > - Quote `stringData` values. Unquoted values such as `0123` are rejected instead of being silently changed.
-> - Set the scope explicitly when the namespace is injected later, for example by kustomize.
-> - Developers encrypt but cannot decrypt: to change a value, rewrite the file and encrypt it again.
-> - `sops` looks for `.sops.yaml` in the current directory and its parents, not in the file's directory. Use
->   `--config` when you run it from elsewhere.
-> - Do not pass `--age`: `sops` then ignores `.sops.yaml`, and the file is missing `mac_only_encrypted`, which the
->   `SopsSecret` schema rejects. It cannot be added afterwards; encrypt again from plaintext.
+> - Put the value in single quotes. Unquoted, YAML reads the JSON as a mapping and the API server rejects the
+>   `SopsSecret` (`spec.encrypted` must be a string). In a Helm template, render it with `toJson`.
+> - Ignore `*.plain.yaml` in `.gitignore`, so a forgotten plaintext file is never committed.
+> - Every value in the file must be encrypted: do not use `encrypted_regex` or `unencrypted_suffix` in these rules.
+> - `sops` looks for `.sops.yaml` from the current directory upwards; run it from the repository root, or pass
+>   `--config`.
+> - Developers encrypt but cannot decrypt: to change a value, write the secret again and encrypt it again.
+
+#### Per environment with Helm
+
+Each secret is one value, so a chart takes it from the environment's values file:
+
+```yaml
+# environments/stage/values.yaml
+secrets:
+  db-credentials: '{"scope":"ENC[AES256_GCM,data:fuR3...,type:str]","stringData":{...},"sops":{...}}'
+```
+
+```yaml
+# templates/sopssecrets.yaml
+{{- range $name, $encrypted := .Values.secrets }}
+---
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsSecret
+metadata:
+  name: {{ $name }}
+spec:
+  tenantRef:
+    name: team-a
+    namespace: team-a-system
+  encrypted: {{ $encrypted | toJson }}
+{{- end }}
+```
+
+A tenant admin can read a value back with the private key:
+
+```bash
+yq '.secrets.db-credentials' environments/stage/values.yaml \
+  | sops decrypt --input-type json --output-type yaml /dev/stdin
+```
 
 ## Reference
 
@@ -388,13 +419,19 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 
 | Field | Default | Description |
 |---|---|---|
-| `spec.tenantRef` | required | The `SopsTenant` whose key decrypts this file. |
-| `spec.scope` | required | Encrypted `<namespace>/<name>` this file may be decrypted into. |
-| `spec.stringData` / `spec.data` | one required | Encrypted text / base64 values, as on a Secret. |
+| `spec.tenantRef` | required | The `SopsTenant` whose key decrypts the value. |
+| `spec.encrypted` | required | A SOPS file as JSON on one line: `sops encrypt --output-type json <file> \| jq -c .`. Any SOPS file in base64 works too. |
 | `spec.type` | `Opaque` | `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. |
 | `spec.template.metadata` | — | Labels and annotations for the Secret, for example for Reloader. |
 | `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
 | `sops.stakater.com/suspend: "true"` | — | Annotation that pauses reconciliation. |
+
+The file, before encryption:
+
+| Field | Description |
+|---|---|
+| `scope` | Required. `<namespace>/<name>` of the `SopsSecret` this value may be decrypted into. |
+| `stringData` / `data` | One required. Quoted text / base64 values, as on a Secret. No other field is allowed. |
 
 ### Status reasons
 
@@ -403,9 +440,9 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 | `Decrypted` | The Secret is up to date. |
 | `AccessDenied` | The tenant is not granted this namespace. |
 | `TenantNotFound` / `TenantNotReady` | The `SopsTenant` does not exist, or its key cannot be read or is invalid. |
-| `NotRecipient` | The file is not encrypted for the tenant's key. |
-| `ScopeMismatch` | The file was encrypted for another namespace or name. |
-| `DecryptFailed` | The file is malformed, tampered with, or has unsorted keys or unquoted values. |
+| `NotRecipient` | The value is not encrypted for the tenant's key. |
+| `ScopeMismatch` | The value was encrypted for another namespace or name. |
+| `DecryptFailed` | The value is not a SOPS file, was modified, or holds unencrypted, unquoted or unknown fields. |
 | `Conflict` | A Secret with this name exists and was not created by this `SopsSecret`. |
 | `ApplyFailed` | The API server rejected the Secret, for example an invalid TLS Secret. |
 | `Suspended` | Reconciliation is paused by annotation. |
@@ -420,8 +457,22 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 
 ## Operations
 
-- **Key rotation**: prepend a new private key to `age.agekey`, add the new `status.publicKey` to `.sops.yaml`, and run
-  `sops updatekeys` on each file. When every `SopsSecret` reports `Decrypted`, remove the old identity.
+- **Key rotation**: prepend a new private key to `age.agekey` and put the new `status.publicKey` in `.sops.yaml`.
+  With the old private key in a file, re-encrypt every value with `sops` alone; plaintext stays in the pipe:
+
+  ```bash
+  export SOPS_AGE_KEY_FILE=old.agekey
+  for f in environments/*/values.yaml; do
+    for name in $(yq '.secrets | keys | .[]' "$f"); do
+      V=$(yq ".secrets[\"$name\"]" "$f" \
+          | sops decrypt --input-type json --output-type json /dev/stdin \
+          | sops encrypt --filename-override "$(dirname "$f")/$name.yaml" --input-type json --output-type json /dev/stdin \
+          | jq -c .) yq -i ".secrets[\"$name\"] = strenv(V)" "$f"
+    done
+  done
+  ```
+
+  Delete the key file and commit. When every `SopsSecret` reports `Decrypted`, remove the old identity.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
 - **Disaster recovery**: restore key Secrets before `SopsTenant`s, or set `generateKey: false`, so no new key is

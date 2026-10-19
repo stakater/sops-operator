@@ -138,12 +138,8 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is invalid", tenantName)}, nil
 	}
 
-	doc, err := document.Canonical(s)
-	if err != nil {
-		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
-	}
 	want := document.ScopeFor(s.Namespace, s.Name)
-	plain, err := crypto.Decrypt(doc, keys, want)
+	plain, err := crypto.DecryptValue(s.Spec.Encrypted, keys, want)
 	switch {
 	case errors.Is(err, crypto.ErrScopeMismatch):
 		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: err.Error()}, nil

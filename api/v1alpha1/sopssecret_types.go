@@ -58,15 +58,16 @@ type SecretTemplateMetadata struct {
 }
 
 // SopsSecretSpec is the encrypted definition of one Secret with the same name and namespace.
-// +kubebuilder:validation:XValidation:rule="has(self.data) || has(self.stringData)",message="at least one of data or stringData is required"
-// +kubebuilder:validation:XValidation:rule="!has(self.data) || !has(self.stringData) || self.data.all(k, !(k in self.stringData))",message="a key must not appear in both data and stringData"
 type SopsSecretSpec struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Tenant"
 	TenantRef TenantReference `json:"tenantRef"`
-	// Scope is the encrypted "<namespace>/<name>" this document may be decrypted into.
+	// Encrypted is a SOPS file as JSON on one line (`sops encrypt --output-type json <file> | jq -c .`);
+	// any SOPS file in base64 is accepted too. Its plaintext holds the scope "<namespace>/<name>" this
+	// SopsSecret may be decrypted into, and the Secret's data and stringData.
 	// +kubebuilder:validation:MinLength=1
-	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Scope (encrypted)",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
-	Scope string `json:"scope"`
+	// +kubebuilder:validation:MaxLength=1572864
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Encrypted",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
+	Encrypted string `json:"encrypted"`
 	// +kubebuilder:default=Delete
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Deletion policy",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:select:Delete","urn:alm:descriptor:com.tectonic.ui:select:Retain"}
 	// +optional
@@ -79,40 +80,6 @@ type SopsSecretSpec struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Secret type",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:select:Opaque","urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/tls","urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/dockerconfigjson","urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/basic-auth","urn:alm:descriptor:com.tectonic.ui:select:kubernetes.io/ssh-auth"}
 	// +optional
 	Type corev1.SecretType `json:"type,omitempty"`
-	// Data holds encrypted base64 values.
-	// +kubebuilder:validation:MaxProperties=256
-	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Data (encrypted)",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
-	// +optional
-	Data map[string]string `json:"data,omitempty"`
-	// StringData holds encrypted text values.
-	// +kubebuilder:validation:MaxProperties=256
-	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="String data (encrypted)",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
-	// +optional
-	StringData map[string]string `json:"stringData,omitempty"`
-}
-
-// SopsAgeRecipient is one age recipient entry of the SOPS metadata.
-type SopsAgeRecipient struct {
-	// +kubebuilder:validation:MinLength=1
-	Recipient string `json:"recipient"`
-	// +kubebuilder:validation:MinLength=1
-	Enc string `json:"enc"`
-}
-
-// SopsMetadata is the metadata block written by `sops encrypt`.
-type SopsMetadata struct {
-	// +kubebuilder:validation:MinItems=1
-	Age []SopsAgeRecipient `json:"age"`
-	// +kubebuilder:validation:MinLength=1
-	MAC string `json:"mac"`
-	// +kubebuilder:validation:MinLength=1
-	LastModified string `json:"lastmodified"`
-	// +kubebuilder:validation:MinLength=1
-	Version string `json:"version"`
-	// +kubebuilder:validation:XValidation:rule="self == '^(data|stringData|scope)$'",message="encrypted_regex must be ^(data|stringData|scope)$"
-	EncryptedRegex string `json:"encrypted_regex"`
-	// +kubebuilder:validation:XValidation:rule="self",message="mac_only_encrypted must be true"
-	MACOnlyEncrypted bool `json:"mac_only_encrypted"`
 }
 
 // SopsSecretStatus reports the state of the output Secret.
@@ -142,13 +109,12 @@ type SopsSecretStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +operator-sdk:csv:customresourcedefinitions:displayName="SOPS Secret",resources={{Secret,v1,""}}
 
-// SopsSecret is a SOPS-encrypted Secret.
+// SopsSecret is a Secret encrypted as one SOPS file.
 type SopsSecret struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec SopsSecretSpec `json:"spec"`
-	Sops SopsMetadata   `json:"sops"`
 	// +optional
 	Status SopsSecretStatus `json:"status,omitempty"`
 }

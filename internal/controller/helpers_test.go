@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"testing"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/yaml"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
@@ -73,17 +73,8 @@ func onboardedTenant(t *testing.T, writeNS ...string) (string, string) {
 // encryptedSopsSecret builds a SopsSecret named name in ns, encrypted for recipient with the given scope.
 func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope string, stringData map[string]any) *sopsv1alpha1.SopsSecret {
 	t.Helper()
-	// JSON output is valid YAML with keys sorted byte-wise, like `yq -i 'sort_keys(..)'`.
-	plain, err := json.Marshal(map[string]any{
-		"apiVersion": "sops.stakater.com/v1alpha1",
-		"kind":       "SopsSecret",
-		"metadata":   map[string]any{"name": name, "namespace": ns},
-		"spec": map[string]any{
-			"tenantRef":  map[string]any{"name": tenantName, "namespace": tenantNS},
-			"scope":      scope,
-			"stringData": stringData,
-		},
-	})
+	// JSON is valid YAML.
+	plain, err := json.Marshal(map[string]any{"scope": scope, "stringData": stringData})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,11 +82,18 @@ func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	var s sopsv1alpha1.SopsSecret
-	if err := yaml.Unmarshal(enc, &s); err != nil {
-		t.Fatal(err)
+	return &sopsv1alpha1.SopsSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: sopsv1alpha1.SopsSecretSpec{
+			TenantRef: sopsv1alpha1.TenantReference{Name: tenantName, Namespace: tenantNS},
+			Encrypted: enc,
+		},
 	}
-	return &s
+}
+
+// tampered changes the lastmodified timestamp of a SOPS JSON file, which the MAC covers.
+func tampered(value string) string {
+	return regexp.MustCompile(`"lastmodified":"[^"]*"`).ReplaceAllString(value, `"lastmodified":"2020-01-01T00:00:00Z"`)
 }
 
 // update applies mutate to obj and updates it, retrying on conflicts with the operator's writes.

@@ -74,7 +74,7 @@ func TestSecretRejection(t *testing.T) {
 		}, sopsv1alpha1.ReasonNotRecipient},
 		{"shall report DecryptFailed when tampered with", func() *sopsv1alpha1.SopsSecret {
 			s := encryptedSopsSecret(t, recipient, tenantNS, prod, "tp", prod+"/tp", value)
-			s.Sops.LastModified = "2020-01-01T00:00:00Z"
+			s.Spec.Encrypted = tampered(s.Spec.Encrypted)
 			return s
 		}, sopsv1alpha1.ReasonDecryptFailed},
 		{"shall report ScopeMismatch when copied to another namespace", func() *sopsv1alpha1.SopsSecret {
@@ -149,7 +149,7 @@ func TestSecretDecryption(t *testing.T) {
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 
 		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
-		update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
+		update(t, s, func() { s.Spec = next.Spec })
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
@@ -307,7 +307,7 @@ func TestSuspension(t *testing.T) {
 
 		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
 		update(t, s, func() {
-			s.Spec, s.Sops = next.Spec, next.Sops
+			s.Spec = next.Spec
 			s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
 		})
 		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)

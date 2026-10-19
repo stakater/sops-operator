@@ -154,29 +154,36 @@ func onboardedTenant(t *testing.T, tenantNamespace string, writeNamespaces ...st
 	return tenantNamespace, ks.Recipients[0]
 }
 
-// sopsSecret encrypts the sopssecret.yaml fixture for recipient and creates it.
+// sopsSecret describes a SopsSecret and its plaintext; Scope is "<namespace>/<name>".
 type sopsSecret struct {
 	Name, Namespace, Scope, DeletionPolicy string
 	TenantNamespace                        string
 	StringData                             map[string]string
 }
 
-// encryptSopsSecret renders and encrypts the sopssecret.yaml fixture for recipient, as a developer would.
+// encryptSopsSecret encrypts the plaintext.yaml fixture for recipient, as a developer would
+// with sops, and renders it into the sopssecret.yaml fixture.
 func encryptSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alpha1.SopsSecret {
+	t.Helper()
+	encrypted, err := cryptotest.Encrypt(render(t, "plaintext.yaml", s), recipient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sopsSecretWith(t, s, encrypted)
+}
+
+// sopsSecretWith renders the sopssecret.yaml fixture for s with the encrypted value.
+func sopsSecretWith(t *testing.T, s sopsSecret, encrypted string) *sopsv1alpha1.SopsSecret {
 	t.Helper()
 	if s.DeletionPolicy == "" {
 		s.DeletionPolicy = string(sopsv1alpha1.DeletionPolicyDelete)
 	}
-	data := map[string]any{
-		"Name": s.Name, "Namespace": s.Namespace, "Scope": s.Scope, "DeletionPolicy": s.DeletionPolicy,
-		"TenantName": tenantName, "TenantNamespace": s.TenantNamespace, "StringData": s.StringData,
-	}
-	encrypted, err := cryptotest.Encrypt(render(t, "sopssecret.yaml", data), recipient)
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := render(t, "sopssecret.yaml", map[string]any{
+		"Name": s.Name, "Namespace": s.Namespace, "DeletionPolicy": s.DeletionPolicy,
+		"TenantName": tenantName, "TenantNamespace": s.TenantNamespace, "Encrypted": encrypted,
+	})
 	var out sopsv1alpha1.SopsSecret
-	if err := yaml.Unmarshal(encrypted, &out); err != nil {
+	if err := yaml.Unmarshal(manifest, &out); err != nil {
 		t.Fatal(err)
 	}
 	return &out
