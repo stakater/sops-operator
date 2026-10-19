@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cryptotest encrypts documents the way `sops encrypt` does with the project's
-// .sops.yaml. It is used by tests only.
+// Package cryptotest encrypts documents the way the documented
+// `sops encrypt --output-type json <file> | base64` does. It is used by tests only.
 package cryptotest
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -28,17 +29,23 @@ import (
 	"github.com/getsops/sops/v3/cmd/sops/common"
 	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/keyservice"
+	"github.com/getsops/sops/v3/stores/json"
 	"github.com/getsops/sops/v3/stores/yaml"
 	"github.com/getsops/sops/v3/version"
-
-	"github.com/stakater/sops-operator/internal/crypto"
 )
 
-// Encrypt encrypts a plaintext YAML document for the given age recipients with
-// encrypted_regex ^(data|stringData|scope)$ and mac_only_encrypted.
-func Encrypt(plain []byte, recipients ...string) ([]byte, error) {
-	store := yaml.NewStore(&config.YAMLStoreConfig{})
-	branches, err := store.LoadPlainFile(plain)
+// Options are the .sops.yaml settings and flags of `sops encrypt` that tests vary.
+type Options struct {
+	// YAML writes the file as YAML (--output-type yaml) instead of JSON.
+	YAML bool
+	// EncryptedRegex limits which values are encrypted, as encrypted_regex in .sops.yaml.
+	EncryptedRegex string
+}
+
+// EncryptFile encrypts a plaintext YAML document for the given age recipients and returns the
+// sops file.
+func EncryptFile(plain []byte, opts Options, recipients ...string) ([]byte, error) {
+	branches, err := yaml.NewStore(&config.YAMLStoreConfig{}).LoadPlainFile(plain)
 	if err != nil {
 		return nil, fmt.Errorf("load plaintext: %w", err)
 	}
@@ -53,10 +60,9 @@ func Encrypt(plain []byte, recipients ...string) ([]byte, error) {
 	tree := sops.Tree{
 		Branches: branches,
 		Metadata: sops.Metadata{
-			KeyGroups:        []sops.KeyGroup{group},
-			EncryptedRegex:   crypto.EncryptedRegex,
-			MACOnlyEncrypted: true,
-			Version:          version.Version,
+			KeyGroups:      []sops.KeyGroup{group},
+			EncryptedRegex: opts.EncryptedRegex,
+			Version:        version.Version,
 		},
 	}
 	dataKey, errs := tree.GenerateDataKeyWithKeyServices([]keyservice.KeyServiceClient{keyservice.NewLocalClient()})
@@ -66,5 +72,17 @@ func Encrypt(plain []byte, recipients ...string) ([]byte, error) {
 	if err := common.EncryptTree(common.EncryptTreeOpts{Tree: &tree, Cipher: aes.NewCipher(), DataKey: dataKey}); err != nil {
 		return nil, fmt.Errorf("encrypt: %w", err)
 	}
-	return store.EmitEncryptedFile(tree)
+	if opts.YAML {
+		return yaml.NewStore(&config.YAMLStoreConfig{}).EmitEncryptedFile(tree)
+	}
+	return json.NewStore(&config.JSONStoreConfig{}).EmitEncryptedFile(tree)
+}
+
+// Encrypt returns plain encrypted as the value a SopsSecret holds: a JSON sops file in base64.
+func Encrypt(plain []byte, recipients ...string) (string, error) {
+	file, err := EncryptFile(plain, Options{}, recipients...)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(file), nil
 }

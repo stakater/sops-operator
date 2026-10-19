@@ -17,6 +17,8 @@ limitations under the License.
 package crypto
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"slices"
@@ -28,14 +30,14 @@ import (
 	sopsage "github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/stores/json"
+	"github.com/getsops/sops/v3/stores/yaml"
 )
 
-// EncryptedRegex is the only SOPS encrypted_regex the operator accepts.
-const EncryptedRegex = "^(data|stringData|scope)$"
-
 var (
-	// ErrMalformed reports a document that is not a SOPS-encrypted YAML document.
-	ErrMalformed = errors.New("malformed SOPS document")
+	// ErrMalformed reports a value that is not a base64-encoded SOPS file.
+	ErrMalformed = errors.New("malformed SOPS file")
+	// ErrUnencrypted reports a SOPS file with values that sops left in plaintext.
+	ErrUnencrypted = errors.New("unencrypted value")
 	// ErrUnsupported reports SOPS key configurations other than age recipients in one key group.
 	ErrUnsupported = errors.New("unsupported SOPS key configuration")
 	// ErrNotRecipient reports a document that is not encrypted for any of the given keys.
@@ -46,12 +48,20 @@ var (
 	ErrScopeMismatch = errors.New("scope mismatch")
 )
 
-func newStore() *json.Store { return json.NewStore(&config.JSONStoreConfig{}) }
-
-func load(doc []byte) (sops.Tree, error) {
-	tree, err := newStore().LoadEncryptedFile(doc)
+// load reads a SOPS file written as JSON (--output-type json) or YAML.
+func load(raw []byte) (sops.Tree, error) {
+	var store interface {
+		LoadEncryptedFile([]byte) (sops.Tree, error)
+	} = yaml.NewStore(&config.YAMLStoreConfig{})
+	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
+		store = json.NewStore(&config.JSONStoreConfig{})
+	}
+	tree, err := store.LoadEncryptedFile(raw)
 	if err != nil {
 		return sops.Tree{}, fmt.Errorf("%w: %v", ErrMalformed, err)
+	}
+	if len(tree.Branches) == 0 {
+		return sops.Tree{}, fmt.Errorf("%w: the file holds no document", ErrMalformed)
 	}
 	return tree, nil
 }
@@ -75,37 +85,28 @@ func ageKeys(tree sops.Tree) ([]*sopsage.MasterKey, error) {
 	return keys, nil
 }
 
-// Recipients returns the age recipients a document is encrypted for.
-func Recipients(doc []byte) ([]string, error) {
-	tree, err := load(doc)
-	if err != nil {
-		return nil, err
-	}
-	keys, err := ageKeys(tree)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, k.Recipient)
-	}
-	return out, nil
-}
-
 // scopePath is where the encrypted scope lives; SOPS authenticates each value with its path.
-var scopePath = []string{"spec", "scope"}
+var scopePath = []string{"scope"}
 
-// Decrypt decrypts a SOPS-encrypted JSON document (as returned by the Kubernetes API, keys
-// sorted byte-wise) with the given keys and returns the plaintext JSON document. Identities are
-// applied in memory to this document only.
+// DecryptValue decrypts a SopsSecret value: a SOPS file in base64 (`sops encrypt ... | base64`),
+// JSON or YAML, read byte for byte so the MAC covers exactly what sops wrote. Whitespace in the base64
+// is ignored. It returns the plaintext document as JSON. Identities are applied in memory to this
+// file only.
 //
-// The encrypted scope is decrypted and compared with wantScope before any other value, so a
-// document copied elsewhere is rejected without decrypting its values. Errors never contain
-// decrypted values: SOPS does not authenticate a value's type tag, and its parse errors quote
+// Every value must be encrypted. The encrypted scope is decrypted and compared with wantScope before
+// any other value, so a file copied elsewhere is rejected without decrypting its values. Errors never
+// contain decrypted values: SOPS does not authenticate a value's type tag, and its parse errors quote
 // the plaintext.
-func Decrypt(doc []byte, keys *KeySet, wantScope string) ([]byte, error) {
-	tree, err := load(doc)
+func DecryptValue(encoded string, keys *KeySet, wantScope string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(encoded), ""))
 	if err != nil {
+		return nil, fmt.Errorf("%w: the value is not valid base64", ErrMalformed)
+	}
+	tree, err := load(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkEncrypted(tree.Branches[0], ""); err != nil {
 		return nil, err
 	}
 	fileKeys, err := ageKeys(tree)
@@ -144,14 +145,48 @@ func Decrypt(doc []byte, keys *KeySet, wantScope string) ([]byte, error) {
 	stored, err := cipher.Decrypt(tree.Metadata.MessageAuthenticationCode, dataKey,
 		tree.Metadata.LastModified.Format(time.RFC3339))
 	if s, ok := stored.(string); err != nil || !ok || s != computed {
-		return nil, fmt.Errorf("%w: MAC mismatch; the file was modified, or its keys were not sorted "+
-			"(yq -i 'sort_keys(..)') before encryption", ErrDecrypt)
+		return nil, fmt.Errorf("%w: MAC mismatch; the file was modified", ErrDecrypt)
 	}
-	plain, err := newStore().EmitPlainFile(tree.Branches)
+	plain, err := json.NewStore(&config.JSONStoreConfig{}).EmitPlainFile(tree.Branches)
 	if err != nil {
 		return nil, fmt.Errorf("%w: the decrypted document could not be rendered", ErrDecrypt)
 	}
 	return plain, nil
+}
+
+// checkEncrypted returns ErrUnencrypted for the first value under branch that sops left in plaintext,
+// for example because of encrypted_regex. Errors name the path, never the value.
+func checkEncrypted(branch sops.TreeBranch, prefix string) error {
+	for _, item := range branch {
+		key, ok := item.Key.(string)
+		if !ok {
+			continue // comments
+		}
+		if err := checkValue(item.Value, prefix+key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkValue(v any, path string) error {
+	switch v := v.(type) {
+	case sops.TreeBranch:
+		return checkEncrypted(v, path+".")
+	case []any:
+		for i, e := range v {
+			if err := checkValue(e, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case string:
+		if strings.HasPrefix(v, "ENC[") {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s is not encrypted; encrypt every value (no encrypted_regex or unencrypted_suffix "+
+		"in the creation rule)", ErrUnencrypted, path)
 }
 
 // checkScope decrypts only the scope value and compares it with want.

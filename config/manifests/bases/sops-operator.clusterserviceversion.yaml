@@ -14,7 +14,7 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-      - description: SopsSecret is a SOPS-encrypted Secret.
+      - description: SopsSecret is a Secret encrypted as one SOPS file.
         displayName: SOPS Secret
         kind: SopsSecret
         name: sopssecrets.sops.stakater.com
@@ -23,24 +23,17 @@ spec:
             name: ""
             version: v1
         specDescriptors:
-          - description: Data holds encrypted base64 values.
-            displayName: Data (encrypted)
-            path: data
-            x-descriptors:
-              - urn:alm:descriptor:com.tectonic.ui:hidden
           - displayName: Deletion policy
             path: deletionPolicy
             x-descriptors:
               - urn:alm:descriptor:com.tectonic.ui:select:Delete
               - urn:alm:descriptor:com.tectonic.ui:select:Retain
-          - description: Scope is the encrypted "<namespace>/<name>" this document may be decrypted into.
-            displayName: Scope (encrypted)
-            path: scope
-            x-descriptors:
-              - urn:alm:descriptor:com.tectonic.ui:hidden
-          - description: StringData holds encrypted text values.
-            displayName: String data (encrypted)
-            path: stringData
+          - description: |-
+              Encrypted is a SOPS file in base64 (`sops encrypt --output-type json <file> | base64`). Its
+              plaintext holds the scope "<namespace>/<name>" this SopsSecret may be decrypted into, and the
+              Secret's data and stringData.
+            displayName: Encrypted
+            path: encrypted
             x-descriptors:
               - urn:alm:descriptor:com.tectonic.ui:hidden
           - displayName: Secret metadata
@@ -117,7 +110,8 @@ spec:
             path: usedBy
         version: v1alpha1
   description: |
-    SOPS Operator turns SOPS-encrypted `SopsSecret` resources committed to Git into Kubernetes Secrets.
+    SOPS Operator turns `SopsSecret` resources committed to Git into Kubernetes Secrets. Each holds one secret as
+    a SOPS file in base64, made with the standard `sops` CLI and `.sops.yaml`, so it also fits a Helm values file.
 
     - **Tenant keys**: a `SopsTenant` holds a post-quantum age key. The operator generates it when the key
       Secret does not exist, or uses a key you provide.
