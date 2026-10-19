@@ -25,7 +25,7 @@ operator decrypts them inside the cluster and writes the Kubernetes Secrets, for
 It is built on two principles:
 
 - **GitOps first**: Git is the source of truth. Only ciphertext is stored in Git and applied by the GitOps tool,
-  with the standard `age` CLI and no plugin in the delivery pipeline.
+  encrypted offline with `.sops.yaml` and no plugin in the delivery pipeline.
 - **Zero trust**: no component is trusted because of where it runs. Every key read and every Secret write is
   authorized by the Kubernetes API server against an explicit grant from the cluster admin, and the operator
   holds **no permission on any Secret** of its own.
@@ -34,8 +34,8 @@ It is built on two principles:
 
 ### 🌿 Shaped like a Secret, any GitOps tool
 
-A `SopsSecret` mirrors a Secret: `encryptedData` has the Secret's keys, each with a one-line encrypted value made
-with the standard `age` CLI. Diffs show which key changed, and each value fits a Helm value. Argo CD, Flux or a CI job applies it like any other manifest, with nothing to install. **Plaintext never passes through the
+A `SopsSecret` mirrors a Secret: `encryptedData` has the Secret's keys, each with a one-line age-encrypted value.
+`sopssecret encrypt -i` turns a plaintext file into it offline, with the recipients from `.sops.yaml`. Diffs show which key changed, and each value fits a Helm value. Argo CD, Flux or a CI job applies it like any other manifest, with nothing to install. **Plaintext never passes through the
 delivery pipeline**, and the operator needs no Git access or Git credentials.
 
 ### 🔁 One-way flow, one owner per Secret
@@ -84,7 +84,8 @@ values.
 Every tenant has its own key, generated in place when it does not exist and never overwritten or deleted by the
 operator; there is no cluster-wide master key. Generated keys are hybrid **post-quantum age keys**
 (ML-KEM-768 + X25519), because ciphertext committed to Git stays readable to anyone who obtains it later.
-Bring-your-own X25519 keys, rotation with several keys and break-glass recipients are supported.
+Bring-your-own X25519 keys, rotation with several keys and break-glass recipients are supported. age does not
+encrypt for post-quantum and X25519 keys together, so a break-glass key must be of the same kind as the tenant key.
 
 ## Built for OpenShift
 
@@ -96,7 +97,7 @@ mode, no admission webhooks, no dependencies on other operators, and schema vali
 | | Typical approaches | SOPS Operator |
 |---|---|---|
 | Plaintext in the delivery pipeline | Often (decrypt in CI or the GitOps tool) | **None**; decrypted in-cluster only |
-| Tooling for developers | Custom CLI or plugin | **Standard `age` CLI** |
+| Tooling for developers | Custom CLI or plugin | **`sopssecret` CLI with `.sops.yaml`, or the standard `age` CLI** |
 | Existing Secrets with the same name | Overwritten or merged | **Not modified**; reported as `Conflict` |
 | Secret permissions of the controller | Cluster-wide read/write | **None**; impersonates tenant identities |
 | Who grants a team access to a namespace | Labels, selectors or the team itself | **Cluster admin RBAC only**, enforced by the API server |
@@ -162,14 +163,14 @@ Never needs access to tenant keys or plaintext.
 **Tenant admin** ([step 3](#3-create-the-tenant-key-tenant-admin)):
 
 - Create the `SopsTenant`.
-- Give developers the public key to encrypt for.
+- Put the public key in the repository's `.sops.yaml`.
 - Back up and rotate the key.
 
 Cannot grant the tenant new namespaces.
 
 **Developer** ([step 4](#4-write-and-encrypt-a-secret-developer)):
 
-- Encrypt the values and their scope with `age`, and commit the result in a `SopsSecret`.
+- Write a `SopsSecret` with plaintext values, encrypt it with `sopssecret encrypt -i`, and commit it.
 - Check its `Ready` reason when a Secret does not appear.
 
 Cannot read keys, decrypt files or target another namespace.
@@ -302,10 +303,21 @@ team-a   True    KeyGenerated   0         5s
 ```
 
 The private key stays in the Secret `team-a-sops-keys` (field `age.agekey`); never copy it out. The public key is
-in the tenant's status. Commit it to the team's repository, so developers encrypt without cluster access:
+in the tenant's status:
 
 ```bash
-kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}' > team-a.pub
+kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
+```
+
+Commit it to the repository's `.sops.yaml`, so developers encrypt offline. `path_regex` is matched against each
+file's path relative to `.sops.yaml`; the first matching rule wins:
+
+```yaml
+# .sops.yaml
+creation_rules:
+  - path_regex: ^team-a-
+    age:
+      - age1pq1...   # team-a
 ```
 
 To use an existing key, create the Secret `team-a-sops-keys` in `team-a-system` with your private key in `age.agekey` first, and
@@ -313,19 +325,16 @@ set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
 
-Encrypt each value with [`hack/encrypt-value.sh`](hack/encrypt-value.sh). It reads the value from a hidden prompt,
-stdin or a file, never from the command line, and prints one line:
+Install the `sopssecret` CLI:
 
-```console
-$ hack/encrypt-value.sh team-a.pub team-a-foo/db-credentials password
-Value for password:
-YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IE5lVFNENnU1aHEwaXVJcVBs...
+```bash
+go install github.com/stakater/sops-operator/cmd/sopssecret@v0.0.6
 ```
 
-Put the values in a `SopsSecret` with the same keys as the Secret, and commit it:
+Write the `SopsSecret` with plaintext values, like a Secret's `stringData` (or base64 `data`):
 
 ```yaml
-# team-a-foo/db-credentials.yaml
+# team-a-foo/db-credentials.yaml, before encryption: never commit this state
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsSecret
 metadata:
@@ -335,6 +344,21 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
+  stringData:
+    username: app
+    password: s3cr3t
+```
+
+Encrypt it in place and commit it:
+
+```bash
+sopssecret encrypt -i team-a-foo/db-credentials.yaml
+git add team-a-foo/db-credentials.yaml && git commit -m "Add database credentials"
+```
+
+`stringData` becomes `encryptedData`, with one encrypted line per key:
+
+```yaml
   encryptedData:
     username: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IHRudUJqMFRYTjdRdlJhRUI4...
     password: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IG1sa2VtNzY4eDI1NTE5IE5lVFNENnU1aHEwaXVJcVBs...
@@ -351,14 +375,19 @@ db-credentials   team-a    True    Decrypted   8s
 The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and deleted with it.
 
 > [!TIP]
-> - Pass a file for multi-line or binary values: `hack/encrypt-value.sh team-a.pub team-a-foo/tls tls.crt tls.crt`.
-> - Without the script, encrypt the line `<namespace>/<name>/<key>` followed by the value:
->   `printf 'team-a-foo/db-credentials/password\n%s' "$PASSWORD" | age -R team-a.pub | base64 | tr -d '\n'`.
-> - Developers encrypt but cannot decrypt: to change a value, encrypt the new value and replace the line.
+> - Each value is encrypted for `<namespace>/<name>/<key>` from the file, so `metadata.namespace` is required, even
+>   when kustomize or Helm sets it later.
+> - To add or change a key, add it under `stringData` and run `encrypt` again; other keys stay as they are.
+> - `sopssecret encrypt -i <directory>` encrypts every `SopsSecret` below it; files that are not YAML, such as Helm
+>   templates, are skipped.
+> - `sopssecret` looks for `.sops.yaml` from the file's directory upwards. Use `--config` to point at another one.
+> - Without the CLI, encrypt the line `<namespace>/<name>/<key>` followed by the value:
+>   `printf 'team-a-foo/db-credentials/password\n%s' "$PASSWORD" | age -r age1pq1... | base64 | tr -d '\n'`.
 
 #### With Helm
 
-Each encrypted value is one line, so a chart can take them from its values file:
+Each encrypted value is one line, so a chart can take them from its values file. Write them with
+`sopssecret encrypt <file>` (prints the result) or the `age` one-liner above:
 
 ```yaml
 # values.yaml
@@ -425,14 +454,16 @@ another environment's values file is rejected with `ScopeMismatch`.
 
 ## Operations
 
-- **Key rotation**: prepend a new private key to `age.agekey` and publish the new `status.publicKey`. Files for the
-  old key keep working; encrypt each value again for the new key. When every `SopsSecret` reports `Decrypted`
-  after that, remove the old identity.
+- **Key rotation**: prepend a new private key to `age.agekey`, and replace the old public key in `.sops.yaml` with the
+  new `status.publicKey`. With the old private key in a local file, run `sopssecret rotate --identity old.agekey .`
+  in the repository: it decrypts every value and encrypts it for the recipients `.sops.yaml` lists now, without
+  writing plaintext to disk. Delete the key file, commit, and when every `SopsSecret` reports `Decrypted`, remove
+  the old identity. Values kept in Helm values files are not rotated by the CLI.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
 - **Disaster recovery**: restore key Secrets before `SopsTenant`s, or set `generateKey: false`, so no new key is
-  generated in place of a lost one. Encrypt for a break-glass public key as well (one `-r` per key, or several
-  lines in the `-R` file) to keep a way to decrypt every file.
+  generated in place of a lost one. List a break-glass public key in `.sops.yaml` as well, to keep a way to
+  decrypt every file.
 - **Revocation**: removing a namespace RoleBinding stops all writes there at the next reconcile; removing the
   key-owner RoleBinding stops all decryption for the tenant.
 

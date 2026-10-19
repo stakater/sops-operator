@@ -34,10 +34,37 @@ var (
 	ErrNotRecipient = errors.New("file is not encrypted for this key")
 	// ErrDecrypt reports a file that fails decryption or authentication.
 	ErrDecrypt = errors.New("decryption failed")
+	// ErrRecipient reports a missing recipient or one that is not an X25519 or post-quantum age public key.
+	ErrRecipient = errors.New("invalid recipient")
 )
 
 // header starts every binary age file.
 const header = "age-encryption.org/v1\n"
+
+// EncryptValue encrypts plain for the given age public keys and returns the binary age file in
+// base64, the format DecryptValue reads.
+func EncryptValue(plain []byte, recipients []string) (string, error) {
+	if len(recipients) == 0 {
+		return "", fmt.Errorf("%w: no recipients", ErrRecipient)
+	}
+	rs, err := age.ParseRecipients(strings.NewReader(strings.Join(recipients, "\n")))
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRecipient, err)
+	}
+	var out bytes.Buffer
+	w, err := age.Encrypt(&out, rs...)
+	if err != nil {
+		// age refuses to mix post-quantum and classic recipients.
+		return "", fmt.Errorf("%w: %v", ErrRecipient, err)
+	}
+	if _, err := w.Write(plain); err != nil {
+		return "", fmt.Errorf("encrypt: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("encrypt: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(out.Bytes()), nil
+}
 
 // DecryptValue decrypts a base64-encoded binary age file (`age ... | base64`) with the given keys and
 // returns the plaintext. Whitespace, including line breaks from wrapping base64 encoders, is

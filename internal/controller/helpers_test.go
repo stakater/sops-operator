@@ -15,7 +15,6 @@ import (
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
-	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 )
 
 const tenantName = "my-team"
@@ -75,7 +74,7 @@ func encryptedSopsSecret(t *testing.T, recipient, tenantNS, ns, name, scope stri
 	t.Helper()
 	data := map[string]sopsv1alpha1.EncryptedValue{}
 	for key, value := range values {
-		enc, err := cryptotest.Encrypt([]byte(scope+"/"+key+"\n"+value), recipient)
+		enc, err := crypto.EncryptValue([]byte(scope+"/"+key+"\n"+value), []string{recipient})
 		if err != nil {
 			t.Fatal(err)
 		}

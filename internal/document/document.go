@@ -30,6 +30,11 @@ var ErrScopeMismatch = errors.New("scope mismatch")
 // start with. Object names and Secret keys cannot contain "/", so the line is unambiguous.
 func ScopeFor(namespace, name, key string) string { return namespace + "/" + name + "/" + key }
 
+// Plaintext returns what is encrypted for a value: the line scope followed by the value.
+func Plaintext(scope string, value []byte) []byte {
+	return append([]byte(scope+"\n"), value...)
+}
+
 // Value checks that a decrypted value starts with the line wantScope and returns the bytes after
 // it, so a value copied to another namespace, name or key is rejected. A CR before the line feed
 // is ignored. Errors never contain decrypted data.

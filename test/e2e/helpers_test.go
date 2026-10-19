@@ -42,7 +42,6 @@ import (
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
-	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 	"github.com/stakater/sops-operator/test/snapshot"
 )
 
@@ -167,7 +166,7 @@ func encryptSopsSecret(t *testing.T, recipient string, s sopsSecret) *sopsv1alph
 	t.Helper()
 	encrypted := map[string]string{}
 	for key, value := range s.StringData {
-		enc, err := cryptotest.Encrypt([]byte(s.Scope+"/"+key+"\n"+value), recipient)
+		enc, err := crypto.EncryptValue([]byte(s.Scope+"/"+key+"\n"+value), []string{recipient})
 		if err != nil {
 			t.Fatal(err)
 		}

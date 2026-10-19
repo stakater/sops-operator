@@ -43,6 +43,8 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
   MAC from the same key. A changed, reordered or truncated file fails to decrypt.
 - Recipient stanzas do not name their recipient: the operator learns that a file is not for a tenant only by
   failing to unwrap it with the tenant's identities (`NotRecipient`).
+- age does not encrypt for post-quantum and classic (X25519, plugin) recipients together, since the file would be
+  only as strong as its classic recipients: all recipients of a value are of one kind.
 - Anyone with a recipient's **public** key can encrypt. Decrypting — and therefore editing an existing file — requires
   a **private** key.
 - **age** key types (age v1.3.2 as of this writing):
@@ -299,7 +301,7 @@ spec:
   tenantRef:
     name: team-a
     namespace: team-a-system
-  encryptedData:                     # hack/encrypt-value.sh <public key file> team-a-prod/db-creds <key>
+  encryptedData:                     # written by `sopssecret encrypt -i` from stringData / data
     username: YWdlLWVuY3J5cHRpb24ub3JnL3Yx...
     password: YWdlLWVuY3J5cHRpb24ub3JnL3Yx...
   deletionPolicy: Delete             # Delete (default) | Retain
@@ -574,7 +576,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Operator overwrites a Secret it does not own | Only manages Secrets it created; pre-existing Secrets → `Conflict`. |
 | Operator compromise reads all Secrets | No Secret RBAC; impersonation only in tenant namespaces that granted it, limited to tenant grants. |
 | GitOps tool prunes output Secrets | Tracking labels never copied; ownerReference to the `SopsSecret`. |
-| Plaintext committed to Git | The schema rejects `encryptedData` values that are not base64-encoded age files; `hack/encrypt-value.sh` reads values from a prompt, stdin or a file, never from the command line. |
+| Plaintext committed to Git | The schema rejects `encryptedData` values that are not base64-encoded age files, and a file still holding plaintext (`encryptedData` required, `stringData` unknown). `sopssecret encrypt -i` replaces the plaintext fields in the same file; it must run before the commit. |
 
 ### 7.2 Accepted risks
 
@@ -598,29 +600,43 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 1. Cluster admin applies the onboarding RoleBindings for the tenant (§5.2).
 2. Tenant admin creates the `SopsTenant` → operator creates the `<tenant>-sops-tenant` ServiceAccount and generates
    the key → `Ready/KeyGenerated`. A missing RoleBinding → `Ready/AccessDenied`, naming it.
-3. Tenant admin reads `status.publicKey` from the `SopsTenant` and commits it to the team's repository as
-   `<tenant>.pub`.
+3. Tenant admin reads `status.publicKey` from the `SopsTenant` and commits it to the repository's `.sops.yaml`,
+   in the creation rule whose `path_regex` matches the tenant's files.
 
 ### 8.2 Developer: create or change a secret
 
-```bash
-# team-a.pub (committed): the tenant public key and the platform break-glass recipient, one per line
-hack/encrypt-value.sh team-a.pub team-a-prod/db-creds password          # prompts for the value
-hack/encrypt-value.sh team-a.pub team-a-prod/db-creds ca.crt ca.crt     # reads the value from a file
-# put each printed line under spec.encryptedData.<key> (or the chart's values), then commit
+```yaml
+# .sops.yaml (committed): path_regex is matched against the file's path relative to this file
+creation_rules:
+  - path_regex: ^team-a-
+    age:
+      - age1pq1...team-a          # tenant public key
+      - age1pq1...breakglass      # platform break-glass recipient (same key kind as the tenant key)
 ```
 
-- The scope line is the `SopsSecret`'s namespace and name and the value's key, also when the namespace is injected
-  later by kustomize or Helm.
-- Without the script: `printf '<namespace>/<name>/<key>\n%s' "$VALUE" | age -R team-a.pub | base64 | tr -d '\n'`.
+```bash
+# write prod/db-creds.yaml as a SopsSecret with plaintext stringData (never commit this state), then:
+sopssecret encrypt -i prod/db-creds.yaml
+git add prod/db-creds.yaml && git commit -m "add db-creds"
+```
+
+- `sopssecret` (`cmd/sopssecret`) encrypts each value of `stringData` (text) and `data` (base64) for the line
+  `<metadata.namespace>/<metadata.name>/<key>` into `encryptedData`, and removes the plaintext fields. Keys already
+  in `encryptedData` are kept unless given again in plaintext, so adding or changing a key needs no decryption.
+- `.sops.yaml` is found from the file's directory upwards (not from the working directory, unlike sops), or given
+  with `--config` / `$SOPS_CONFIG`. Only `path_regex` and `age` are read; other fields are ignored.
+- `metadata.namespace` is required in the file, also when kustomize or Helm sets it later.
+- Without the CLI: `printf '<namespace>/<name>/<key>\n%s' "$VALUE" | age -r <public key> | base64 | tr -d '\n'`.
 - With Helm, each encrypted value is a chart value and the template renders the map into `encryptedData` (README).
-- Developers cannot decrypt (requires the private key). To change a value, encrypt the new value and replace it.
+- Developers cannot decrypt (requires the private key).
 
 ### 8.3 Key rotation (manual)
 
 1. Tenant admin prepends a new private key to `age.agekey`; `status.publicKey` shows its public key.
-2. The new public key replaces the old one in `<tenant>.pub`. Each value is encrypted again for it, by whoever
-   holds the plaintext or by the tenant admin (`base64 -d | age -d -i` with the old key, then `age -R <tenant>.pub`).
+2. The new public key replaces the old one in `.sops.yaml`. With the old private key in a local file, the tenant
+   admin runs `sopssecret rotate --identity <file> <repository>`: every value of every `SopsSecret` is decrypted,
+   its scope line checked against its file, and encrypted again for the recipients `.sops.yaml` lists now.
+   Plaintext stays in memory. Values in Helm values files are re-encrypted by hand.
 3. When every `SopsSecret` is `Decrypted` with the new key, remove the old identity.
 
 ### 8.4 Migration from existing Secrets
@@ -670,8 +686,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   Golden files no test compares any more fail the run.
   e2e tests are organised by **use case**: one file and one top-level test per use case, named after the feature
   or rule it checks (`TestTenantOnboarding` in `tenant_onboarding_test.go`, `TestSecretDecryption`,
-  `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestAgeCLIWorkflow` with the
-  pinned `age` CLI, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
+  `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestCLIWorkflow` with the
+  `sopssecret` CLI and the pinned `age` CLI, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
   `TestOperatorRestart`; the operator runs with a 10s resync interval during e2e), one subtest per expected
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
@@ -754,7 +770,8 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D46 | Each tenant's ServiceAccount is `<tenant>-sops-tenant`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where `sops-operator-tenant` is bound to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). |
 | D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
 | D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret. |
-| D49 | `spec.encryptedData` mirrors a Secret's `data`: one value per key, each a binary age file in base64 whose plaintext is the scope line `<namespace>/<name>/<key>` and the value; `hack/encrypt-value.sh` writes them. SOPS and `.sops.yaml` are no longer used. No compatibility with the SOPS format of v0.0.5 and earlier; nothing was deployed with it. | A Secret-shaped object needs no new concepts; one line per key fits Helm values, and diffs show which key changed. The SOPS format spread a Secret over several fields and the `sops:` block, and failed in ways users hit: `.sops.yaml` lookup from the working directory, `--age` dropping `mac_only_encrypted`, key order for the MAC. age has no associated data, so the scope is part of the plaintext, now including the key; age authenticates each value, so scope binding and tamper detection hold. `encryptedData`, not `data`, because `data` means readable base64 on a Secret (the name SealedSecrets uses). Costs: `sops edit` is gone, and values of different versions can be combined (§7.2). Removes the SOPS dependency and its cloud KMS SDKs from the operator. |
+| D49 | `spec.encryptedData` mirrors a Secret's `data`: one value per key, each a binary age file in base64 whose plaintext is the scope line `<namespace>/<name>/<key>` and the value; the `sopssecret` CLI writes them (D50). The SOPS CLI and format are no longer used; `.sops.yaml` remains only as the list of recipients (D50). No compatibility with the SOPS format of v0.0.5 and earlier; nothing was deployed with it. | A Secret-shaped object needs no new concepts; one line per key fits Helm values, and diffs show which key changed. The SOPS format spread a Secret over several fields and the `sops:` block, and failed in ways users hit: `--age` dropping `mac_only_encrypted`, key order for the MAC, `.sops.yaml` lookup from the working directory. age has no associated data, so the scope is part of the plaintext, now including the key; age authenticates each value, so scope binding and tamper detection hold. `encryptedData`, not `data`, because `data` means readable base64 on a Secret (the name SealedSecrets uses). Costs: `sops edit` is gone, and values of different versions can be combined (§7.2). Removes the SOPS dependency and its cloud KMS SDKs from the operator. |
+| D50 | A `sopssecret` CLI (`cmd/sopssecret`) encrypts plaintext `SopsSecret` files in place with the recipients of `.sops.yaml`, and `rotate` re-encrypts every value for the recipients it lists now; `.sops.yaml` is found from the file's directory | The scope comes from the file (`metadata`) and recipients from the repository, so encryption works offline and repeatably, and a key rotation is one command over the repository instead of per-value work. Reusing `.sops.yaml` (only `path_regex` and `age`) keeps the convention teams know; searching from the file avoids the working-directory surprise of sops. The CLI shares the operator's crypto and scope code. |
 
 ---
 

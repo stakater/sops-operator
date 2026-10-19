@@ -52,6 +52,13 @@ func TestValue(t *testing.T) {
 		}
 	})
 
+	t.Run("shall read back what Plaintext writes", func(t *testing.T) {
+		got, err := document.Value(document.Plaintext(scope, []byte("line 1\nline 2")), scope)
+		if err != nil || string(got) != "line 1\nline 2" {
+			t.Fatalf("got %q, %v; want the original value", got, err)
+		}
+	})
+
 	t.Run("shall accept a scope line ending in CRLF", func(t *testing.T) {
 		got, err := document.Value([]byte(scope+"\r\nhunter2"), scope)
 		if err != nil || string(got) != "hunter2" {

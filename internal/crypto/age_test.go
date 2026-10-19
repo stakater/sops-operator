@@ -21,8 +21,9 @@ import (
 	"errors"
 	"testing"
 
+	"filippo.io/age"
+
 	"github.com/stakater/sops-operator/internal/crypto"
-	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 )
 
 const plain = "my-app-prod/db-creds/password\nhunter2"
@@ -40,13 +41,63 @@ func newKeys(t *testing.T) *crypto.KeySet {
 	return ks
 }
 
+func x25519Keys(t *testing.T) *crypto.KeySet {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks, err := crypto.ParseKeyFile([]byte(id.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ks
+}
+
 func encrypt(t *testing.T, recipients ...string) string {
 	t.Helper()
-	enc, err := cryptotest.Encrypt([]byte(plain), recipients...)
+	enc, err := crypto.EncryptValue([]byte(plain), recipients)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 	return enc
+}
+
+func TestEncryption(t *testing.T) {
+	t.Run("shall encrypt for several recipients of one kind", func(t *testing.T) {
+		x1, x2 := x25519Keys(t), x25519Keys(t)
+		for name, pair := range map[string][2]*crypto.KeySet{"post-quantum": {newKeys(t), newKeys(t)}, "X25519": {x1, x2}} {
+			enc := encrypt(t, pair[0].Recipients[0], pair[1].Recipients[0])
+			for _, ks := range pair {
+				if got, err := crypto.DecryptValue(enc, ks); err != nil || string(got) != plain {
+					t.Fatalf("%s: decrypting with each recipient's key: %v", name, err)
+				}
+			}
+		}
+	})
+
+	// age refuses the mix: the file would be only as strong as its classic recipients.
+	t.Run("shall refuse to mix post-quantum and X25519 recipients", func(t *testing.T) {
+		_, err := crypto.EncryptValue([]byte(plain), []string{newKeys(t).Recipients[0], x25519Keys(t).Recipients[0]})
+		if !errors.Is(err, crypto.ErrRecipient) {
+			t.Fatalf("got %v, want ErrRecipient", err)
+		}
+	})
+
+	t.Run("shall reject recipients that are not age public keys", func(t *testing.T) {
+		for name, recipients := range map[string][]string{
+			"none":    nil,
+			"invalid": {"age1notakey"},
+			"ssh":     {"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"},
+			"private": {"AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := crypto.EncryptValue([]byte(plain), recipients); !errors.Is(err, crypto.ErrRecipient) {
+					t.Fatalf("got %v, want ErrRecipient", err)
+				}
+			})
+		}
+	})
 }
 
 func TestDecryption(t *testing.T) {
