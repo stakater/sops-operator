@@ -160,7 +160,9 @@ func TestRotationStart(t *testing.T) {
 		})
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMismatch)
 	})
+}
 
+func TestRotationStartEdges(t *testing.T) {
 	t.Run("shall drop the refusal when the flag is cleared", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, _ := onboardedTenant(t, prod)
