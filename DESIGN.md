@@ -463,7 +463,7 @@ until the API server compacts old revisions, normally within minutes, and in bac
   reports `NextKeyMissing` until the Secret is restored from a backup. If the flag is then set to `false`, the
   rotation is abandoned (`RotationAbandoned`), which is safe because every file is still encrypted for the current
   key; the operator refuses while any `SopsSecret` decrypts with the next key alone.
-- When the current key does not match `status.publicKey`, for example after an old backup was restored, the tenant
+- When the key file no longer holds the key recorded in `status.publicKey`, for example after an old backup was restored, the tenant
   reports `KeyMismatch` instead of letting every `SopsSecret` fail on its own.
 - The operator only sees `SopsSecret`s that are applied: a file in Git that the GitOps tool has not applied yet is
   not counted, and would fail once the old key is gone. The CLI therefore compares the files in a directory with

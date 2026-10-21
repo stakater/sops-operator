@@ -161,7 +161,8 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		}
 		// status.publicKey records the key in use; a key file without that identity means the Secret
 		// was replaced, for example by restoring an old backup (DESIGN.md §4.4, guards). Manual
-		// rotation adds identities, so the record follows the primary identity while it is present.
+		// rotation adds identities, so the record follows the primary identity while it is present. It does not
+		// move while completing or during a rotation: completion and abandon rely on the recorded key.
 		// The key may already be the next key: a completion that replaced it and then crashed before
 		// writing the status; the rotation finishes it.
 		completing := t.Status.Rotation != nil && keys.Recipients[0] == t.Status.Rotation.NextPublicKey
@@ -169,7 +170,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 			return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s does not hold the key recorded in "+
 				"status.publicKey (%s); restore the matching key", keyName, t.Status.PublicKey), nil
 		}
-		if !completing {
+		if !completing && t.Status.Rotation == nil {
 			t.Status.PublicKey = keys.Recipients[0]
 		}
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
