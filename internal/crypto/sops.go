@@ -108,29 +108,9 @@ func Decrypt(doc []byte, keys *KeySet, wantScope string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	fileKeys, err := ageKeys(tree)
+	dataKey, err := unwrapDataKey(tree, keys)
 	if err != nil {
 		return nil, err
-	}
-	ids := sopsage.ParsedIdentities(keys.Identities)
-	var dataKey []byte
-	matched := false
-	for _, k := range fileKeys {
-		if !slices.Contains(keys.Recipients, k.Recipient) {
-			continue
-		}
-		matched = true
-		ids.ApplyToMasterKey(k)
-		if dk, err := k.Decrypt(); err == nil {
-			dataKey = dk
-			break
-		}
-	}
-	if !matched {
-		return nil, ErrNotRecipient
-	}
-	if dataKey == nil {
-		return nil, fmt.Errorf("%w: the data key could not be unwrapped", ErrDecrypt)
 	}
 
 	cipher := aes.NewCipher()
@@ -152,6 +132,60 @@ func Decrypt(doc []byte, keys *KeySet, wantScope string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: the decrypted document could not be rendered", ErrDecrypt)
 	}
 	return plain, nil
+}
+
+// unwrapDataKey returns the data key of tree, unwrapped with the first of keys that the tree is
+// encrypted for.
+func unwrapDataKey(tree sops.Tree, keys *KeySet) ([]byte, error) {
+	fileKeys, err := ageKeys(tree)
+	if err != nil {
+		return nil, err
+	}
+	ids := sopsage.ParsedIdentities(keys.Identities)
+	matched := false
+	for _, k := range fileKeys {
+		if !slices.Contains(keys.Recipients, k.Recipient) {
+			continue
+		}
+		matched = true
+		ids.ApplyToMasterKey(k)
+		if dk, err := k.Decrypt(); err == nil {
+			return dk, nil
+		}
+	}
+	if !matched {
+		return nil, ErrNotRecipient
+	}
+	return nil, fmt.Errorf("%w: the data key could not be unwrapped", ErrDecrypt)
+}
+
+// AgeEntry is one entry of a SOPS file's sops.age list: the file's data key wrapped for Recipient.
+type AgeEntry struct {
+	Recipient string
+	Enc       string
+}
+
+// WrapDataKey unwraps the data key of doc with keys and wraps it for recipient. Appending the
+// result to sops.age lets recipient's identity decrypt doc; the encrypted values, the MAC and
+// lastmodified do not depend on sops.age and stay valid. The entry contains no plaintext and no
+// private key. Errors never contain key material.
+func WrapDataKey(doc []byte, keys *KeySet, recipient string) (AgeEntry, error) {
+	tree, err := load(doc)
+	if err != nil {
+		return AgeEntry{}, err
+	}
+	dataKey, err := unwrapDataKey(tree, keys)
+	if err != nil {
+		return AgeEntry{}, err
+	}
+	mk, err := sopsage.MasterKeyFromRecipient(recipient)
+	if err != nil {
+		return AgeEntry{}, fmt.Errorf("%w: %q is not a valid age recipient", ErrUnsupported, recipient)
+	}
+	if err := mk.Encrypt(dataKey); err != nil {
+		return AgeEntry{}, fmt.Errorf("wrap the data key: %w", err)
+	}
+	return AgeEntry{Recipient: mk.Recipient, Enc: mk.EncryptedKey}, nil
 }
 
 // checkScope decrypts only the scope value and compares it with want.
