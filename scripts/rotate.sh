@@ -36,6 +36,10 @@ while IFS= read -r file; do
     FILES+=("$file")
   fi
 done < <(find "$DIR" -type f \( -name '*.yaml' -o -name '*.yml' \) ! -name '.sops.yaml' | sort)
+if [ ${#FILES[@]} = 0 ]; then
+  echo "No SopsSecret files of tenant $TENANT_NAMESPACE/$TENANT_NAME under $DIR" >&2
+  exit 1
+fi
 
 # Step 3: during a rotation, check every file against the cluster before changing any. A file must
 # match its SopsSecret in the cluster (same MAC), so the operator's entry fits it.
@@ -81,18 +85,21 @@ for file in ${FILES[@]+"${FILES[@]}"}; do
 done
 
 # Step 6: update every .sops.yaml in the directory: add the next key where the current key is listed,
-# and remove the old key. Other recipients, such as break-glass keys, stay. The age list is a
-# comma-separated string here; a YAML list works the same way.
+# and remove the old key. Other recipients, such as break-glass keys, stay, and rules without an age key
+# (for example a kms-only rule) are not touched. The age list is a comma-separated string or a YAML list.
+if [ -n "$NEXT" ] && [ -z "$CURRENT" ]; then
+  echo "Note: the tenant has no current key in its status; the .sops.yaml files were not updated" >&2
+fi
 while IFS= read -r config; do
-  if [ -n "$NEXT" ]; then
-    C="$CURRENT" N="$NEXT" yq -i '(.creation_rules[] | select((.age | tostring | contains(strenv(C))) and
+  if [ -n "$NEXT" ] && [ -n "$CURRENT" ]; then
+    C="$CURRENT" N="$NEXT" yq -i '(.creation_rules[] | select(has("age")) | select((.age | tostring | contains(strenv(C))) and
       ((.age | tostring | contains(strenv(N))) | not)) | .age | select(tag == "!!str")) |= . + "," + strenv(N)' "$config"
-    C="$CURRENT" N="$NEXT" yq -i '(.creation_rules[] | select((.age | tostring | contains(strenv(C))) and
+    C="$CURRENT" N="$NEXT" yq -i '(.creation_rules[] | select(has("age")) | select((.age | tostring | contains(strenv(C))) and
       ((.age | tostring | contains(strenv(N))) | not)) | .age | select(tag == "!!seq")) |= . + [strenv(N)]' "$config"
   fi
   if [ -n "$OLD" ]; then
-    O="$OLD" yq -i '(.creation_rules[].age | select(tag == "!!str")) |= (split(",") | map(select(. != strenv(O))) | join(","))' "$config"
-    O="$OLD" yq -i '(.creation_rules[].age | select(tag == "!!seq")) |= map(select(. != strenv(O)))' "$config"
+    O="$OLD" yq -i '(.creation_rules[] | select(has("age")) | .age | select(tag == "!!str")) |= (split(",") | map(select(. != strenv(O))) | join(","))' "$config"
+    O="$OLD" yq -i '(.creation_rules[] | select(has("age")) | .age | select(tag == "!!seq")) |= map(select(. != strenv(O)))' "$config"
   fi
 done < <(find "$DIR" -type f -name '.sops.yaml')
 
@@ -100,14 +107,16 @@ done < <(find "$DIR" -type f -name '.sops.yaml')
 # another directory, or their file is missing.
 KNOWN="$(for file in ${FILES[@]+"${FILES[@]}"}; do yq '.metadata.namespace + "/" + .metadata.name' "$file"; done)"
 for namespace in $(for file in ${FILES[@]+"${FILES[@]}"}; do yq '.metadata.namespace' "$file"; done | sort -u); do
-  oc get sopssecrets -n "$namespace" -o json |
-    T_NS="$TENANT_NAMESPACE" T_NAME="$TENANT_NAME" yq -p json '.items[] |
-      select(.spec.tenantRef.namespace == strenv(T_NS) and .spec.tenantRef.name == strenv(T_NAME)) |
-      .metadata.namespace + "/" + .metadata.name' |
-    while IFS= read -r secret; do
-      if ! echo "$KNOWN" | grep -qx "$secret"; then
-        echo "Note: SopsSecret $secret has no file in $DIR" >&2
-      fi
-    done
+  if ! LIST="$(oc get sopssecrets -n "$namespace" -o json 2>/dev/null)"; then
+    echo "Note: could not list SopsSecrets in $namespace" >&2
+    continue
+  fi
+  while IFS= read -r secret; do
+    if ! echo "$KNOWN" | grep -qx "$secret"; then
+      echo "Note: SopsSecret $secret has no file in $DIR" >&2
+    fi
+  done < <(echo "$LIST" | T_NS="$TENANT_NAMESPACE" T_NAME="$TENANT_NAME" yq -p json '.items[] |
+    select(.spec.tenantRef.namespace == strenv(T_NS) and .spec.tenantRef.name == strenv(T_NAME)) |
+    .metadata.namespace + "/" + .metadata.name')
 done
 echo "Done. Review the changes and commit them."

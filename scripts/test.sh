@@ -129,6 +129,16 @@ yq -i ".creation_rules[0].age = \"$CURRENT,$BREAKGLASS\"" "$ROT/.sops.yaml"
 R="$NEXT" yq -o json '.sops.age[] | select(.recipient == strenv(R))' "$ROT/team-a/with-next.sops.yaml" >"$WORK/entry.json"
 rm "$ROT/team-a/with-next.sops.yaml"
 
+# A rule without an age key, and a .sops.yaml whose age is a YAML list; the script must leave the first alone.
+yq -i '.creation_rules += [{"path_regex": "^kms-only/", "kms": "arn:aws:kms:x"}]' "$ROT/.sops.yaml"
+yq '.creation_rules[1]' "$ROT/.sops.yaml" >"$WORK/kms-rule.before"
+# kms_rule_unchanged: the rule without an age key is as it was before the script ran.
+kms_rule_unchanged() {
+  yq '.creation_rules[1]' "$ROT/.sops.yaml" | cmp - "$WORK/kms-rule.before"
+}
+mkdir -p "$ROT/lists"
+printf 'creation_rules:\n  - path_regex: .*\n    age:\n      - %s\n      - %s\n' "$CURRENT" "$BREAKGLASS" >"$ROT/lists/.sops.yaml"
+
 cat >"$ROT/tenant.yaml" <<EOF
 apiVersion: sops.stakater.com/v1alpha1
 kind: SopsTenant
@@ -158,6 +168,8 @@ mv "$WORK/cluster/sopssecret-team-a-stage-db.json" "$WORK/db.cluster.json"
 check "stops when a file has no SopsSecret in the cluster" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "changes no file when it stops" cmp "$WORK/db.unrotated" "$ROT/team-a/db.sops.yaml"
 mv "$WORK/db.cluster.json" "$WORK/cluster/sopssecret-team-a-stage-db.json"
+mkdir -p "$WORK/empty"
+check "stops when the directory has no files of the tenant" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$WORK/empty"
 
 check "adds the next key to the tenant's files" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "the file decrypts with the next key" \
@@ -167,6 +179,10 @@ check "the file still decrypts with the current key" \
 check "keeps the file's comments" grep -q '^# kept comment' "$ROT/team-a/db.sops.yaml"
 check "adds the next key to .sops.yaml" yq -e ".creation_rules[0].age | contains(\"$NEXT\")" "$ROT/.sops.yaml"
 check "keeps other recipients" yq -e ".creation_rules[0].age | contains(\"$BREAKGLASS\")" "$ROT/.sops.yaml"
+check "adds the next key to a YAML list of keys once" \
+  yq -e ".creation_rules[0].age | join(\",\") == \"$CURRENT,$BREAKGLASS,$NEXT\"" "$ROT/lists/.sops.yaml"
+check "leaves a rule without an age key unchanged" \
+  kms_rule_unchanged
 cp "$ROT/team-a/db.sops.yaml" "$WORK/db.rotated"
 check "runs again without errors" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "leaves rotated files unchanged" cmp "$WORK/db.rotated" "$ROT/team-a/db.sops.yaml"
@@ -181,6 +197,16 @@ check "the file decrypts with the new key after cleanup" \
   env SOPS_AGE_KEY_FILE="$WORK/next.key" sops decrypt "$ROT/team-a/db.sops.yaml"
 check "removes the old key from .sops.yaml and keeps the others" \
   yq -e ".creation_rules[0].age == \"$BREAKGLASS,$NEXT\"" "$ROT/.sops.yaml"
+check "removes the old key from a YAML list and keeps the others" \
+  yq -e ".creation_rules[0].age | join(\",\") == \"$BREAKGLASS,$NEXT\"" "$ROT/lists/.sops.yaml"
+check "leaves a rule without an age key unchanged after cleanup" \
+  kms_rule_unchanged
+
+# A tenant status without a current key must not make the script touch every rule of .sops.yaml.
+cp "$ROT/.sops.yaml" "$WORK/sops.before"
+yq -n -o json ".status.rotation.nextPublicKey = \"$NEXT\"" >"$WORK/cluster/sopstenant-team-a-system-team-a.json"
+check "does not update .sops.yaml without a current key" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "leaves .sops.yaml unchanged without a current key" cmp "$WORK/sops.before" "$ROT/.sops.yaml"
 
 if [ "$FAILED" = 1 ]; then
   echo "Some tests failed"
