@@ -26,7 +26,7 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
 - Templating, generators, dynamic/leased secrets, PushSecret.
 - Adopting, merging into, or seeding pre-existing Secrets.
 - Cross-namespace or cluster-wide secrets.
-- Automatic key rotation.
+- Key rotation on a schedule, or without teams re-encrypting their files.
 - KMS backends (OpenBao, cloud KMS) — planned later behind the same API.
 
 ---
@@ -246,7 +246,7 @@ status:
 | `spec.generateKey` | `true` | Generate a post-quantum age key when reading the key Secret returns `404 Not Found`. Any other error never triggers generation. Set `false` for bring-your-own keys and during disaster recovery. |
 | `spec.startRotation` | `false` | `true` starts a rotation once every `SopsSecret` of the tenant is healthy; `false` or unset completes it once every `SopsSecret` uses the next key (§4.4). |
 | `status.rotation` | — | The rotation in progress: phase, start time, the next key's Secret (`nextKeySecretName`, `<tenant>-sops-keys-next`) and public key, migrated and pending `SopsSecret`s (§4.4). |
-| `status.lastRotation` | — | Start and completion time of the last completed rotation. |
+| `status.lastRotation` | — | Start and completion time of the last completed rotation, and the removed `previousPublicKey`. |
 | `status.publicKey` | — | Public key of the current key. |
 | `status.serviceAccountName` | — | The tenant's ServiceAccount, `<tenant>-sops-tenant` (D46). |
 | `status.keySecretName` | — | The tenant's key Secret, `<tenant>-sops-keys` (D48). |
@@ -450,8 +450,8 @@ repeat, so a crash at any point resumes on the next reconcile:
 3. Delete `<tenant>-sops-keys-next`. A crash between steps 2 and 3 leaves both Secrets holding the same key.
 4. Reconcile every `SopsSecret` of the tenant with the new current key. Each one already decrypted with it; one
    that fails is reported at once.
-5. Record `status.publicKey` and `status.lastRotation` (`startedAt`, `completedAt`, `previousPublicKey`), remove `status.rotation` from
-   the tenant and every `SopsSecret`, drop the old key from the operator's memory, and report `Rotated=True`,
+5. Record `status.publicKey` and `status.lastRotation` (`startedAt`, `completedAt`, `previousPublicKey`), remove
+   `status.rotation` from the tenant and every `SopsSecret`, drop the old key from the operator's memory, and report `Rotated=True`,
    reason `RotationComplete`, with a Normal event. The condition message reminds teams to remove the old public key
    from `.sops.yaml`.
 

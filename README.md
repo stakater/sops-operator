@@ -154,7 +154,7 @@ decisions.
 **Cluster admin**, once per tenant ([step 2](#2-onboard-the-tenant-cluster-admin)):
 
 - Let the operator use the tenant's ServiceAccount in the tenant namespace (`sops-operator-tenant`).
-- Let the tenant's ServiceAccount read, create, replace and remove its key (`sops-key-owner`).
+- Let the tenant's ServiceAccount get, create, update and delete its key Secrets (`sops-key-owner`; update and delete only to complete a rotation or remove an orphaned next key).
 - Grant each namespace the tenant may write Secrets to (`sops-secret-writer`).
 
 Never needs access to tenant keys or plaintext.
@@ -380,7 +380,9 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 | Field | Default | Description |
 |---|---|---|
 | `spec.startRotation` | `false` | `true` starts a key rotation once every `SopsSecret` is `Decrypted`; `false` or unset completes it once every `SopsSecret` uses the next key. |
-| `status.lastRotation` | — | Start and completion time of the last rotation and the removed `previousPublicKey`. |
+| `status.lastRotation` | — | Start and completion time of the last rotation and the removed `previousPublicKey`. Shown as the `LAST ROTATED` column. |
+| `status.rotation` | — | The rotation in progress: `phase`, `nextKeySecretName`, `nextPublicKey`, `migrated`, `pending` and `pendingSecrets`. |
+| `status.publicKey` | — | Public key of the current key. |
 
 ### Status reasons
 
@@ -440,6 +442,16 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
      ```bash
      scripts/rotate.sh tenant.yaml gitops/team-a
      ```
+
+  Follow the progress with:
+
+  ```bash
+  oc get sopstenant team-a -n team-a -o jsonpath='{.status.rotation}'
+  ```
+
+  If `<tenant>-sops-keys-next` is lost, `Rotated` reports `NextKeyMissing`: restore the Secret from a backup, or
+  set `startRotation: false` to abandon the rotation (`RotationAbandoned`), which is refused while a `SopsSecret`
+  is encrypted for the next key only.
 
   During a rotation a new `SopsSecret` must be encrypted for the next key too, otherwise it fails with
   `NextKeyRequired`. Rotating by prepending an identity to `age.agekey` and running `sops updatekeys` still works.
