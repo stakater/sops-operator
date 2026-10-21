@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests scripts/encrypt.sh with a throwaway key in a throwaway GitOps directory.
+# Tests scripts/encrypt.sh and scripts/rotate.sh with a throwaway key in a throwaway GitOps directory.
 #
 # Usage: scripts/test.sh   (or make test-scripts)
 #
@@ -10,6 +10,8 @@ SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 unset SOPS_AGE_KEY_FILE SOPS_AGE_KEY
+mkdir -p "$WORK/bin"
+export PATH="$WORK/bin:$PATH"
 FAILED=0
 
 # check "<what should happen>" <command...>: prints ok when the command succeeds, FAIL otherwise.
@@ -85,6 +87,100 @@ check "refuses a file that is not a SopsSecret" fails "$SCRIPTS/encrypt.sh" "$CO
 check "refuses a file that does not exist" fails "$SCRIPTS/encrypt.sh" "$GITOPS/missing.sops.yaml"
 check "refuses a file no .sops.yaml rule covers" fails "$SCRIPTS/encrypt.sh" "$OUTSIDE"
 check "leaves that file unencrypted" yq -e 'has("sops") | not' "$OUTSIDE"
+
+echo "# rotate.sh"
+
+# The tenant's next key and a break-glass key; the entry the operator would offer for db.sops.yaml
+# is made here with sops, which wraps the data key the same way.
+age-keygen -pq -o "$WORK/next.key" 2>/dev/null
+NEXT="$(age-keygen -y "$WORK/next.key")"
+CURRENT="$(age-keygen -y "$WORK/tenant.key")"
+age-keygen -pq -o "$WORK/breakglass.key" 2>/dev/null
+BREAKGLASS="$(age-keygen -y "$WORK/breakglass.key")"
+
+ROT="$WORK/rot"
+mkdir -p "$ROT/team-a" "$WORK/cluster"
+cat >"$ROT/.sops.yaml" <<EOF
+creation_rules:
+  - path_regex: \.sops\.ya?ml$
+    encrypted_regex: ^(data|stringData|scope)$
+    mac_only_encrypted: true
+    age: $CURRENT,$BREAKGLASS
+EOF
+cat >"$ROT/team-a/db.sops.yaml" <<EOF
+# kept comment
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsSecret
+metadata:
+  name: db
+  namespace: team-a-stage
+spec:
+  tenantRef:
+    name: team-a
+    namespace: team-a-system
+  stringData:
+    password: "throwaway"
+EOF
+"$SCRIPTS/encrypt.sh" "$ROT/team-a/db.sops.yaml" >/dev/null
+cp "$ROT/team-a/db.sops.yaml" "$ROT/team-a/with-next.sops.yaml"
+yq -i ".creation_rules[0].age = \"$CURRENT,$BREAKGLASS,$NEXT\"" "$ROT/.sops.yaml"
+(cd "$ROT/team-a" && SOPS_AGE_KEY_FILE="$WORK/tenant.key" sops updatekeys -y with-next.sops.yaml >/dev/null 2>&1)
+yq -i ".creation_rules[0].age = \"$CURRENT,$BREAKGLASS\"" "$ROT/.sops.yaml"
+R="$NEXT" yq -o json '.sops.age[] | select(.recipient == strenv(R))' "$ROT/team-a/with-next.sops.yaml" >"$WORK/entry.json"
+rm "$ROT/team-a/with-next.sops.yaml"
+
+cat >"$ROT/tenant.yaml" <<EOF
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsTenant
+metadata:
+  name: team-a
+  namespace: team-a-system
+EOF
+# Cluster state during the rotation.
+yq -n -o json ".status.publicKey = \"$CURRENT\" | .status.rotation.nextPublicKey = \"$NEXT\"" \
+  >"$WORK/cluster/sopstenant-team-a-system-team-a.json"
+ENTRY="$(cat "$WORK/entry.json")" yq -o json '.status.rotation.nextRecipient = env(ENTRY)' \
+  "$ROT/team-a/db.sops.yaml" >"$WORK/cluster/sopssecret-team-a-stage-db.json"
+DB="$(cat "$WORK/cluster/sopssecret-team-a-stage-db.json")" yq -n -o json '.items = [env(DB)]' \
+  >"$WORK/cluster/sopssecrets-team-a-stage.json"
+
+cat >"$WORK/bin/oc" <<'EOF'
+#!/usr/bin/env bash
+# oc get <kind> [<name>] -n <namespace> -o json, answered from $FAKE_CLUSTER.
+if [ "$3" = "-n" ]; then file="$FAKE_CLUSTER/$2-$4.json"; else file="$FAKE_CLUSTER/$2-$5-$3.json"; fi
+if [ -f "$file" ]; then cat "$file"; else echo "Error from server (NotFound)" >&2; exit 1; fi
+EOF
+chmod +x "$WORK/bin/oc"
+export FAKE_CLUSTER="$WORK/cluster"
+
+cp "$ROT/team-a/db.sops.yaml" "$WORK/db.unrotated"
+mv "$WORK/cluster/sopssecret-team-a-stage-db.json" "$WORK/db.cluster.json"
+check "stops when a file has no SopsSecret in the cluster" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "changes no file when it stops" cmp "$WORK/db.unrotated" "$ROT/team-a/db.sops.yaml"
+mv "$WORK/db.cluster.json" "$WORK/cluster/sopssecret-team-a-stage-db.json"
+
+check "adds the next key to the tenant's files" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "the file decrypts with the next key" \
+  env SOPS_AGE_KEY_FILE="$WORK/next.key" sops decrypt "$ROT/team-a/db.sops.yaml"
+check "the file still decrypts with the current key" \
+  env SOPS_AGE_KEY_FILE="$WORK/tenant.key" sops decrypt "$ROT/team-a/db.sops.yaml"
+check "keeps the file's comments" grep -q '^# kept comment' "$ROT/team-a/db.sops.yaml"
+check "adds the next key to .sops.yaml" yq -e ".creation_rules[0].age | contains(\"$NEXT\")" "$ROT/.sops.yaml"
+check "keeps other recipients" yq -e ".creation_rules[0].age | contains(\"$BREAKGLASS\")" "$ROT/.sops.yaml"
+cp "$ROT/team-a/db.sops.yaml" "$WORK/db.rotated"
+check "runs again without errors" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "leaves rotated files unchanged" cmp "$WORK/db.rotated" "$ROT/team-a/db.sops.yaml"
+
+# Cluster state after completion: the old key is gone.
+yq -n -o json ".status.publicKey = \"$NEXT\" | .status.lastRotation.previousPublicKey = \"$CURRENT\"" \
+  >"$WORK/cluster/sopstenant-team-a-system-team-a.json"
+check "removes the old key after completion" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "the file no longer lists the old key" \
+  yq -e "[.sops.age[].recipient] | contains([\"$CURRENT\"]) | not" "$ROT/team-a/db.sops.yaml"
+check "the file decrypts with the new key after cleanup" \
+  env SOPS_AGE_KEY_FILE="$WORK/next.key" sops decrypt "$ROT/team-a/db.sops.yaml"
+check "removes the old key from .sops.yaml and keeps the others" \
+  yq -e ".creation_rules[0].age == \"$BREAKGLASS,$NEXT\"" "$ROT/.sops.yaml"
 
 if [ "$FAILED" = 1 ]; then
   echo "Some tests failed"
