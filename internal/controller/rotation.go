@@ -170,7 +170,7 @@ func (r *SopsTenantReconciler) stampAccepted(ctx context.Context, users []sopsv1
 		}
 		base := s.DeepCopy()
 		s.Status.Rotation = &sopsv1alpha1.SecretRotationStatus{StartedAt: startedAt, AcceptedGeneration: s.Generation}
-		if err := r.Status().Patch(ctx, s, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
+		if err := r.Status().Patch(ctx, s, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); client.IgnoreNotFound(err) != nil {
 			return fmt.Errorf("stamp rotation on SopsSecret %s/%s: %w", s.Namespace, s.Name, err)
 		}
 	}

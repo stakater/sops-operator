@@ -62,8 +62,9 @@ type outcome struct {
 	reason  string
 	message string
 	uid     types.UID
-	// rotation is written to status.rotation when setRotation is true; other outcomes keep the
-	// recorded rotation status, so a transient failure does not lose the accepted generation.
+	// rotation is written to status.rotation when setRotation is true, which happens only while the
+	// tenant rotates. Other outcomes keep the recorded status, so neither a transient failure nor a
+	// lagging tenant view loses the accepted generation; the tenant controller clears it.
 	rotation    *sopsv1alpha1.SecretRotationStatus
 	setRotation bool
 }
@@ -208,7 +209,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{}, err
 	}
 	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid,
-		rotation: rs, setRotation: true}, nil
+		rotation: rs, setRotation: rs != nil}, nil
 }
 
 // nextKey returns the tenant's next key. It returns nil when the Secret does not exist or is not

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
@@ -143,6 +144,27 @@ func TestSecretRotation(t *testing.T) {
 		}).WithTimeout(30 * time.Second).Should(Succeed())
 		if s.Status.Rotation.NextRecipient.Enc != first {
 			t.Fatal("the entry changed across a resync")
+		}
+	})
+
+	t.Run("shall not clear status.rotation in its own reconcile while the tenant has no rotation", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": hunter2})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		base := s.DeepCopy()
+		s.Status.Rotation = &sopsv1alpha1.SecretRotationStatus{
+			StartedAt: metav1.Now(), AcceptedGeneration: s.Generation}
+		NewWithT(t).Expect(env.Admin.Status().Patch(context.Background(), s, client.MergeFrom(base))).To(Succeed())
+		before := s.Status.LastSyncTime.DeepCopy()
+		update(t, s, func() { s.Annotations = map[string]string{"test": "reconcile"} })
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+			g.Expect(s.Status.LastSyncTime.After(before.Time)).To(BeTrue())
+		}).WithTimeout(30 * time.Second).Should(Succeed())
+		if s.Status.Rotation == nil || s.Status.Rotation.AcceptedGeneration != s.Generation {
+			t.Fatalf("status.rotation = %+v was cleared", s.Status.Rotation)
 		}
 	})
 }
