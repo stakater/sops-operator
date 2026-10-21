@@ -78,6 +78,7 @@ func TestSecretRotation(t *testing.T) {
 			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
 			g.Expect(s.Status.Rotation).NotTo(BeNil())
 			g.Expect(s.Status.Rotation.Migrated).To(BeTrue())
+			g.Expect(s.Status.Rotation.NextRecipient).To(BeNil())
 			g.Expect(s.Status.ObservedGeneration).To(Equal(s.Generation))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
 		if string(outputSecret(t, prod).Data["password"]) != hunter2 {
@@ -116,5 +117,32 @@ func TestSecretRotation(t *testing.T) {
 		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
 		update(t, s, func() { delete(s.Annotations, sopsv1alpha1.AnnotationSuspend) })
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+	})
+
+	t.Run("shall accept the pre-rotation generation from the start even if the first reconcile is suspended", func(t *testing.T) {
+		_, _, s, _ := rotatingTenant(t)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+			g.Expect(s.Status.Rotation).NotTo(BeNil())
+			g.Expect(s.Status.Rotation.AcceptedGeneration).To(Equal(s.Generation))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+		update(t, s, func() { s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"} })
+		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
+		update(t, s, func() { delete(s.Annotations, sopsv1alpha1.AnnotationSuspend) })
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+	})
+
+	t.Run("shall keep the offered entry unchanged across resyncs", func(t *testing.T) {
+		_, _, s, _ := rotatingTenant(t)
+		eventuallyNextRecipient(t, s)
+		first := s.Status.Rotation.NextRecipient.Enc
+		before := s.Status.LastSyncTime.DeepCopy()
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+			g.Expect(s.Status.LastSyncTime.After(before.Time)).To(BeTrue())
+		}).WithTimeout(30 * time.Second).Should(Succeed())
+		if s.Status.Rotation.NextRecipient.Enc != first {
+			t.Fatal("the entry changed across a resync")
+		}
 	})
 }

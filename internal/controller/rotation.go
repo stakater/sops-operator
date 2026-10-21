@@ -144,6 +144,9 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 		r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonRotationPending,
 			sopsv1alpha1.ActionStartRotation, "created the next key in Secret %s", nextName)
 	}
+	if err := r.stampAccepted(ctx, users, startedAt); err != nil {
+		return err
+	}
 	t.Status.Rotation = &sopsv1alpha1.TenantRotationStatus{
 		Phase: sopsv1alpha1.RotationPhaseInProgress, StartedAt: startedAt,
 		NextKeySecretName: nextName, NextPublicKey: recipient,
@@ -152,5 +155,24 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 	setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationPending, fmt.Sprintf(
 		"%d SopsSecrets do not use the next key yet; add %s to .sops.yaml and run scripts/rotate.sh",
 		len(users), recipient))
+	return nil
+}
+
+// stampAccepted records, before the rotation is published, that the generation of every SopsSecret
+// in users is accepted with the current key alone (DESIGN.md §4.4). All of them are healthy at the
+// start, so a later failure in the SopsSecret controller cannot lose the acceptance.
+func (r *SopsTenantReconciler) stampAccepted(ctx context.Context, users []sopsv1alpha1.SopsSecret,
+	startedAt metav1.Time) error {
+	for i := range users {
+		s := &users[i]
+		if prev := s.Status.Rotation; prev != nil && prev.StartedAt.Equal(&startedAt) {
+			continue
+		}
+		base := s.DeepCopy()
+		s.Status.Rotation = &sopsv1alpha1.SecretRotationStatus{StartedAt: startedAt, AcceptedGeneration: s.Generation}
+		if err := r.Status().Patch(ctx, s, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("stamp rotation on SopsSecret %s/%s: %w", s.Namespace, s.Name, err)
+		}
+	}
 	return nil
 }
