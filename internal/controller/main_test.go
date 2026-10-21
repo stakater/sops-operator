@@ -52,8 +52,11 @@ func startManager(ctx context.Context) error {
 	}
 	ids := identity.NewFactory(env.OperatorConfig, env.Scheme)
 	recorder := mgr.GetEventRecorder("sops-operator")
+	// The tenant controller's clock runs behind the API server's, so times it must agree on come from
+	// the API server, not from its clock.
 	if err := (&controller.SopsTenantReconciler{
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
+		Now: func() time.Time { return time.Now().Add(-time.Minute) },
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

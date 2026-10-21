@@ -68,25 +68,29 @@ func (r *SopsTenantReconciler) reconcileRotation(ctx context.Context, t *sopsv1a
 	}
 	rot := t.Status.Rotation
 	// The phase is written with the rest of the status at the end of a reconcile, so a completion
-	// that crashed after replacing the key is recognised by the key itself: finish it.
+	// that crashed after replacing the key is recognised by the key itself: finish it. The phase is
+	// decided from the key alone, never from the recorded status, so no status write can skip the
+	// pending check.
 	var current corev1.Secret
 	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: sopsv1alpha1.TenantKeySecretName(t.Name)}, &current); err != nil {
 		return err
 	}
-	if holdsKey(&current, rot.NextPublicKey) {
+	completing := holdsKey(&current, rot.NextPublicKey)
+	rot.Phase = sopsv1alpha1.RotationPhaseInProgress
+	if completing {
 		rot.Phase = sopsv1alpha1.RotationPhaseCompleting
 	}
 	var nextSecret corev1.Secret
 	err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: rot.NextKeySecretName}, &nextSecret)
 	switch {
-	case apierrors.IsNotFound(err) && rot.Phase == sopsv1alpha1.RotationPhaseCompleting:
+	case apierrors.IsNotFound(err) && completing:
 		return r.completeRotation(ctx, t, tc, users, &current, nil)
 	case apierrors.IsNotFound(err):
 		return r.abandonRotation(ctx, t, users)
 	case err != nil:
 		return err
 	}
-	if rot.Phase == sopsv1alpha1.RotationPhaseCompleting {
+	if completing {
 		// The key Secret already holds the next key: the content of the next key Secret is not needed.
 		return r.completeRotation(ctx, t, tc, users, &current, &nextSecret)
 	}
@@ -147,10 +151,11 @@ func (r *SopsTenantReconciler) reconcileRotation(ctx context.Context, t *sopsv1a
 }
 
 // migratedIn reports whether a SopsSecret's current generation was decrypted with the next key
-// of the rotation rot.
+// of the rotation rot. The observed generation alone does not tell: it moves on every outcome,
+// while status.rotation is written only when the SopsSecret was decrypted.
 func migratedIn(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotationStatus) bool {
 	rs := s.Status.Rotation
-	return rs != nil && rs.StartedAt.Equal(&rot.StartedAt) && rs.Migrated && s.Status.ObservedGeneration == s.Generation
+	return rs != nil && rs.StartedAt.Equal(&rot.StartedAt) && rs.Migrated && rs.MigratedGeneration == s.Generation
 }
 
 // completeRotation replaces the current key with the next key, deletes the next key Secret and
@@ -259,13 +264,13 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 			meta.RemoveStatusCondition(&t.Status.Conditions, sopsv1alpha1.ConditionRotated)
 		}
 		// A next key without a rotation was created just before a crash and never published.
-		if orphaned && orphan.Labels[sopsv1alpha1.LabelManagedBy] == sopsv1alpha1.ManagedByValue {
+		if orphaned && createdByOperator(&orphan) {
 			return client.IgnoreNotFound(tc.Delete(ctx, &orphan))
 		}
 		return nil
 	}
 
-	if orphaned && orphan.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+	if orphaned && !createdByOperator(&orphan) {
 		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationRefused, fmt.Sprintf(
 			"Secret %s/%s was not created by the operator; remove it to start the rotation", t.Namespace, nextName))
 		return nil
@@ -284,7 +289,8 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 		return nil
 	}
 
-	recipient, startedAt := "", metav1.NewTime(r.now())
+	var recipient string
+	var startedAt metav1.Time
 	if orphaned {
 		keys, err := crypto.ParseKeyFile(orphan.Data[crypto.KeyFileField])
 		if err != nil {
@@ -315,7 +321,9 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 		if err := tc.Create(ctx, next); err != nil {
 			return fmt.Errorf("create next key Secret %s/%s: %w", t.Namespace, nextName, err)
 		}
-		recipient = rec
+		// The start is the next key's creationTimestamp, as for an adopted key, so a reconcile that
+		// adopts this key after a lost status write stamps the same start.
+		recipient, startedAt = rec, next.CreationTimestamp
 		r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonRotationPending,
 			sopsv1alpha1.ActionStartRotation, "created the next key in Secret %s", nextName)
 	}
@@ -350,6 +358,14 @@ func (r *SopsTenantReconciler) stampAccepted(ctx context.Context, users []sopsv1
 		}
 	}
 	return nil
+}
+
+// createdByOperator reports whether a next key Secret was created by the operator. Output Secrets
+// carry the operator's label too, so a Secret with the SopsSecret annotation or an owner is not one.
+func createdByOperator(s *corev1.Secret) bool {
+	_, fromSopsSecret := s.Annotations[sopsv1alpha1.AnnotationSopsSecret]
+	return s.Labels[sopsv1alpha1.LabelManagedBy] == sopsv1alpha1.ManagedByValue && !fromSopsSecret &&
+		len(s.OwnerReferences) == 0
 }
 
 // holdsKey reports whether the key Secret's primary key is recipient.

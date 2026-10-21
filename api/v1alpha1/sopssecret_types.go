@@ -142,9 +142,13 @@ type SopsSecretStatus struct {
 type SecretRotationStatus struct {
 	// StartedAt is the start of the tenant rotation this status belongs to.
 	StartedAt metav1.Time `json:"startedAt"`
-	// Migrated reports that the observed generation was decrypted with the next key.
+	// Migrated reports that generation MigratedGeneration was decrypted with the next key.
 	// +optional
 	Migrated bool `json:"migrated,omitempty"`
+	// MigratedGeneration is the generation that was decrypted with the next key. A later generation
+	// is not migrated until it is decrypted with the next key too.
+	// +optional
+	MigratedGeneration int64 `json:"migratedGeneration,omitempty"`
 	// AcceptedGeneration is the generation that was decrypted before the rotation started; only
 	// that generation may still be encrypted for the current key alone.
 	// +optional
