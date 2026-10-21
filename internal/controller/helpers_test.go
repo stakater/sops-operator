@@ -126,6 +126,7 @@ func assertUnchanged(t *testing.T, obj client.Object) {
 }
 
 // setStartRotation sets spec.startRotation on the tenant.
+//
 //nolint:unparam // Task 6 passes false to abandon a rotation.
 func setStartRotation(t *testing.T, tenant *sopsv1alpha1.SopsTenant, start bool) {
 	t.Helper()
