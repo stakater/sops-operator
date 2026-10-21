@@ -229,6 +229,7 @@ metadata:
   namespace: team-a-system        # tenant namespace (dedicated; holds keys only)
 spec:
   generateKey: true              # default; generates a post-quantum key if the key Secret is missing
+  startRotation: false           # true: rotate the key; false or unset: complete a rotation when ready (§4.4)
 status:
   observedGeneration: 2
   serviceAccountName: team-a-sops-tenant
@@ -243,12 +244,16 @@ status:
 | Field | Default | Meaning |
 |---|---|---|
 | `spec.generateKey` | `true` | Generate a post-quantum age key when reading the key Secret returns `404 Not Found`. Any other error never triggers generation. Set `false` for bring-your-own keys and during disaster recovery. |
+| `spec.startRotation` | `false` | `true` starts a rotation once every `SopsSecret` of the tenant is healthy; `false` or unset completes it once every `SopsSecret` uses the next key (§4.4). |
+| `status.rotation` | — | The rotation in progress: phase, start time, the next key's Secret (`nextKeySecretName`, `<tenant>-sops-keys-next`) and public key, migrated and pending `SopsSecret`s (§4.4). |
+| `status.lastRotation` | — | Start and completion time of the last completed rotation. |
+| `status.publicKey` | — | Public key of the current key. |
 | `status.serviceAccountName` | — | The tenant's ServiceAccount, `<tenant>-sops-tenant` (D46). |
 | `status.keySecretName` | — | The tenant's key Secret, `<tenant>-sops-keys` (D48). |
 | `status.usedBy` | — | Number of `SopsSecret`s referencing this tenant. |
 | `status.conditions[Ready]` | — | Reasons: `KeyLoaded`, `KeyGenerated`, `KeyMissing`, `KeyInvalid`, `AccessDenied` (tenant not onboarded). |
 
-Printer columns: `READY`, `REASON`, `USED BY`, `AGE`.
+Printer columns: `READY`, `REASON`, `USED BY`, `LAST ROTATED`, `AGE`.
 
 ### 4.2 Key Secret
 
@@ -273,8 +278,9 @@ stringData:
 - `age.agekey` holds one or more identities; the **first** is primary. Several identities allow rotation.
 - Generated keys are post-quantum hybrid. Bring-your-own keys may mix PQ and X25519 identities. SSH and plugin
   identities make the key `KeyInvalid`.
-- The operator **creates the key only when it is missing and never modifies, overwrites or deletes it** (the tenant identity has only `get` and `create`). An invalid key is reported,
-  not replaced.
+- The operator **creates the key only when it is missing** and changes it only to complete a rotation (§4.4, D50):
+  it then replaces the key with the next key and deletes `<tenant>-sops-keys-next`. It never generates a key while
+  `<tenant>-sops-keys-next` exists. An invalid key is reported, not replaced.
 - **No ownerReference**: deleting the tenant never deletes the key.
 - `age.pub` holds the primary public key. The operator writes it when it generates the key (no extra permission:
   the Secret is created with both fields). It is optional for bring-your-own keys; when present it must match the
@@ -327,7 +333,7 @@ status:
 | `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
 | `sops` | yes | SOPS metadata written by `sops encrypt`. Must contain `mac`, `lastmodified`, `version`, at least one `age` recipient, `encrypted_regex: ^(data|stringData|scope)$` and `mac_only_encrypted: true`. Only age recipients in a single key group are supported; other key types are rejected by the schema. |
 
-Status reasons: `Decrypted`, `Suspended`, `TenantNotFound`, `TenantNotReady`, `AccessDenied`, `NotRecipient`,
+Status reasons: `Decrypted`, `Suspended`, `TenantNotFound`, `TenantNotReady`, `AccessDenied`, `NotRecipient`, `NextKeyRequired` (§4.4),
 `ScopeMismatch`, `DecryptFailed`, `Conflict`, `ApplyFailed` (e.g. type validation, size limit).
 
 Printer columns: `TENANT`, `READY`, `REASON`, `AGE`.
@@ -345,6 +351,123 @@ Behaviour:
 - Drift on the output Secret is corrected on the next periodic resync.
 
 ---
+
+### 4.4 Key rotation
+
+A rotation replaces the tenant key through Git: the tenant admin starts and ends it in the `SopsTenant`, teams
+re-encrypt their files with the CLI and commit them, each at its own pace. A tenant has at most two keys: the
+current key in `<tenant>-sops-keys`, and during a rotation the next key in `<tenant>-sops-keys-next`, with the same
+layout (`age.agekey` with one post-quantum identity, `age.pub`). A rotation never requires reading a private key:
+the operator prepares everything that needs one, and teams and the CLI use only public keys and ciphertext.
+
+```yaml
+spec:
+  startRotation: true
+status:
+  publicKey: age1pq1...                 # the current key
+  rotation:                             # only while a rotation is in progress
+    phase: InProgress                   # InProgress, then Completing
+    startedAt: "2026-10-21T09:12:00Z"   # when the next key was created
+    nextKeySecretName: team-a-sops-keys-next
+    nextPublicKey: age1pq1...
+    migrated: 11                        # SopsSecrets decrypted with the next key
+    pending: 1                          # SopsSecrets not yet decrypted with the next key
+    pendingSecrets:                     # at most 50, sorted
+      - team-a-prod/db-credentials
+  lastRotation:                         # the last completed rotation
+    startedAt: "2026-04-01T08:00:00Z"
+    completedAt: "2026-04-09T16:30:00Z"
+  conditions:
+    - type: Rotated
+      status: "False"
+      reason: RotationPending           # 1 SopsSecret does not use the next key yet
+```
+
+`spec.startRotation` states the intention: `true` means the tenant wants a new key, `false` or unset means it wants
+the rotation finished. A rotation can only complete while the flag is not `true`, so a reapplied `true` never starts
+a second rotation, and the next rotation starts when the flag is set to `true` again.
+
+**Start.** When `startRotation` is `true` and no rotation is in progress, the operator first checks that every
+`SopsSecret` referencing the tenant is healthy: `Ready=True` with reason `Decrypted` for its current generation. If
+any is not (failing, suspended, or not yet reconciled), it creates nothing and reports `RotationRefused` with the
+unhealthy `SopsSecret`s in `pendingSecrets`; it starts on its own once they are all healthy, as the flag still asks
+for it. Otherwise it creates `<tenant>-sops-keys-next` with a new key, records `status.rotation.startedAt`, and
+publishes the public key in `status.rotation.nextPublicKey`. From then on it decrypts with either key. Starting
+only from a healthy tenant means every `SopsSecret` that is pending later was working before the rotation.
+
+**Next-key entries.** When the rotation starts, the operator adds to the status of every `SopsSecret` of the
+tenant the entry a file needs in `sops.age` to decrypt with the next key: it unwraps the file's data key with the
+current key and wraps it for the next key. The encrypted values, the MAC and `lastmodified` do not depend on
+`sops.age`, so appending the entry to the file in Git is the whole migration, and the rest of the file stays as the
+team wrote it. The entry contains no plaintext and opens only that file's data key, and only for the holder of the
+next private key.
+
+```yaml
+# SopsSecret status during a rotation
+status:
+  rotation:
+    nextRecipient:                      # append to sops.age in the file
+      recipient: age1pq1...
+      enc: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        ...
+        -----END AGE ENCRYPTED FILE-----
+    fromGeneration: 3                   # the generation the entry was made for
+```
+
+The operator renews the entry when the `SopsSecret` changes and removes it once the `SopsSecret` is migrated or
+the rotation ends. Being part of the `SopsSecret`'s status, it needs no other object and no permission, and it is
+gone with the `SopsSecret`.
+
+**During the rotation.** Teams append the entry to each file with the CLI, or add the next public key to `.sops.yaml` next to
+the current one and re-encrypt (§8.3): each file then decrypts with either key. For every `SopsSecret` referencing the tenant, the operator tries
+the next key first and records in the `SopsSecret`'s status whether its current generation was decrypted with the
+next key. Every `SopsSecret` that was not is pending, including those that fail for another reason
+(`NotRecipient`, `DecryptFailed`, `AccessDenied`): the operator cannot tell that they no longer need the current
+key. After a known leak, teams encrypt for the next key only and change the values (§8.3).
+
+**New files must use the next key.** During a rotation, the current key alone is accepted only for a `SopsSecret`
+whose current generation was already decrypted before the rotation started. A new `SopsSecret`, or a new generation
+of an existing one, must decrypt with the next key; otherwise it fails with `NextKeyRequired` and a message naming
+the next public key to add to `.sops.yaml`. The output Secret keeps its last values, so running workloads are not
+affected; only the change waits until the file is encrypted again. This keeps the number of pending `SopsSecret`s
+from growing during a rotation. A `SopsSecret` that the GitOps tool deletes and recreates counts as new.
+
+**Completion.** When `startRotation` is `false` or unset, the rotation completes once nothing is pending. Until then
+it is `RotationBlocked`, both keys stay, and each pending `SopsSecret` gets a Warning event, so its team sees it in
+its own namespace. A date never completes a rotation: some teams may not be able to re-encrypt in time, and a
+rotation that removed their key would freeze their Secrets without warning. Completion runs in steps, each safe to
+repeat, so a crash at any point resumes on the next reconcile:
+
+1. Check, from the live list and not from status, that nothing is pending, that the current key matches
+   `status.publicKey`, and that `<tenant>-sops-keys-next` exists and is valid. Otherwise do not start.
+2. Set `status.rotation.phase: Completing`. From here on a reconcile finishes the completion; `startRotation: true`
+   waits until it is done.
+3. Update `<tenant>-sops-keys` with the next key. The old identity is gone in this one write.
+4. Delete `<tenant>-sops-keys-next`. A crash between steps 3 and 4 leaves both Secrets holding the same key.
+5. Reconcile every `SopsSecret` of the tenant with the new current key. Each one already decrypted with it; one
+   that fails is reported at once.
+6. Record `status.publicKey` and `status.lastRotation` (`startedAt`, `completedAt`), remove `status.rotation` from
+   the tenant and every `SopsSecret`, drop the old key from the operator's memory, and report `Rotated=True`,
+   reason `RotationComplete`, with a Normal event. The condition message reminds teams to remove the old public key
+   from `.sops.yaml`.
+
+Completion never touches output Secrets or `SopsSecret`s. Removing the old key is what makes a rotation worth
+doing: a key that still exists can decrypt every value encrypted for it in Git history. It still exists in etcd
+until the API server compacts old revisions, normally within minutes, and in backups taken before completion.
+
+**Guards.**
+- The operator never creates a key while `<tenant>-sops-keys-next` exists, and never recreates a missing
+  `<tenant>-sops-keys-next` during a rotation: a new key would not match the public key teams encrypted for. It
+  reports `NextKeyMissing` until the Secret is restored from a backup. If the flag is then set to `false`, the
+  rotation is abandoned (`RotationAbandoned`), which is safe because every file is still encrypted for the current
+  key; the operator refuses while any `SopsSecret` decrypts with the next key alone.
+- When the current key does not match `status.publicKey`, for example after an old backup was restored, the tenant
+  reports `KeyMismatch` instead of letting every `SopsSecret` fail on its own.
+- The operator only sees `SopsSecret`s that are applied: a file in Git that the GitOps tool has not applied yet is
+  not counted, and would fail once the old key is gone. The CLI therefore compares the files in a directory with
+  the `SopsSecret`s in the cluster before it re-encrypts (§8.3).
+- One tenant key per cluster. Two clusters sharing a key would each generate a different next key.
 
 ## 5. Authorization model
 
@@ -581,6 +704,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Replay of an older, validly encrypted `SopsSecret`. | Equivalent to a Git revert; controlled by GitOps and RBAC on manual applies. |
 | Drift on output Secrets is corrected only at the next resync. | Configurable interval. |
 | `sops-key-owner` grants `get` on all Secrets in the tenant namespace, so tenants sharing a namespace can read each other's keys. | Tenant namespace is dedicated to keys; per-tenant key access is planned for tenants sharing a namespace. |
+| A removed key still exists in backups of the cluster (etcd, Velero) taken before its removal. | Backups of tenant namespaces are protected like the keys themselves; their retention bounds how long a removed key exists. |
 | Plaintext in output Secrets. | Outside the operator: enable etcd encryption at rest; restrict `get secrets` in consumer namespaces. |
 
 ---
@@ -623,11 +747,27 @@ git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
 - Developers cannot `sops edit` (requires the private key). To change a value, rewrite and re-encrypt the file.
 - Pre-commit: `sops filestatus <file>` must report `{"encrypted":true}`.
 
-### 8.3 Key rotation (manual)
+### 8.3 Key rotation
 
-1. Tenant admin prepends a new identity to `age.agekey`.
-2. Recipients in `.sops.yaml` are updated; a key holder runs `sops updatekeys -y <file>` for each file.
-3. When every `SopsSecret` is `Decrypted` with the new key, remove the old identity.
+1. The tenant admin sets `spec.startRotation: true` in the `SopsTenant` and commits. Once every `SopsSecret` of the
+   tenant is healthy, the operator creates the next key, publishes its public key in
+   `status.rotation.nextPublicKey`, and adds the next-key entry to the status of every `SopsSecret`; until then it
+   reports `RotationRefused` and the unhealthy `SopsSecret`s.
+2. Each team, at its own pace, runs the CLI on its GitOps directory and commits the result. For every encrypted
+   `SopsSecret` file of the tenant under the directory and its subdirectories, the CLI reads the matching
+   `SopsSecret` with `oc` and appends `status.rotation.nextRecipient` to `sops.age`. It stops when a file has no
+   `SopsSecret` in the cluster or the entry was made for another generation, and reports `SopsSecret`s without a
+   file. It also adds the next public key to every `.sops.yaml` under the directory, so new files are encrypted for
+   it, and removes entries for keys that no longer exist from the files it touches.
+3. The tenant admin sets `spec.startRotation: false` (or removes it) and commits, then follows `status.rotation`.
+   The operator replaces the key once nothing is pending.
+
+No one outside the cluster needs a private key for a rotation, and teams need only read access to `SopsSecret`s.
+After a known leak, teams instead encrypt the changed values again for the next key only: the entries keep the data
+key, and the old ciphertext in Git history decrypts with the leaked key.
+
+A `SopsSecret` whose file can no longer be decrypted, for example after a Git revert past a completed rotation, is
+re-created by hand from its output Secret, by someone who may read that Secret.
 
 ### 8.4 Migration from existing Secrets
 
@@ -760,6 +900,9 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D46 | Each tenant's ServiceAccount is `<tenant>-sops-tenant`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where `sops-operator-tenant` is bound to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). |
 | D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
 | D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret. |
+| D49 | Key rotation is started and ended with one flag in the `SopsTenant`, `spec.startRotation`; it starts only when every `SopsSecret` of the tenant is healthy and completes only when every `SopsSecret` was decrypted with the next key, never on a date | Rotation goes through Git like every other change, and the private key is never generated outside the cluster. A tenant spans several teams that re-encrypt at different times, so completion follows the last migrated `SopsSecret`; a deadline would freeze the Secrets of teams that could not re-encrypt in time. A rotation completes only while the flag is not `true`, so reapplies cannot start a second one. Starting from a healthy tenant means every pending `SopsSecret` worked before. Files are encrypted for both keys during a rotation, so a lost next key breaks nothing, and new files must use the next key, so the work left can only shrink. |
+| D50 | During a rotation the next key is `<tenant>-sops-keys-next`; completion updates `<tenant>-sops-keys` with it, then deletes `-next`. The tenant identity gains `update` and `delete` in its namespace, used only for this | At most two keys exist, and a replaced key is gone: a key that still exists decrypts every value encrypted for it in Git history. Updating in place is atomic; deleting and recreating the key Secret could leave the tenant without a key, and `generateKey` would then create an unrelated one. |
+| D51 | During a rotation the operator puts in each `SopsSecret`'s status the `sops.age` entry for the next key; the CLI appends it to the file in Git | Teams need neither a private key nor SOPS knowledge to migrate: the entry wraps the file's existing data key, and values and MAC do not depend on `sops.age`, so the file in Git changes by one entry and keeps its comments and formatting. Inside the `SopsSecret`'s status, the entry needs no other object, permission or cleanup, and is gone with the `SopsSecret`; separate Secrets or `SopsSecret` copies per file were rejected for the objects they leave behind. |
 
 ---
 
