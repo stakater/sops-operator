@@ -16,8 +16,41 @@ limitations under the License.
 
 package v1alpha1
 
-// ConditionReady is the only condition type of SopsTenant and SopsSecret.
+// ConditionReady is the readiness condition of SopsTenant and SopsSecret.
 const ConditionReady = "Ready"
+
+// ConditionRotated reports the key rotation of a SopsTenant. It is set once a rotation was asked for.
+const ConditionRotated = "Rotated"
+
+// Key rotation phases (SopsTenant status.rotation.phase).
+const (
+	RotationPhaseInProgress = "InProgress"
+	RotationPhaseCompleting = "Completing"
+)
+
+// SopsTenant Rotated reasons, and the Ready reason for a key that does not match status.publicKey.
+const (
+	ReasonRotationRefused   = "RotationRefused"
+	ReasonRotationPending   = "RotationPending"
+	ReasonRotationBlocked   = "RotationBlocked"
+	ReasonRotationComplete  = "RotationComplete"
+	ReasonRotationAbandoned = "RotationAbandoned"
+	ReasonNextKeyMissing    = "NextKeyMissing"
+	ReasonKeyMismatch       = "KeyMismatch"
+)
+
+// ReasonNextKeyRequired is the SopsSecret Ready reason for a new file or generation that is not
+// encrypted for the next key during a rotation.
+const ReasonNextKeyRequired = "NextKeyRequired"
+
+// Event actions of a key rotation.
+const (
+	ActionStartRotation    = "StartRotation"
+	ActionCompleteRotation = "CompleteRotation"
+)
+
+// MaxPendingSecrets is the most SopsSecrets named in status.rotation.pendingSecrets.
+const MaxPendingSecrets = 50
 
 // SopsTenant Ready reasons.
 const (

@@ -127,11 +127,35 @@ type SopsSecretStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Secret UID"
 	// +optional
 	SecretUID types.UID `json:"secretUID,omitempty"`
+	// Rotation reports this SopsSecret's part in a key rotation of its tenant.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Rotation"
+	// +optional
+	Rotation *SecretRotationStatus `json:"rotation,omitempty"`
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions",xDescriptors={"urn:alm:descriptor:io.kubernetes.conditions"}
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// SecretRotationStatus is a SopsSecret's part in a key rotation of its tenant.
+type SecretRotationStatus struct {
+	// StartedAt is the start of the tenant rotation this status belongs to.
+	StartedAt metav1.Time `json:"startedAt"`
+	// Migrated reports that the observed generation was decrypted with the next key.
+	// +optional
+	Migrated bool `json:"migrated,omitempty"`
+	// AcceptedGeneration is the generation that was decrypted before the rotation started; only
+	// that generation may still be encrypted for the current key alone.
+	// +optional
+	AcceptedGeneration int64 `json:"acceptedGeneration,omitempty"`
+	// NextRecipient is the entry to append to sops.age in the file, so it decrypts with the next
+	// key. It wraps the file's data key; it contains no plaintext and no private key.
+	// +optional
+	NextRecipient *SopsAgeRecipient `json:"nextRecipient,omitempty"`
+	// FromGeneration is the generation NextRecipient was made for.
+	// +optional
+	FromGeneration int64 `json:"fromGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

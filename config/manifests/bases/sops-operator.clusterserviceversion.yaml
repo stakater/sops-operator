@@ -72,6 +72,9 @@ spec:
             path: lastSyncTime
           - displayName: Observed generation
             path: observedGeneration
+          - description: Rotation reports this SopsSecret's part in a key rotation of its tenant.
+            displayName: Rotation
+            path: rotation
           - description: SecretUID is the UID of the Secret this SopsSecret created.
             displayName: Secret UID
             path: secretUID
@@ -90,6 +93,15 @@ spec:
             path: generateKey
             x-descriptors:
               - urn:alm:descriptor:com.tectonic.ui:booleanSwitch
+          - description: |-
+              StartRotation set to true asks for a new tenant key: once every SopsSecret of the tenant is
+              healthy, the operator creates the next key and both keys are accepted. Set it to false, or
+              remove it, to complete the rotation: the next key replaces the current one once every
+              SopsSecret was decrypted with it (DESIGN.md §4.4).
+            displayName: Start rotation
+            path: startRotation
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:booleanSwitch
         statusDescriptors:
           - displayName: Conditions
             path: conditions
@@ -100,8 +112,17 @@ spec:
             path: keySecretName
             x-descriptors:
               - urn:alm:descriptor:io.kubernetes:Secret
+          - description: LastRotation is the last completed key rotation.
+            displayName: Last rotation
+            path: lastRotation
           - displayName: Observed generation
             path: observedGeneration
+          - description: PublicKey is the public key of the current key, for .sops.yaml.
+            displayName: Public key
+            path: publicKey
+          - description: Rotation is the key rotation in progress.
+            displayName: Rotation
+            path: rotation
           - description: |-
               ServiceAccountName is the tenant identity the operator acts as: the ServiceAccount the cluster
               admin binds to grant this tenant access.
