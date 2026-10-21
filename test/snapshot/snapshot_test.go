@@ -127,6 +127,32 @@ func TestSnapshotNormalization(t *testing.T) {
 		mustNotContain(t, out, "ENC[", "age1pq1abc", "BEGIN AGE", "77aa")
 	})
 
+	t.Run("shall replace public keys, rotation timestamps and next recipients", func(t *testing.T) {
+		at := metav1.NewTime(time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC))
+		out := render(t, &sopsv1alpha1.SopsTenant{
+			ObjectMeta: meta("my-team"),
+			Status: sopsv1alpha1.SopsTenantStatus{
+				PublicKey:    "age1pqcurrent",
+				Rotation:     &sopsv1alpha1.TenantRotationStatus{StartedAt: at, NextPublicKey: "age1pqnext"},
+				LastRotation: &sopsv1alpha1.LastRotation{StartedAt: at, CompletedAt: at, PreviousPublicKey: "age1pqold"},
+			},
+		})
+		mustContain(t, out, "publicKey: <publicKey>", "nextPublicKey: <publicKey>", "previousPublicKey: <publicKey>",
+			"startedAt: <timestamp>", "completedAt: <timestamp>")
+		mustNotContain(t, out, "age1pq", "2026-10-09")
+		out = render(t, &sopsv1alpha1.SopsSecret{
+			ObjectMeta: meta("db"),
+			Status: sopsv1alpha1.SopsSecretStatus{Rotation: &sopsv1alpha1.SecretRotationStatus{
+				StartedAt: at,
+				NextRecipient: &sopsv1alpha1.SopsAgeRecipient{
+					Recipient: "age1pqnext", Enc: "-----BEGIN AGE ENCRYPTED FILE-----",
+				},
+			}},
+		})
+		mustContain(t, out, "recipient: <publicKey>", "enc: <encrypted>")
+		mustNotContain(t, out, "age1pq", "BEGIN AGE")
+	})
+
 	t.Run("shall replace valid condition timestamps", func(t *testing.T) {
 		out := render(t, &sopsv1alpha1.SopsTenant{
 			ObjectMeta: meta("my-team"),
