@@ -138,6 +138,9 @@ kms_rule_unchanged() {
 }
 mkdir -p "$ROT/lists"
 printf 'creation_rules:\n  - path_regex: .*\n    age:\n      - %s\n      - %s\n' "$CURRENT" "$BREAKGLASS" >"$ROT/lists/.sops.yaml"
+# A .sops.yaml whose age keys are folded over lines, which sops reads as "a, b".
+mkdir -p "$ROT/folded"
+printf 'creation_rules:\n  - path_regex: .*\n    age: >-\n      %s,\n      %s\n' "$BREAKGLASS" "$CURRENT" >"$ROT/folded/.sops.yaml"
 
 cat >"$ROT/tenant.yaml" <<EOF
 apiVersion: sops.stakater.com/v1alpha1
@@ -149,7 +152,8 @@ EOF
 # Cluster state during the rotation.
 yq -n -o json ".status.publicKey = \"$CURRENT\" | .status.rotation.nextPublicKey = \"$NEXT\"" \
   >"$WORK/cluster/sopstenant-team-a-system-team-a.json"
-ENTRY="$(cat "$WORK/entry.json")" yq -o json '.status.rotation.nextRecipient = env(ENTRY)' \
+ENTRY="$(cat "$WORK/entry.json")" yq -o json '.metadata.generation = 2 | .status.observedGeneration = 2 |
+  .status.rotation.nextRecipient = env(ENTRY) | .status.rotation.fromGeneration = 2' \
   "$ROT/team-a/db.sops.yaml" >"$WORK/cluster/sopssecret-team-a-stage-db.json"
 DB="$(cat "$WORK/cluster/sopssecret-team-a-stage-db.json")" yq -n -o json '.items = [env(DB)]' \
   >"$WORK/cluster/sopssecrets-team-a-stage.json"
@@ -171,6 +175,24 @@ mv "$WORK/db.cluster.json" "$WORK/cluster/sopssecret-team-a-stage-db.json"
 mkdir -p "$WORK/empty"
 check "stops when the directory has no files of the tenant" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$WORK/empty"
 
+# stale <yq update>: the SopsSecret in the cluster is changed by the update until restore_cluster runs.
+cp "$WORK/cluster/sopssecret-team-a-stage-db.json" "$WORK/db.cluster.json"
+cp -R "$ROT" "$WORK/rot.before"
+stale() {
+  yq -i -o json "$1" "$WORK/cluster/sopssecret-team-a-stage-db.json"
+}
+restore_cluster() {
+  cp "$WORK/db.cluster.json" "$WORK/cluster/sopssecret-team-a-stage-db.json"
+}
+stale '.status.rotation.fromGeneration = 1'
+check "stops when the entry was made for another generation" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "changes no file when the entry was made for another generation" diff -r "$WORK/rot.before" "$ROT"
+restore_cluster
+stale '.status.observedGeneration = 1'
+check "stops when the operator has not seen the SopsSecret's generation" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "changes no file when the operator has not seen the generation" diff -r "$WORK/rot.before" "$ROT"
+restore_cluster
+
 check "adds the next key to the tenant's files" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "the file decrypts with the next key" \
   env SOPS_AGE_KEY_FILE="$WORK/next.key" sops decrypt "$ROT/team-a/db.sops.yaml"
@@ -181,6 +203,8 @@ check "adds the next key to .sops.yaml" yq -e ".creation_rules[0].age | contains
 check "keeps other recipients" yq -e ".creation_rules[0].age | contains(\"$BREAKGLASS\")" "$ROT/.sops.yaml"
 check "adds the next key to a YAML list of keys once" \
   yq -e ".creation_rules[0].age | join(\",\") == \"$CURRENT,$BREAKGLASS,$NEXT\"" "$ROT/lists/.sops.yaml"
+check "adds the next key to folded keys in their style" \
+  yq -e ".creation_rules[0].age == \"$BREAKGLASS, $CURRENT, $NEXT\"" "$ROT/folded/.sops.yaml"
 check "leaves a rule without an age key unchanged" \
   kms_rule_unchanged
 cp "$ROT/team-a/db.sops.yaml" "$WORK/db.rotated"
@@ -199,6 +223,8 @@ check "removes the old key from .sops.yaml and keeps the others" \
   yq -e ".creation_rules[0].age == \"$BREAKGLASS,$NEXT\"" "$ROT/.sops.yaml"
 check "removes the old key from a YAML list and keeps the others" \
   yq -e ".creation_rules[0].age | join(\",\") == \"$BREAKGLASS,$NEXT\"" "$ROT/lists/.sops.yaml"
+check "removes the old key from folded keys and keeps the others in their style" \
+  yq -e ".creation_rules[0].age == \"$BREAKGLASS, $NEXT\"" "$ROT/folded/.sops.yaml"
 check "leaves a rule without an age key unchanged after cleanup" \
   kms_rule_unchanged
 

@@ -42,10 +42,14 @@ if [ ${#FILES[@]} = 0 ]; then
 fi
 
 # Step 3: during a rotation, check every file against the cluster before changing any. A file must
-# match its SopsSecret in the cluster (same MAC), so the operator's entry fits it.
+# match its SopsSecret in the cluster (same MAC), so the operator's entry fits it, and the entry must be
+# made for the SopsSecret's current generation. The entries checked here are the ones Step 4 adds.
+ENTRIES=()
 if [ -n "$NEXT" ]; then
   PROBLEMS=0
-  for file in ${FILES[@]+"${FILES[@]}"}; do
+  for i in ${FILES[@]+"${!FILES[@]}"}; do
+    file="${FILES[$i]}"
+    ENTRIES[i]=""
     if has_key "$file" "$NEXT"; then
       continue
     fi
@@ -57,9 +61,13 @@ if [ -n "$NEXT" ]; then
     elif [ "$(echo "$CLUSTER" | yq -p json '.sops.mac')" != "$(yq '.sops.mac' "$file")" ]; then
       echo "$file: differs from SopsSecret $NAMESPACE/$NAME in the cluster; sync it first" >&2
       PROBLEMS=1
-    elif [ "$(echo "$CLUSTER" | yq -p json '.status.rotation.nextRecipient.recipient // ""')" != "$NEXT" ]; then
-      echo "$file: the operator has not prepared the next key for $NAMESPACE/$NAME yet; try again shortly" >&2
+    elif [ "$(echo "$CLUSTER" | yq -p json '.status.rotation.nextRecipient.recipient // ""')" != "$NEXT" ] ||
+      [ "$(echo "$CLUSTER" | yq -p json '.status.observedGeneration == .metadata.generation and
+        .status.rotation.fromGeneration == .metadata.generation')" != "true" ]; then
+      echo "$file: the operator has not prepared the next key for the current $NAMESPACE/$NAME yet; try again shortly" >&2
       PROBLEMS=1
+    else
+      ENTRIES[i]="$(echo "$CLUSTER" | yq -p json -o json '.status.rotation.nextRecipient')"
     fi
   done
   if [ "$PROBLEMS" = 1 ]; then
@@ -68,13 +76,12 @@ if [ -n "$NEXT" ]; then
   fi
 fi
 
-for file in ${FILES[@]+"${FILES[@]}"}; do
-  # Step 4: add the next key: append the entry the operator prepared to sops.age. Nothing else in
-  # the file changes.
-  if [ -n "$NEXT" ] && ! has_key "$file" "$NEXT"; then
-    ENTRY="$(oc get sopssecret "$(yq '.metadata.name' "$file")" -n "$(yq '.metadata.namespace' "$file")" -o json |
-      yq -p json -o json '.status.rotation.nextRecipient')"
-    ENTRY="$ENTRY" yq -i '.sops.age += [env(ENTRY)]' "$file"
+for i in ${FILES[@]+"${!FILES[@]}"}; do
+  file="${FILES[$i]}"
+  # Step 4: add the next key: append the entry checked in Step 3 to sops.age. Nothing else in the file
+  # changes.
+  if [ -n "$NEXT" ] && [ -n "${ENTRIES[$i]:-}" ]; then
+    ENTRY="${ENTRIES[$i]}" yq -i '.sops.age += [env(ENTRY)]' "$file"
     echo "Added the next key to $file"
   fi
   # Step 5: remove the key an earlier rotation replaced; it decrypts nothing any more.
@@ -86,19 +93,24 @@ done
 
 # Step 6: update every .sops.yaml in the directory: add the next key where the current key is listed,
 # and remove the old key. Other recipients, such as break-glass keys, stay, and rules without an age key
-# (for example a kms-only rule) are not touched. The age list is a comma-separated string or a YAML list.
+# (for example a kms-only rule) are not touched. The age list is a comma-separated string or a YAML list;
+# a string keeps its separator, "," or ", " (as sops reads keys folded over lines).
 if [ -n "$NEXT" ] && [ -z "$CURRENT" ]; then
   echo "Note: the tenant has no current key in its status; the .sops.yaml files were not updated" >&2
 fi
 while IFS= read -r config; do
   if [ -n "$NEXT" ] && [ -n "$CURRENT" ]; then
     C="$CURRENT" N="$NEXT" yq -i '(.creation_rules[] | select(has("age")) | select((.age | tostring | contains(strenv(C))) and
-      ((.age | tostring | contains(strenv(N))) | not)) | .age | select(tag == "!!str")) |= . + "," + strenv(N)' "$config"
+      ((.age | tostring | contains(strenv(N))) | not)) | .age | select(tag == "!!str")) |=
+      . + {"true": ", ", "false": ","}[test(", ") | tostring] + strenv(N)' "$config"
     C="$CURRENT" N="$NEXT" yq -i '(.creation_rules[] | select(has("age")) | select((.age | tostring | contains(strenv(C))) and
       ((.age | tostring | contains(strenv(N))) | not)) | .age | select(tag == "!!seq")) |= . + [strenv(N)]' "$config"
   fi
   if [ -n "$OLD" ]; then
-    O="$OLD" yq -i '(.creation_rules[] | select(has("age")) | .age | select(tag == "!!str")) |= (split(",") | map(select(. != strenv(O))) | join(","))' "$config"
+    # shellcheck disable=SC2016 # $sep is a yq variable, not a shell variable
+    O="$OLD" yq -i '(.creation_rules[] | select(has("age")) | .age | select(tag == "!!str")) |=
+      ({"true": ", ", "false": ","}[test(", ") | tostring] as $sep | split(",") | map(trim) | map(select(. != strenv(O))) |
+      join($sep))' "$config"
     O="$OLD" yq -i '(.creation_rules[] | select(has("age")) | .age | select(tag == "!!seq")) |= map(select(. != strenv(O)))' "$config"
   fi
 done < <(find "$DIR" -type f -name '.sops.yaml')

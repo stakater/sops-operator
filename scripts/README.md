@@ -128,7 +128,8 @@ Done. Review the changes and commit them.
 
 The script also adds the next key to the tenant's rule in every `.sops.yaml` in the directory, so files
 you encrypt from now on can be decrypted with both keys. Other recipients, such as break-glass keys, stay.
-It changes no file if one is not in the cluster yet, so let your GitOps tool apply every file first.
+It changes no file if one is not in the cluster yet, or the operator has not prepared the entry for its
+latest change yet, so let your GitOps tool apply every file first and run it again a little later.
 
 **Step 3.** Review the changes with `git diff`, then commit and push.
 
