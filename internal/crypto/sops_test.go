@@ -276,9 +276,13 @@ func TestWrapDataKey(t *testing.T) {
 	t.Run("shall reject an invalid recipient", func(t *testing.T) {
 		current := newKeys(t)
 		doc := viaAPI(t, encrypt(t, sortedPlain, current.Recipients[0]), nil)
-		_, err := crypto.WrapDataKey(doc, current, "age1notarecipient")
+		const bad = "age1notarecipient"
+		_, err := crypto.WrapDataKey(doc, current, bad)
 		if !errors.Is(err, crypto.ErrUnsupported) {
 			t.Fatalf("err = %v, want ErrUnsupported", err)
+		}
+		if strings.Contains(err.Error(), bad) {
+			t.Fatalf("the error echoes the input: %v", err)
 		}
 	})
 }

@@ -180,7 +180,7 @@ func WrapDataKey(doc []byte, keys *KeySet, recipient string) (AgeEntry, error) {
 	}
 	mk, err := sopsage.MasterKeyFromRecipient(recipient)
 	if err != nil {
-		return AgeEntry{}, fmt.Errorf("%w: %q is not a valid age recipient", ErrUnsupported, recipient)
+		return AgeEntry{}, fmt.Errorf("%w: the recipient is not a valid age recipient", ErrUnsupported)
 	}
 	if err := mk.Encrypt(dataKey); err != nil {
 		return AgeEntry{}, fmt.Errorf("wrap the data key: %w", err)
