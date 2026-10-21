@@ -492,7 +492,7 @@ Shipped as static objects in the OLM bundle:
 | ClusterRole | Rules | Bound by | Where |
 |---|---|---|---|
 | `sops-operator-tenant` | `serviceaccounts`: `create`, `impersonate` | Cluster admin (or tenant admin, D47), to the operator | Each tenant namespace |
-| `sops-key-owner` | `secrets`: `get`, `create` | Cluster admin (or tenant admin, D47) | Tenant namespace |
+| `sops-key-owner` | `secrets`: `get`, `create`, `update`, `delete` | Cluster admin (or tenant admin, D47) | Tenant namespace |
 | `sops-secret-writer` | `secrets`: `create`, `update` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
 | `sops-tenant-admin` | full access to `sopstenants`; aggregated to `admin` | — | — |
 | `sops-secret-editor` | full access to `sopssecrets`; aggregated to `edit` | — | — |

@@ -154,7 +154,7 @@ decisions.
 **Cluster admin**, once per tenant ([step 2](#2-onboard-the-tenant-cluster-admin)):
 
 - Let the operator use the tenant's ServiceAccount in the tenant namespace (`sops-operator-tenant`).
-- Let the tenant's ServiceAccount read and create its key (`sops-key-owner`).
+- Let the tenant's ServiceAccount read, create, replace and remove its key (`sops-key-owner`).
 - Grant each namespace the tenant may write Secrets to (`sops-secret-writer`).
 
 Never needs access to tenant keys or plaintext.
