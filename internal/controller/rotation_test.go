@@ -441,9 +441,56 @@ func TestRotationCompletion(t *testing.T) {
 		tenant := tenantOf(t, tenantNS)
 		setStartRotation(t, tenant, false)
 		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonNextKeyMissing)
+		// The reconcile that reported it must be one after the flag flip.
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			c := meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionRotated)
+			g.Expect(c).NotTo(BeNil())
+			g.Expect(c.ObservedGeneration).To(Equal(tenant.Generation))
+			g.Expect(tenant.Status.Rotation).NotTo(BeNil())
+		}).WithTimeout(20 * time.Second).Should(Succeed())
 		c := meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionRotated)
 		if !strings.Contains(c.Message, prod+"/next-only") {
 			t.Fatalf("message %q does not name the SopsSecret that needs the next key", c.Message)
 		}
+	})
+}
+
+func TestRotationCrashRecovery(t *testing.T) {
+	t.Run("shall finish a completion that stopped after deleting the next key", func(t *testing.T) {
+		tenantNS, _, s, oldRecipient := rotatingTenant(t)
+		next := nextKeySet(t, tenantNS)
+		migrate(t, s)
+		var nextSecret, key corev1.Secret
+		if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantNextKeySecretName(tenantName)}, &nextSecret); err != nil {
+			t.Fatal(err)
+		}
+		key.Namespace, key.Name = tenantNS, sopsv1alpha1.TenantKeySecretName(tenantName)
+		update(t, &key, func() { key.Data = nextSecret.Data })
+		deleteObject(t, &nextSecret)
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationComplete)
+		if tenant.Status.PublicKey != next.Recipients[0] || tenant.Status.Rotation != nil ||
+			tenant.Status.LastRotation == nil || tenant.Status.LastRotation.PreviousPublicKey != oldRecipient {
+			t.Fatalf("status after recovery: publicKey %q, rotation %+v, last %+v",
+				tenant.Status.PublicKey, tenant.Status.Rotation, tenant.Status.LastRotation)
+		}
+	})
+
+	t.Run("shall finish a completion although the next key Secret is corrupt", func(t *testing.T) {
+		tenantNS, _, s, _ := rotatingTenant(t)
+		migrate(t, s)
+		var nextSecret, key corev1.Secret
+		if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantNextKeySecretName(tenantName)}, &nextSecret); err != nil {
+			t.Fatal(err)
+		}
+		key.Namespace, key.Name = tenantNS, sopsv1alpha1.TenantKeySecretName(tenantName)
+		update(t, &key, func() { key.Data = nextSecret.Data })
+		update(t, &nextSecret, func() { nextSecret.Data = map[string][]byte{crypto.KeyFileField: []byte("garbage")} })
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationComplete)
+		assertNoSecret(t, tenantNS, sopsv1alpha1.TenantNextKeySecretName(tenantName))
 	})
 }

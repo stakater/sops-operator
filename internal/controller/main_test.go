@@ -53,7 +53,7 @@ func startManager(ctx context.Context) error {
 	ids := identity.NewFactory(env.OperatorConfig, env.Scheme)
 	recorder := mgr.GetEventRecorder("sops-operator")
 	if err := (&controller.SopsTenantReconciler{
-		Client: mgr.GetClient(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

@@ -47,6 +47,8 @@ import (
 // key Secret only as the tenant identity.
 type SopsTenantReconciler struct {
 	client.Client
+	// APIReader reads SopsSecrets uncached for the completion decision; Client is used when nil.
+	APIReader      client.Reader
 	Identities     *identity.Factory
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration

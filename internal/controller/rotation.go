@@ -73,27 +73,28 @@ func (r *SopsTenantReconciler) reconcileRotation(ctx context.Context, t *sopsv1a
 	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: sopsv1alpha1.TenantKeySecretName(t.Name)}, &current); err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(current.Data[crypto.PublicKeyField])) == rot.NextPublicKey {
+	if holdsKey(&current, rot.NextPublicKey) {
 		rot.Phase = sopsv1alpha1.RotationPhaseCompleting
 	}
 	var nextSecret corev1.Secret
 	err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: rot.NextKeySecretName}, &nextSecret)
 	switch {
 	case apierrors.IsNotFound(err) && rot.Phase == sopsv1alpha1.RotationPhaseCompleting:
-		return r.completeRotation(ctx, t, tc, users, nil)
+		return r.completeRotation(ctx, t, tc, users, &current, nil)
 	case apierrors.IsNotFound(err):
 		return r.abandonRotation(ctx, t, users)
 	case err != nil:
 		return err
+	}
+	if rot.Phase == sopsv1alpha1.RotationPhaseCompleting {
+		// The key Secret already holds the next key: the content of the next key Secret is not needed.
+		return r.completeRotation(ctx, t, tc, users, &current, &nextSecret)
 	}
 	nextKeys, err := crypto.ParseKeyFile(nextSecret.Data[crypto.KeyFileField])
 	if err != nil || nextKeys.Recipients[0] != rot.NextPublicKey {
 		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonNextKeyMissing, fmt.Sprintf(
 			"Secret %s does not hold the next key %s; restore it from a backup", rot.NextKeySecretName, rot.NextPublicKey))
 		return nil
-	}
-	if rot.Phase == sopsv1alpha1.RotationPhaseCompleting {
-		return r.completeRotation(ctx, t, tc, users, &nextSecret)
 	}
 
 	var pending []sopsv1alpha1.SopsSecret
@@ -119,8 +120,28 @@ func (r *SopsTenantReconciler) reconcileRotation(ctx context.Context, t *sopsv1a
 					"run scripts/rotate.sh and commit", t.Namespace, t.Name, rot.NextPublicKey)
 		}
 	default:
+		// The decision to replace the key rests on a live list, not on the informer cache: a file
+		// re-applied without the next-key entry must not count as migrated.
+		live, err := r.liveUsers(ctx, t)
+		if err != nil {
+			return err
+		}
+		var stillPending []sopsv1alpha1.SopsSecret
+		for _, s := range live {
+			if !migratedIn(&s, rot) {
+				stillPending = append(stillPending, s)
+			}
+		}
+		if len(stillPending) > 0 {
+			rot.Migrated, rot.Pending = int32(len(live)-len(stillPending)), int32(len(stillPending))
+			rot.PendingSecrets = names(stillPending)
+			setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationBlocked, fmt.Sprintf(
+				"the rotation completes once %d more SopsSecrets use the next key: %s",
+				len(stillPending), strings.Join(rot.PendingSecrets, ", ")))
+			return nil
+		}
 		rot.Phase = sopsv1alpha1.RotationPhaseCompleting
-		return r.completeRotation(ctx, t, tc, users, &nextSecret)
+		return r.completeRotation(ctx, t, tc, live, &current, &nextSecret)
 	}
 	return nil
 }
@@ -136,19 +157,17 @@ func migratedIn(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotationStat
 // clears the rotation status (DESIGN.md §4.4, completion). Every step can be repeated: next is
 // nil when an earlier attempt already deleted the next key Secret.
 func (r *SopsTenantReconciler) completeRotation(ctx context.Context, t *sopsv1alpha1.SopsTenant, tc client.Client,
-	users []sopsv1alpha1.SopsSecret, next *corev1.Secret) error {
+	users []sopsv1alpha1.SopsSecret, current, next *corev1.Secret) error {
 	rot := t.Status.Rotation
 	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
 	if next != nil {
-		var current corev1.Secret
-		if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, &current); err != nil {
-			return err
-		}
-		current.Data = map[string][]byte{
-			crypto.KeyFileField: next.Data[crypto.KeyFileField], crypto.PublicKeyField: []byte(rot.NextPublicKey),
-		}
-		if err := tc.Update(ctx, &current); err != nil {
-			return fmt.Errorf("replace the key in %s/%s: %w", t.Namespace, keyName, err)
+		if !holdsKey(current, rot.NextPublicKey) {
+			current.Data = map[string][]byte{
+				crypto.KeyFileField: next.Data[crypto.KeyFileField], crypto.PublicKeyField: []byte(rot.NextPublicKey),
+			}
+			if err := tc.Update(ctx, current); err != nil {
+				return fmt.Errorf("replace the key in %s/%s: %w", t.Namespace, keyName, err)
+			}
 		}
 		if err := tc.Delete(ctx, next); client.IgnoreNotFound(err) != nil {
 			return fmt.Errorf("delete %s/%s: %w", t.Namespace, next.Name, err)
@@ -331,4 +350,30 @@ func (r *SopsTenantReconciler) stampAccepted(ctx context.Context, users []sopsv1
 		}
 	}
 	return nil
+}
+
+// holdsKey reports whether the key Secret's primary key is recipient.
+func holdsKey(key *corev1.Secret, recipient string) bool {
+	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
+	return err == nil && keys.Recipients[0] == recipient
+}
+
+// liveUsers lists the tenant's SopsSecrets uncached. Field indexes do not exist on the uncached
+// reader, so it lists all SopsSecrets and filters by spec.tenantRef.
+func (r *SopsTenantReconciler) liveUsers(ctx context.Context, t *sopsv1alpha1.SopsTenant) ([]sopsv1alpha1.SopsSecret, error) {
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	var all sopsv1alpha1.SopsSecretList
+	if err := reader.List(ctx, &all); err != nil {
+		return nil, err
+	}
+	var out []sopsv1alpha1.SopsSecret
+	for _, s := range all.Items {
+		if ref := s.Spec.TenantRef; ref.Namespace == t.Namespace && ref.Name == t.Name {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
