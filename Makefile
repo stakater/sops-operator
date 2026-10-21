@@ -110,6 +110,10 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
+.PHONY: test-scripts
+test-scripts: sops yq age-keygen ## Test scripts/encrypt.sh with a throwaway key (no cluster).
+	PATH="$(LOCALBIN):$$PATH" scripts/test.sh
+
 # e2e tests install the operator the way customers do: OLM installs it from a catalog built from this tree, on a
 # Kind cluster with a local registry. Resources are compared with committed golden files (test/e2e/testdata).
 # Record or update them with: make test-e2e UPDATE_GOLDEN=true
@@ -174,6 +178,10 @@ cleanup-test-e2e: kind ## Tear down the e2e Kind cluster (the registry container
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
 
+.PHONY: lint-scripts
+lint-scripts: ## Run shellcheck on scripts/ (shellcheck must be installed; it is on GitHub's Ubuntu runners).
+	shellcheck scripts/*.sh
+
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
@@ -207,6 +215,7 @@ $(LOCALBIN):
 KIND ?= $(LOCALBIN)/kind
 SOPS ?= $(LOCALBIN)/sops
 YQ ?= $(LOCALBIN)/yq
+AGE_KEYGEN ?= $(LOCALBIN)/age-keygen
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
@@ -216,6 +225,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 KIND_VERSION ?= v0.33.0
 SOPS_VERSION ?= v3.13.3
 YQ_VERSION ?= v4.53.6
+AGE_VERSION ?= v1.3.2
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.18.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
@@ -233,6 +243,11 @@ $(SOPS): $(LOCALBIN)
 yq: $(YQ) ## Download yq locally if necessary.
 $(YQ): $(LOCALBIN)
 	$(call go-install-tool,$(YQ),github.com/mikefarah/yq/v4,$(YQ_VERSION))
+
+.PHONY: age-keygen
+age-keygen: $(AGE_KEYGEN) ## Download age-keygen locally if necessary (throwaway keys for test-scripts).
+$(AGE_KEYGEN): $(LOCALBIN)
+	$(call go-install-tool,$(AGE_KEYGEN),filippo.io/age/cmd/age-keygen,$(AGE_VERSION))
 
 .PHONY: kind
 kind: $(KIND) ## Download kind locally if necessary.
