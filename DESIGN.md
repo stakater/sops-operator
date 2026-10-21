@@ -470,6 +470,12 @@ until the API server compacts old revisions, normally within minutes, and in bac
 - The operator only sees `SopsSecret`s that are applied: a file in Git that the GitOps tool has not applied yet is
   not counted, and would fail once the old key is gone. The CLI therefore compares the files in a directory with
   the `SopsSecret`s in the cluster before it re-encrypts (§8.3).
+- Output Secrets carry the operator's `managed-by` label too, so the operator adopts or deletes a
+  `<tenant>-sops-keys-next` only without the `sops.stakater.com/sopssecret` annotation and without an owner, and a
+  `SopsSecret` named `<x>-sops-keys` or `<x>-sops-keys-next` in a namespace with a `SopsTenant` `<x>` is refused
+  with `Conflict`.
+- A `SopsSecret` counts as migrated only for the generation the next key decrypted
+  (`status.rotation.migratedGeneration`); a later generation that fails or is suspended is pending again.
 - One tenant key per cluster. Two clusters sharing a key would each generate a different next key.
 
 ## 5. Authorization model
@@ -874,7 +880,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D15 | Required encrypted `spec.scope` | Prevents copying ciphertext to another namespace or name of the same tenant. |
 | D16 | `sops` metadata is mutable; integrity comes from SOPS cryptography | Legitimate edits rewrite it; whole-file replacement and replay are accepted risks. |
 | D17 | Operator has no Git access | Avoids becoming a GitOps engine and holding Git credentials next to keys. |
-| D18 | Key generated only on `404 Not Found`; never overwritten or deleted (RBAC: `get`, `create` only). To replace a bad key, delete it and let it be generated again. | Ease of use; a wrong generation is recoverable by restoring the old key. |
+| D18 | Key generated only on `404 Not Found`, and only while no next key exists; the operator overwrites a key only to complete a rotation (D50) and never deletes one. To replace a bad key, delete it and let it be generated again. | Ease of use; a wrong generation is recoverable by restoring the old key. |
 | D19 | No finalizer on `SopsTenant`; no ownerReference on the key | The key must survive tenant deletion; recreating the tenant reuses it. |
 | D20 | Service-account and bootstrap token Secret types are not allowed | They are cluster credentials, not application secrets. |
 | D21 | `suspend` annotation and `status.lastSyncTime`; no data hash in status | Operational control and visibility without leaking low-entropy values. |
@@ -906,7 +912,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
 | D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret; with rotation it needs both `<tenant>-sops-keys` and `<tenant>-sops-keys-next`. |
 | D49 | Key rotation is started and ended with one flag in the `SopsTenant`, `spec.startRotation`; it starts only when every `SopsSecret` of the tenant is healthy and completes only when every `SopsSecret` was decrypted with the next key, never on a date | Rotation goes through Git like every other change, and the private key is never generated outside the cluster. A tenant spans several teams that re-encrypt at different times, so completion follows the last migrated `SopsSecret`; a deadline would freeze the Secrets of teams that could not re-encrypt in time. A rotation completes only while the flag is not `true`, so reapplies cannot start a second one. Starting from a healthy tenant means every pending `SopsSecret` worked before. Files are encrypted for both keys during a rotation, so a lost next key breaks nothing, and new files must use the next key, so the work left can only shrink. |
-| D50 | During a rotation the next key is `<tenant>-sops-keys-next`; completion updates `<tenant>-sops-keys` with it, then deletes `-next`. The tenant identity gains `update` and `delete` in its namespace, used only for this | At most two keys exist, and a replaced key is gone: a key that still exists decrypts every value encrypted for it in Git history. Updating in place is atomic; deleting and recreating the key Secret could leave the tenant without a key, and `generateKey` would then create an unrelated one. |
+| D50 | During a rotation the next key is `<tenant>-sops-keys-next`; completion updates `<tenant>-sops-keys` with it, then deletes `-next`. The tenant identity gains `update` and `delete` in its namespace, used only for this and to delete a next key the operator created but never published | At most two keys exist, and a replaced key is gone: a key that still exists decrypts every value encrypted for it in Git history. Updating in place is atomic; deleting and recreating the key Secret could leave the tenant without a key, and `generateKey` would then create an unrelated one. |
 | D51 | During a rotation the operator puts in each `SopsSecret`'s status the `sops.age` entry for the next key; the CLI appends it to the file in Git | Teams need neither a private key nor SOPS knowledge to migrate: the entry wraps the file's existing data key, and values and MAC do not depend on `sops.age`, so the file in Git changes by one entry and keeps its comments and formatting. Inside the `SopsSecret`'s status, the entry needs no other object, permission or cleanup, and is gone with the `SopsSecret`; separate Secrets or `SopsSecret` copies per file were rejected for the objects they leave behind. |
 
 ---

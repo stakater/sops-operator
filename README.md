@@ -81,8 +81,8 @@ values.
 
 ### 🔑 One key per tenant, post-quantum by default
 
-Every tenant has its own key, generated in place when it does not exist and never overwritten or deleted by the
-operator; there is no cluster-wide master key. Generated keys are hybrid **post-quantum age keys**
+Every tenant has its own key, generated in place when it does not exist and replaced by the operator only to
+complete a key rotation; there is no cluster-wide master key. Generated keys are hybrid **post-quantum age keys**
 (ML-KEM-768 + X25519), because ciphertext committed to Git stays readable to anyone who obtains it later.
 Bring-your-own X25519 keys, rotation with several keys and break-glass recipients are supported.
 
@@ -446,15 +446,20 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
   Follow the progress with:
 
   ```bash
-  oc get sopstenant team-a -n team-a -o jsonpath='{.status.rotation}'
+  oc get sopstenant team-a -n team-a-system -o jsonpath='{.status.rotation}'
   ```
 
   If `<tenant>-sops-keys-next` is lost, `Rotated` reports `NextKeyMissing`: restore the Secret from a backup, or
   set `startRotation: false` to abandon the rotation (`RotationAbandoned`), which is refused while a `SopsSecret`
-  is encrypted for the next key only.
+  is encrypted for the next key only. A `<tenant>-sops-keys-next` that is corrupt also reports `NextKeyMissing`;
+  delete it, and the operator treats it as lost.
 
   During a rotation a new `SopsSecret` must be encrypted for the next key too, otherwise it fails with
   `NextKeyRequired`. Rotating by prepending an identity to `age.agekey` and running `sops updatekeys` still works.
+- **Replacing a key on purpose**: a key Secret that no longer holds the key in `status.publicKey` makes the
+  tenant report `KeyMismatch`. To bring a different key, set `generateKey: false` in the `SopsTenant`, delete the
+  key Secret, wait until the tenant reports `KeyMissing`, then create the key Secret with the new key. Files
+  encrypted only for the old key no longer decrypt; prefer a key rotation.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
 - **Disaster recovery**: restore key Secrets before `SopsTenant`s, or set `generateKey: false`, so no new key is

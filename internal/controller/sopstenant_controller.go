@@ -139,7 +139,8 @@ func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, t *sops
 }
 
 // reconcileKey returns the Ready reason and message for the tenant key. Only a 404 on the key
-// Secret, without a next key, leads to generation; the tenant identity cannot modify or delete an existing key.
+// Secret, without a next key, leads to generation; an existing key is changed only by the completion
+// of a rotation (DESIGN.md §4.4).
 func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
 	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
 	if err != nil {
