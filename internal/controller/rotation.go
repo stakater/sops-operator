@@ -66,7 +66,163 @@ func (r *SopsTenantReconciler) reconcileRotation(ctx context.Context, t *sopsv1a
 	if t.Status.Rotation == nil {
 		return r.startRotation(ctx, t, tc, users)
 	}
-	return nil // progress and completion: Task 6
+	rot := t.Status.Rotation
+	// The phase is written with the rest of the status at the end of a reconcile, so a completion
+	// that crashed after replacing the key is recognised by the key itself: finish it.
+	var current corev1.Secret
+	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: sopsv1alpha1.TenantKeySecretName(t.Name)}, &current); err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(current.Data[crypto.PublicKeyField])) == rot.NextPublicKey {
+		rot.Phase = sopsv1alpha1.RotationPhaseCompleting
+	}
+	var nextSecret corev1.Secret
+	err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: rot.NextKeySecretName}, &nextSecret)
+	switch {
+	case apierrors.IsNotFound(err) && rot.Phase == sopsv1alpha1.RotationPhaseCompleting:
+		return r.completeRotation(ctx, t, tc, users, nil)
+	case apierrors.IsNotFound(err):
+		return r.abandonRotation(ctx, t, users)
+	case err != nil:
+		return err
+	}
+	nextKeys, err := crypto.ParseKeyFile(nextSecret.Data[crypto.KeyFileField])
+	if err != nil || nextKeys.Recipients[0] != rot.NextPublicKey {
+		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonNextKeyMissing, fmt.Sprintf(
+			"Secret %s does not hold the next key %s; restore it from a backup", rot.NextKeySecretName, rot.NextPublicKey))
+		return nil
+	}
+	if rot.Phase == sopsv1alpha1.RotationPhaseCompleting {
+		return r.completeRotation(ctx, t, tc, users, &nextSecret)
+	}
+
+	var pending []sopsv1alpha1.SopsSecret
+	for _, s := range users {
+		if !migratedIn(&s, rot) {
+			pending = append(pending, s)
+		}
+	}
+	rot.Migrated, rot.Pending = int32(len(users)-len(pending)), int32(len(pending))
+	rot.PendingSecrets = names(pending)
+	switch {
+	case t.Spec.StartRotation:
+		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationPending, fmt.Sprintf(
+			"%d SopsSecrets do not use the next key yet; add %s to .sops.yaml and run scripts/rotate.sh",
+			len(pending), rot.NextPublicKey))
+	case len(pending) > 0:
+		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationBlocked, fmt.Sprintf(
+			"the rotation completes once %d more SopsSecrets use the next key: %s",
+			len(pending), strings.Join(rot.PendingSecrets, ", ")))
+		for i := range pending {
+			r.Recorder.Eventf(&pending[i], t, corev1.EventTypeWarning, sopsv1alpha1.ReasonRotationBlocked,
+				sopsv1alpha1.ActionCompleteRotation, "tenant %s/%s waits for this file to use the next key %s; "+
+					"run scripts/rotate.sh and commit", t.Namespace, t.Name, rot.NextPublicKey)
+		}
+	default:
+		rot.Phase = sopsv1alpha1.RotationPhaseCompleting
+		return r.completeRotation(ctx, t, tc, users, &nextSecret)
+	}
+	return nil
+}
+
+// migratedIn reports whether a SopsSecret's current generation was decrypted with the next key
+// of the rotation rot.
+func migratedIn(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotationStatus) bool {
+	rs := s.Status.Rotation
+	return rs != nil && rs.StartedAt.Equal(&rot.StartedAt) && rs.Migrated && s.Status.ObservedGeneration == s.Generation
+}
+
+// completeRotation replaces the current key with the next key, deletes the next key Secret and
+// clears the rotation status (DESIGN.md §4.4, completion). Every step can be repeated: next is
+// nil when an earlier attempt already deleted the next key Secret.
+func (r *SopsTenantReconciler) completeRotation(ctx context.Context, t *sopsv1alpha1.SopsTenant, tc client.Client,
+	users []sopsv1alpha1.SopsSecret, next *corev1.Secret) error {
+	rot := t.Status.Rotation
+	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
+	if next != nil {
+		var current corev1.Secret
+		if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, &current); err != nil {
+			return err
+		}
+		current.Data = map[string][]byte{
+			crypto.KeyFileField: next.Data[crypto.KeyFileField], crypto.PublicKeyField: []byte(rot.NextPublicKey),
+		}
+		if err := tc.Update(ctx, &current); err != nil {
+			return fmt.Errorf("replace the key in %s/%s: %w", t.Namespace, keyName, err)
+		}
+		if err := tc.Delete(ctx, next); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete %s/%s: %w", t.Namespace, next.Name, err)
+		}
+	}
+	for i := range users {
+		if err := clearRotation(ctx, r.Client, &users[i]); err != nil {
+			return err
+		}
+	}
+	t.Status.LastRotation = &sopsv1alpha1.LastRotation{
+		StartedAt: rot.StartedAt, CompletedAt: metav1.NewTime(r.now()), PreviousPublicKey: t.Status.PublicKey,
+	}
+	t.Status.PublicKey = rot.NextPublicKey
+	t.Status.Rotation = nil
+	setRotated(t, metav1.ConditionTrue, sopsv1alpha1.ReasonRotationComplete,
+		"the next key replaced the old key; remove the old public key from .sops.yaml and run scripts/rotate.sh")
+	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonRotationComplete,
+		sopsv1alpha1.ActionCompleteRotation, "the next key replaced the old key in Secret %s", keyName)
+	return nil
+}
+
+// abandonRotation ends a rotation whose next key is gone. Every file is still encrypted for
+// the current key unless it was encrypted for the next key alone; then abandoning is refused.
+func (r *SopsTenantReconciler) abandonRotation(ctx context.Context, t *sopsv1alpha1.SopsTenant,
+	users []sopsv1alpha1.SopsSecret) error {
+	rot := t.Status.Rotation
+	var nextOnly []sopsv1alpha1.SopsSecret
+	for _, s := range users {
+		if !encryptedFor(&s, t.Status.PublicKey) {
+			nextOnly = append(nextOnly, s)
+		}
+	}
+	if t.Spec.StartRotation || len(nextOnly) > 0 {
+		msg := fmt.Sprintf("Secret %s with the next key %s is missing; restore it from a backup",
+			rot.NextKeySecretName, rot.NextPublicKey)
+		if len(nextOnly) > 0 {
+			msg += fmt.Sprintf(". These SopsSecrets are encrypted for the next key only: %s", strings.Join(names(nextOnly), ", "))
+		} else {
+			msg += ", or set startRotation to false to abandon the rotation"
+		}
+		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonNextKeyMissing, msg)
+		return nil
+	}
+	// The SopsSecret controller never clears a rotation status, so the tenant does.
+	for i := range users {
+		if err := clearRotation(ctx, r.Client, &users[i]); err != nil {
+			return err
+		}
+	}
+	t.Status.Rotation = nil
+	setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationAbandoned,
+		"the rotation was abandoned because its next key is missing; every file still decrypts with the current key")
+	return nil
+}
+
+// encryptedFor reports whether a SopsSecret's file has an entry for recipient.
+func encryptedFor(s *sopsv1alpha1.SopsSecret, recipient string) bool {
+	for _, a := range s.Sops.Age {
+		if a.Recipient == recipient {
+			return true
+		}
+	}
+	return false
+}
+
+// clearRotation removes a SopsSecret's rotation status.
+func clearRotation(ctx context.Context, c client.Client, s *sopsv1alpha1.SopsSecret) error {
+	if s.Status.Rotation == nil {
+		return nil
+	}
+	base := s.DeepCopy()
+	s.Status.Rotation = nil
+	return client.IgnoreNotFound(c.Status().Patch(ctx, s, client.MergeFrom(base)))
 }
 
 func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha1.SopsTenant, tc client.Client,

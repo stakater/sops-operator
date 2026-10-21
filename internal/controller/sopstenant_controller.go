@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -172,9 +174,6 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		return "", "", err
 	}
 
-	// No key Secret: whatever key appears next, generated or brought, is the new key.
-	t.Status.PublicKey = ""
-
 	var next corev1.Secret
 	nextName := sopsv1alpha1.TenantNextKeySecretName(t.Name)
 	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: nextName}, &next); err == nil {
@@ -183,6 +182,9 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	} else if !apierrors.IsNotFound(err) {
 		return "", "", err
 	}
+
+	// No key Secret and no next key: whatever key appears next, generated or brought, is the new key.
+	t.Status.PublicKey = ""
 
 	if !t.ShouldGenerateKey() {
 		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
@@ -229,7 +231,26 @@ func (r *SopsTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				ref := o.(*sopsv1alpha1.SopsSecret).Spec.TenantRef
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}}}
 			}),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, rotationProgressChanged{}))).
 		Named("sopstenant").
 		Complete(r)
+}
+
+// rotationProgressChanged passes SopsSecret updates that change what a rotation counts: the
+// rotation status or the Ready reason.
+type rotationProgressChanged struct{ predicate.Funcs }
+
+func (rotationProgressChanged) Update(e event.UpdateEvent) bool {
+	oldS, okOld := e.ObjectOld.(*sopsv1alpha1.SopsSecret)
+	newS, okNew := e.ObjectNew.(*sopsv1alpha1.SopsSecret)
+	if !okOld || !okNew {
+		return false
+	}
+	reason := func(s *sopsv1alpha1.SopsSecret) string {
+		if c := meta.FindStatusCondition(s.Status.Conditions, sopsv1alpha1.ConditionReady); c != nil {
+			return c.Reason
+		}
+		return ""
+	}
+	return !equality.Semantic.DeepEqual(oldS.Status.Rotation, newS.Status.Rotation) || reason(oldS) != reason(newS)
 }

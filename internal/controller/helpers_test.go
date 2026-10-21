@@ -126,8 +126,6 @@ func assertUnchanged(t *testing.T, obj client.Object) {
 }
 
 // setStartRotation sets spec.startRotation on the tenant.
-//
-//nolint:unparam // Task 6 passes false to abandon a rotation.
 func setStartRotation(t *testing.T, tenant *sopsv1alpha1.SopsTenant, start bool) {
 	t.Helper()
 	update(t, tenant, func() { tenant.Spec.StartRotation = start })
@@ -167,4 +165,12 @@ func tenantOf(t *testing.T, tenantNS string) *sopsv1alpha1.SopsTenant {
 		t.Fatal(err)
 	}
 	return tenant
+}
+
+// deleteObject deletes obj, ignoring NotFound.
+func deleteObject(t *testing.T, obj client.Object) {
+	t.Helper()
+	if err := env.Admin.Delete(context.Background(), obj); client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
+	}
 }

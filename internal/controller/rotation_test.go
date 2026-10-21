@@ -318,3 +318,132 @@ func TestRotationStartEdges(t *testing.T) {
 		}
 	})
 }
+
+// migrate appends the offered next-key entry to the SopsSecret, as a team does in Git.
+func migrate(t *testing.T, s *sopsv1alpha1.SopsSecret) {
+	t.Helper()
+	eventuallyNextRecipient(t, s)
+	entry := *s.Status.Rotation.NextRecipient
+	update(t, s, func() { s.Sops.Age = append(s.Sops.Age, entry) })
+}
+
+func TestRotationCompletion(t *testing.T) {
+	t.Run("shall report pending SopsSecrets and block completion until they are migrated", func(t *testing.T) {
+		tenantNS, prod, s, recipient := rotatingTenant(t)
+		// "other" is created after the start, so it is pending (NextKeyRequired) until migrated.
+		other := encryptedSopsSecret(t, recipient, tenantNS, prod, "other", prod+"/other", map[string]any{"a": "b"})
+		create(t, other)
+		migrate(t, s)
+
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationBlocked)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			g.Expect(tenant.Status.Rotation.Migrated).To(Equal(int32(1)))
+			g.Expect(tenant.Status.Rotation.Pending).To(Equal(int32(1)))
+			g.Expect(tenant.Status.Rotation.PendingSecrets).To(Equal([]string{prod + "/other"}))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall replace the key once every SopsSecret uses the next key", func(t *testing.T) {
+		tenantNS, prod, s, oldRecipient := rotatingTenant(t)
+		next := nextKeySet(t, tenantNS)
+		started := tenantOf(t, tenantNS).Status.Rotation.StartedAt
+		migrate(t, s)
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationComplete)
+
+		if tenant.Status.Rotation != nil || tenant.Status.PublicKey != next.Recipients[0] {
+			t.Fatalf("status after completion: publicKey %q, rotation %+v", tenant.Status.PublicKey, tenant.Status.Rotation)
+		}
+		last := tenant.Status.LastRotation
+		if last == nil || !last.StartedAt.Equal(&started) || last.CompletedAt.IsZero() || last.PreviousPublicKey != oldRecipient {
+			t.Fatalf("status.lastRotation = %+v", last)
+		}
+		var key corev1.Secret
+		if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &key); err != nil {
+			t.Fatal(err)
+		}
+		ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ks.Recipients) != 1 || ks.Recipients[0] != next.Recipients[0] ||
+			strings.TrimSpace(string(key.Data[crypto.PublicKeyField])) != next.Recipients[0] {
+			t.Fatal("the key Secret does not hold exactly the next key")
+		}
+		assertNoSecret(t, tenantNS, sopsv1alpha1.TenantNextKeySecretName(tenantName))
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+			g.Expect(s.Status.Rotation).To(BeNil())
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		if string(outputSecret(t, prod).Data["password"]) != hunter2 {
+			t.Fatal("completion changed the output Secret")
+		}
+	})
+
+	t.Run("shall finish a completion that stopped after replacing the key", func(t *testing.T) {
+		tenantNS, _, s, _ := rotatingTenant(t)
+		migrate(t, s)
+		// Simulate a crash after step 3: the key Secret already holds the next key, the status does not know.
+		var next, key corev1.Secret
+		if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantNextKeySecretName(tenantName)}, &next); err != nil {
+			t.Fatal(err)
+		}
+		key.Namespace, key.Name = tenantNS, sopsv1alpha1.TenantKeySecretName(tenantName)
+		update(t, &key, func() { key.Data = next.Data })
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationComplete)
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		assertNoSecret(t, tenantNS, sopsv1alpha1.TenantNextKeySecretName(tenantName))
+	})
+
+	t.Run("shall stay in progress while startRotation is true", func(t *testing.T) {
+		tenantNS, _, s, _ := rotatingTenant(t)
+		migrate(t, s)
+		tenant := tenantOf(t, tenantNS)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			g.Expect(tenant.Status.Rotation).NotTo(BeNil())
+			g.Expect(tenant.Status.Rotation.Pending).To(BeZero())
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationPending)
+	})
+
+	t.Run("shall abandon a rotation whose next key was lost", func(t *testing.T) {
+		tenantNS, _, s, _ := rotatingTenant(t)
+		deleteObject(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenantNS, Name: sopsv1alpha1.TenantNextKeySecretName(tenantName)}})
+		tenant := tenantOf(t, tenantNS)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonNextKeyMissing)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationAbandoned)
+		if tenant.Status.Rotation != nil {
+			t.Fatal("an abandoned rotation must be cleared")
+		}
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+			g.Expect(s.Status.Rotation).To(BeNil())
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall not abandon while a SopsSecret needs the next key", func(t *testing.T) {
+		tenantNS, prod, _, _ := rotatingTenant(t)
+		nextOnly := encryptedSopsSecret(t, tenantOf(t, tenantNS).Status.Rotation.NextPublicKey, tenantNS, prod,
+			"next-only", prod+"/next-only", map[string]any{"a": "b"})
+		create(t, nextOnly)
+		eventuallyReason(t, nextOnly, sopsv1alpha1.ReasonDecrypted)
+		deleteObject(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenantNS, Name: sopsv1alpha1.TenantNextKeySecretName(tenantName)}})
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonNextKeyMissing)
+		c := meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionRotated)
+		if !strings.Contains(c.Message, prod+"/next-only") {
+			t.Fatalf("message %q does not name the SopsSecret that needs the next key", c.Message)
+		}
+	})
+}
