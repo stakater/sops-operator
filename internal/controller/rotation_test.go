@@ -24,8 +24,10 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
@@ -96,6 +98,7 @@ func TestRotationStart(t *testing.T) {
 		}
 		bad := encryptedSopsSecret(t, otherRecipient, tenantNS, prod, "db", prod+"/db", map[string]any{"a": "b"})
 		create(t, bad)
+		eventuallyReason(t, bad, sopsv1alpha1.ReasonNotRecipient)
 		tenant := tenantOf(t, tenantNS)
 		setStartRotation(t, tenant, true)
 		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationRefused)
@@ -127,6 +130,13 @@ func TestRotationStart(t *testing.T) {
 		if tenant.Status.Rotation.NextPublicKey != recipient {
 			t.Fatal("the next key created before the crash was not adopted")
 		}
+		if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(orphan), orphan); err != nil {
+			t.Fatal(err)
+		}
+		if !tenant.Status.Rotation.StartedAt.Equal(&orphan.CreationTimestamp) {
+			t.Fatalf("startedAt = %v, want the orphan's creationTimestamp %v",
+				tenant.Status.Rotation.StartedAt, orphan.CreationTimestamp)
+		}
 	})
 
 	t.Run("shall report KeyMismatch for a replaced key", func(t *testing.T) {
@@ -149,5 +159,160 @@ func TestRotationStart(t *testing.T) {
 			key.Data = map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)}
 		})
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMismatch)
+	})
+
+	t.Run("shall drop the refusal when the flag is cleared", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, _ := onboardedTenant(t, prod)
+		_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad := encryptedSopsSecret(t, otherRecipient, tenantNS, prod, "db", prod+"/db", map[string]any{"a": "b"})
+		create(t, bad)
+		eventuallyReason(t, bad, sopsv1alpha1.ReasonNotRecipient)
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, true)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationRefused)
+
+		setStartRotation(t, tenant, false)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			g.Expect(meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionRotated)).To(BeNil())
+		}).WithTimeout(20 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+	})
+
+	t.Run("shall replace a corrupt unpublished next key", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		orphan := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS,
+				Labels: map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
+			},
+			Data: map[string][]byte{crypto.KeyFileField: []byte("not a key")},
+		}
+		if err := env.Admin.Create(context.Background(), orphan); err != nil {
+			t.Fatal(err)
+		}
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, true)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationPending)
+		if tenant.Status.Rotation.NextPublicKey != nextKeySet(t, tenantNS).Recipients[0] {
+			t.Fatal("status.rotation.nextPublicKey does not match the fresh next key")
+		}
+	})
+
+	t.Run("shall refuse a next key the operator did not create", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreign := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS},
+			Data:       map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+		}
+		if err := env.Admin.Create(context.Background(), foreign); err != nil {
+			t.Fatal(err)
+		}
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, true)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationRefused)
+		if tenant.Status.Rotation != nil {
+			t.Fatal("a refused rotation must not record a rotation")
+		}
+		_ = nextKeySet(t, tenantNS) // still there
+	})
+
+	t.Run("shall delete an unpublished next key when no rotation is asked for", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		orphan := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS,
+				Labels: map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
+			},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+		}
+		if err := env.Admin.Create(context.Background(), orphan); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(orphan), &corev1.Secret{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}).WithTimeout(20 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+	})
+
+	t.Run("shall not generate a key while the next key exists", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		setStartRotation(t, tenant, true)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationPending)
+
+		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
+		key := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS}}
+		if err := env.Admin.Delete(context.Background(), key); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		assertNoSecret(t, tenantNS, keyName)
+	})
+
+	t.Run("shall regenerate a deleted key and load it", func(t *testing.T) {
+		tenantNS, recipient := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			g.Expect(tenant.Status.PublicKey).To(Equal(recipient))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+
+		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
+		if err := env.Admin.Delete(context.Background(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS}}); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			c := meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionReady)
+			g.Expect(c).NotTo(BeNil())
+			g.Expect(c.Reason).To(Equal(sopsv1alpha1.ReasonKeyLoaded), c.Message)
+			g.Expect(tenant.Status.PublicKey).NotTo(Equal(recipient))
+			g.Expect(tenant.Status.PublicKey).NotTo(BeEmpty())
+		}).WithTimeout(20 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+	})
+
+	t.Run("shall load a bring-your-own key created after the old one was deleted", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+			g.Expect(tenant.Status.PublicKey).NotTo(BeEmpty())
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+		update(t, tenant, func() { tenant.Spec.GenerateKey = ptr.To(false) })
+
+		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
+		if err := env.Admin.Delete(context.Background(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS}}); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+
+		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(context.Background(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS},
+			Data:       map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		if tenant.Status.PublicKey != recipient {
+			t.Fatal("status.publicKey does not hold the brought key")
+		}
 	})
 }

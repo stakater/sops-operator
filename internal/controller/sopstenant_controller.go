@@ -172,6 +172,9 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		return "", "", err
 	}
 
+	// No key Secret: whatever key appears next, generated or brought, is the new key.
+	t.Status.PublicKey = ""
+
 	var next corev1.Secret
 	nextName := sopsv1alpha1.TenantNextKeySecretName(t.Name)
 	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: nextName}, &next); err == nil {
@@ -205,6 +208,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		// AlreadyExists: a key appeared since the read; the retry loads it.
 		return "", "", err
 	}
+	t.Status.PublicKey = recipient
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
 		"generated a post-quantum key in Secret %s", keyName)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil

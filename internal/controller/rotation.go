@@ -79,10 +79,20 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 		return err
 	}
 	if !t.Spec.StartRotation {
+		if c := meta.FindStatusCondition(t.Status.Conditions, sopsv1alpha1.ConditionRotated); c != nil &&
+			c.Reason == sopsv1alpha1.ReasonRotationRefused {
+			meta.RemoveStatusCondition(&t.Status.Conditions, sopsv1alpha1.ConditionRotated)
+		}
 		// A next key without a rotation was created just before a crash and never published.
-		if orphaned {
+		if orphaned && orphan.Labels[sopsv1alpha1.LabelManagedBy] == sopsv1alpha1.ManagedByValue {
 			return client.IgnoreNotFound(tc.Delete(ctx, &orphan))
 		}
+		return nil
+	}
+
+	if orphaned && orphan.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+		setRotated(t, metav1.ConditionFalse, sopsv1alpha1.ReasonRotationRefused, fmt.Sprintf(
+			"Secret %s/%s was not created by the operator; remove it to start the rotation", t.Namespace, nextName))
 		return nil
 	}
 
@@ -103,10 +113,18 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 	if orphaned {
 		keys, err := crypto.ParseKeyFile(orphan.Data[crypto.KeyFileField])
 		if err != nil {
-			return fmt.Errorf("next key Secret %s/%s: %w", t.Namespace, nextName, err)
+			// Never published, so nothing depends on it: start over with a fresh key.
+			if err := tc.Delete(ctx, &orphan); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+			orphaned = false
+		} else {
+			recipient, startedAt = keys.Recipients[0], orphan.CreationTimestamp
+			r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonRotationPending,
+				sopsv1alpha1.ActionStartRotation, "adopted the next key in Secret %s", nextName)
 		}
-		recipient, startedAt = keys.Recipients[0], orphan.CreationTimestamp
-	} else {
+	}
+	if !orphaned {
 		keyFile, rec, err := crypto.GenerateKeyFile(r.now())
 		if err != nil {
 			return err

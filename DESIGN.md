@@ -390,7 +390,8 @@ a second rotation, and the next rotation starts when the flag is set to `true` a
 **Start.** When `startRotation` is `true` and no rotation is in progress, the operator first checks that every
 `SopsSecret` referencing the tenant is healthy: `Ready=True` with reason `Decrypted` for its current generation. If
 any is not (failing, suspended, or not yet reconciled), it creates nothing and reports `RotationRefused` with the
-unhealthy `SopsSecret`s in `pendingSecrets`; it starts on its own once they are all healthy, as the flag still asks
+unhealthy `SopsSecret`s in the condition message (`status.rotation` exists only while a rotation is in
+progress); it starts on its own once they are all healthy, as the flag still asks
 for it. Otherwise it creates `<tenant>-sops-keys-next` with a new key, records `status.rotation.startedAt`, and
 publishes the public key in `status.rotation.nextPublicKey`. From then on it decrypts with either key. Starting
 only from a healthy tenant means every `SopsSecret` that is pending later was working before the rotation.
