@@ -349,3 +349,57 @@ func TestTenantServiceAccount(t *testing.T) {
 		assertUnchanged(t, sa)
 	})
 }
+
+func TestTenantKeyManualRotation(t *testing.T) {
+	t.Run("shall follow a new primary identity prepended to the key", func(t *testing.T) {
+		tenantNS, oldRecipient := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		newFile, newRecipient := prependIdentity(t, tenantNS)
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		eventuallyPublicKey(t, tenant, newRecipient)
+		if newRecipient == oldRecipient || len(newFile) == 0 {
+			t.Fatal("expected a new identity")
+		}
+	})
+
+	t.Run("shall load the key after the old identity was removed", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		newFile, newRecipient := prependIdentity(t, tenantNS)
+		eventuallyPublicKey(t, tenant, newRecipient)
+		key := &corev1.Secret{}
+		if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, key); err != nil {
+			t.Fatal(err)
+		}
+		update(t, key, func() { key.Data[crypto.KeyFileField] = newFile })
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		eventuallyPublicKey(t, tenant, newRecipient)
+	})
+}
+
+// prependIdentity puts a new identity before the existing ones in the tenant key Secret and sets
+// age.pub to it, as the admin does for a manual rotation. It returns the new identity's key file.
+func prependIdentity(t *testing.T, tenantNS string) (newFile []byte, recipient string) {
+	t.Helper()
+	newFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := &corev1.Secret{}
+	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, key); err != nil {
+		t.Fatal(err)
+	}
+	update(t, key, func() {
+		key.Data[crypto.KeyFileField] = append(append([]byte{}, newFile...), key.Data[crypto.KeyFileField]...)
+		key.Data[crypto.PublicKeyField] = []byte(recipient)
+	})
+	return newFile, recipient
+}
+
+func eventuallyPublicKey(t *testing.T, tenant *sopsv1alpha1.SopsTenant, want string) {
+	t.Helper()
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+		g.Expect(tenant.Status.PublicKey).To(Equal(want))
+	}).WithTimeout(20 * time.Second).Should(Succeed())
+}

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -158,16 +159,18 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 			return sopsv1alpha1.ReasonKeyInvalid, fmt.Sprintf("%s does not match the primary key in %s",
 				crypto.PublicKeyField, crypto.KeyFileField), nil
 		}
-		// status.publicKey records the key in use; a different key means the Secret was replaced,
-		// for example by restoring an old backup (DESIGN.md §4.4, guards).
+		// status.publicKey records the key in use; a key file without that identity means the Secret
+		// was replaced, for example by restoring an old backup (DESIGN.md §4.4, guards). Manual
+		// rotation adds identities, so the record follows the primary identity while it is present.
 		// The key may already be the next key: a completion that replaced it and then crashed before
-		// writing the status; the rotation finishes it (Task 6).
+		// writing the status; the rotation finishes it.
 		completing := t.Status.Rotation != nil && keys.Recipients[0] == t.Status.Rotation.NextPublicKey
-		if t.Status.PublicKey == "" {
-			t.Status.PublicKey = keys.Recipients[0]
-		} else if keys.Recipients[0] != t.Status.PublicKey && !completing {
-			return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s is not the key recorded in "+
+		if t.Status.PublicKey != "" && !slices.Contains(keys.Recipients, t.Status.PublicKey) && !completing {
+			return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s does not hold the key recorded in "+
 				"status.publicKey (%s); restore the matching key", keyName, t.Status.PublicKey), nil
+		}
+		if !completing {
+			t.Status.PublicKey = keys.Recipients[0]
 		}
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
