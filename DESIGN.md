@@ -377,6 +377,7 @@ status:
   lastRotation:                         # the last completed rotation
     startedAt: "2026-04-01T08:00:00Z"
     completedAt: "2026-04-09T16:30:00Z"
+    previousPublicKey: age1pq1...       # the removed key; the CLI removes its entries from files
   conditions:
     - type: Rotated
       status: "False"
@@ -442,13 +443,14 @@ repeat, so a crash at any point resumes on the next reconcile:
 
 1. Check, from the live list and not from status, that nothing is pending, that the current key matches
    `status.publicKey`, and that `<tenant>-sops-keys-next` exists and is valid. Otherwise do not start.
-2. Set `status.rotation.phase: Completing`. From here on a reconcile finishes the completion; `startRotation: true`
-   waits until it is done.
-3. Update `<tenant>-sops-keys` with the next key. The old identity is gone in this one write.
-4. Delete `<tenant>-sops-keys-next`. A crash between steps 3 and 4 leaves both Secrets holding the same key.
-5. Reconcile every `SopsSecret` of the tenant with the new current key. Each one already decrypted with it; one
+2. Update `<tenant>-sops-keys` with the next key. The old identity is gone in this one write. The phase
+   `Completing` is written with the status at the end of the reconcile, so it is not a separate step that a crash
+   could leave half done; instead, a reconcile that finds `<tenant>-sops-keys` already holding the next key knows
+   the key was replaced and finishes the completion. `startRotation: true` waits until it is done.
+3. Delete `<tenant>-sops-keys-next`. A crash between steps 2 and 3 leaves both Secrets holding the same key.
+4. Reconcile every `SopsSecret` of the tenant with the new current key. Each one already decrypted with it; one
    that fails is reported at once.
-6. Record `status.publicKey` and `status.lastRotation` (`startedAt`, `completedAt`), remove `status.rotation` from
+5. Record `status.publicKey` and `status.lastRotation` (`startedAt`, `completedAt`, `previousPublicKey`), remove `status.rotation` from
    the tenant and every `SopsSecret`, drop the old key from the operator's memory, and report `Rotated=True`,
    reason `RotationComplete`, with a Normal event. The condition message reminds teams to remove the old public key
    from `.sops.yaml`.
@@ -464,7 +466,7 @@ until the API server compacts old revisions, normally within minutes, and in bac
   rotation is abandoned (`RotationAbandoned`), which is safe because every file is still encrypted for the current
   key; the operator refuses while any `SopsSecret` decrypts with the next key alone.
 - When the key file no longer holds the key recorded in `status.publicKey`, for example after an old backup was restored, the tenant
-  reports `KeyMismatch` instead of letting every `SopsSecret` fail on its own.
+  is not Ready, with reason `KeyMismatch`, instead of letting every `SopsSecret` fail on its own.
 - The operator only sees `SopsSecret`s that are applied: a file in Git that the GitOps tool has not applied yet is
   not counted, and would fail once the old key is gone. The CLI therefore compares the files in a directory with
   the `SopsSecret`s in the cluster before it re-encrypts (§8.3).
@@ -762,6 +764,8 @@ git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
    it, and removes entries for keys that no longer exist from the files it touches.
 3. The tenant admin sets `spec.startRotation: false` (or removes it) and commits, then follows `status.rotation`.
    The operator replaces the key once nothing is pending.
+4. After completion, each team runs the CLI again, which removes the old key's entries from files and `.sops.yaml`,
+   and commits.
 
 No one outside the cluster needs a private key for a rotation, and teams need only read access to `SopsSecret`s.
 After a known leak, teams instead encrypt the changed values again for the next key only: the entries keep the data

@@ -375,6 +375,13 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 | `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
 | `sops.stakater.com/suspend: "true"` | — | Annotation that pauses reconciliation. |
 
+### `SopsTenant`
+
+| Field | Default | Description |
+|---|---|---|
+| `spec.startRotation` | `false` | `true` starts a key rotation once every `SopsSecret` is `Decrypted`; `false` or unset completes it once every `SopsSecret` uses the next key. |
+| `status.lastRotation` | — | Start and completion time of the last rotation and the removed `previousPublicKey`. |
+
 ### Status reasons
 
 | Reason | Meaning |
@@ -387,9 +394,10 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 | `DecryptFailed` | The file is malformed, tampered with, or has unsorted keys or unquoted values. |
 | `Conflict` | A Secret with this name exists and was not created by this `SopsSecret`. |
 | `ApplyFailed` | The API server rejected the Secret, for example an invalid TLS Secret. |
+| `NextKeyRequired` | During a rotation, the file is not encrypted for the next key. The Secret keeps its last values. |
 | `Suspended` | Reconciliation is paused by annotation. |
 
-`SopsTenant` reports `KeyGenerated`, `KeyLoaded`, `KeyMissing`, `KeyInvalid` or `AccessDenied` (a RoleBinding is missing; the message names it).
+`SopsTenant` reports `KeyGenerated`, `KeyLoaded`, `KeyMissing`, `KeyInvalid`, `KeyMismatch` (the key file no longer holds the key in `status.publicKey`, for example after restoring an old backup) or `AccessDenied` (a RoleBinding is missing; the message names it).
 
 ### Configuration
 
@@ -399,8 +407,42 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 
 ## Operations
 
-- **Key rotation**: prepend a new identity to `age.agekey`, add its public key to `.sops.yaml`, and run
-  `sops updatekeys` on each file. When every `SopsSecret` reports `Decrypted`, remove the old identity.
+- **Key rotation**: a rotation replaces the tenant key through Git, and no one needs the private key. Each step
+  below is one commit.
+
+  1. The tenant admin starts the rotation. The operator creates the next key once every `SopsSecret` of the tenant
+     is `Decrypted`; until then `SopsTenant` reports `Rotated` with reason `RotationRefused` and lists the
+     unhealthy `SopsSecret`s.
+
+     ```yaml
+     spec:
+       startRotation: true
+     ```
+
+  2. Each team runs the script on its GitOps directory. It appends the operator-prepared entry to every file of
+     the tenant and adds the next public key to `.sops.yaml`.
+
+     ```bash
+     scripts/rotate.sh tenant.yaml gitops/team-a
+     ```
+
+  3. The tenant admin ends the rotation. The operator replaces the key once every `SopsSecret` decrypts with the
+     next key; until then `Rotated` reports `RotationBlocked` and pending `SopsSecret`s get a Warning event.
+
+     ```yaml
+     spec:
+       startRotation: false
+     ```
+
+  4. After `Rotated` reports `RotationComplete`, each team runs the same script again. It removes the old key's
+     entries from the files and `.sops.yaml`.
+
+     ```bash
+     scripts/rotate.sh tenant.yaml gitops/team-a
+     ```
+
+  During a rotation a new `SopsSecret` must be encrypted for the next key too, otherwise it fails with
+  `NextKeyRequired`. Rotating by prepending an identity to `age.agekey` and running `sops updatekeys` still works.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
 - **Disaster recovery**: restore key Secrets before `SopsTenant`s, or set `generateKey: false`, so no new key is
