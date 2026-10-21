@@ -60,6 +60,10 @@ jobs:
       - name: Test
         run: make test
 
+      # scripts/encrypt.sh with a throwaway key; shellcheck is on the runner image.
+      - name: Lint and test scripts
+        run: make lint-scripts test-scripts
+
   build:
     name: Build image
     needs: verify
