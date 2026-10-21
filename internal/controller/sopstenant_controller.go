@@ -75,6 +75,15 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.List(ctx, &users, client.MatchingFields{IndexTenantRef: TenantRefKey(tenant.Namespace, tenant.Name)}); err != nil {
 		return ctrl.Result{}, err
 	}
+	if reason == sopsv1alpha1.ReasonKeyLoaded || reason == sopsv1alpha1.ReasonKeyGenerated {
+		tc, err := r.Identities.ClientFor(tenant.Namespace, tenant.Name)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.reconcileRotation(ctx, &tenant, tc, users.Items); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	status := metav1.ConditionFalse
 	if reason == sopsv1alpha1.ReasonKeyLoaded || reason == sopsv1alpha1.ReasonKeyGenerated {
 		status = metav1.ConditionTrue
@@ -125,7 +134,7 @@ func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, t *sops
 }
 
 // reconcileKey returns the Ready reason and message for the tenant key. Only a 404 on the key
-// Secret leads to generation; the tenant identity cannot modify or delete an existing key.
+// Secret, without a next key, leads to generation; the tenant identity cannot modify or delete an existing key.
 func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
 	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
 	if err != nil {
@@ -145,10 +154,30 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 			return sopsv1alpha1.ReasonKeyInvalid, fmt.Sprintf("%s does not match the primary key in %s",
 				crypto.PublicKeyField, crypto.KeyFileField), nil
 		}
+		// status.publicKey records the key in use; a different key means the Secret was replaced,
+		// for example by restoring an old backup (DESIGN.md §4.4, guards).
+		// The key may already be the next key: a completion that replaced it and then crashed before
+		// writing the status; the rotation finishes it (Task 6).
+		completing := t.Status.Rotation != nil && keys.Recipients[0] == t.Status.Rotation.NextPublicKey
+		if t.Status.PublicKey == "" {
+			t.Status.PublicKey = keys.Recipients[0]
+		} else if keys.Recipients[0] != t.Status.PublicKey && !completing {
+			return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s is not the key recorded in "+
+				"status.publicKey (%s); restore the matching key", keyName, t.Status.PublicKey), nil
+		}
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
 		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
 	case !apierrors.IsNotFound(err):
+		return "", "", err
+	}
+
+	var next corev1.Secret
+	nextName := sopsv1alpha1.TenantNextKeySecretName(t.Name)
+	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: nextName}, &next); err == nil {
+		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found while %s exists; restore "+
+			"the key instead of generating one", t.Namespace, keyName, nextName), nil
+	} else if !apierrors.IsNotFound(err) {
 		return "", "", err
 	}
 
