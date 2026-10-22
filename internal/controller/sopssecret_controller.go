@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -61,6 +62,11 @@ type outcome struct {
 	reason  string
 	message string
 	uid     types.UID
+	// rotation is written to status.rotation when setRotation is true, which happens only while the
+	// tenant rotates. Other outcomes keep the recorded status, so neither a transient failure nor a
+	// lagging tenant view loses the accepted generation; the tenant controller clears it.
+	rotation    *sopsv1alpha1.SecretRotationStatus
+	setRotation bool
 }
 
 func (r *SopsSecretReconciler) now() time.Time {
@@ -101,6 +107,17 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSecret) (outcome, error) {
 	ref := s.Spec.TenantRef
 	tenantName := TenantRefKey(ref.Namespace, ref.Name)
+
+	// Output Secrets carry the operator's label, so one named like a key Secret could pose as it.
+	owner, err := r.keySecretTenant(ctx, s)
+	if err != nil {
+		return outcome{}, err
+	}
+	if owner != "" {
+		return outcome{reason: sopsv1alpha1.ReasonConflict, message: fmt.Sprintf(
+			"Secret %s/%s is a key Secret name of SopsTenant %s; a SopsSecret cannot write it",
+			s.Namespace, s.Name, TenantRefKey(s.Namespace, owner))}, nil
+	}
 
 	var tenant sopsv1alpha1.SopsTenant
 	if err := r.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, &tenant); err != nil {
@@ -143,7 +160,12 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
 	}
 	want := document.ScopeFor(s.Namespace, s.Name)
-	plain, err := crypto.Decrypt(doc, keys, want)
+	rot := tenant.Status.Rotation
+	next, err := r.rotationKey(ctx, tc, ref, rot, keys)
+	if err != nil {
+		return outcome{}, err
+	}
+	plain, migrated, err := decryptRotating(doc, keys, next, want)
 	switch {
 	case errors.Is(err, crypto.ErrScopeMismatch):
 		return outcome{reason: sopsv1alpha1.ReasonScopeMismatch, message: err.Error()}, nil
@@ -152,6 +174,18 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 			message: fmt.Sprintf("the document is not encrypted for the key of tenant %s", tenantName)}, nil
 	case err != nil:
 		return outcome{reason: sopsv1alpha1.ReasonDecryptFailed, message: err.Error()}, nil
+	}
+	var rs *sopsv1alpha1.SecretRotationStatus
+	if rot != nil {
+		rs = rotationStatus(s, rot, migrated)
+		if !migrated {
+			offerEntry(ctx, s, rs, doc, keys, next)
+		}
+		if !migrated && rs.AcceptedGeneration != s.Generation {
+			return outcome{reason: sopsv1alpha1.ReasonNextKeyRequired, rotation: rs, setRotation: true,
+				message: fmt.Sprintf("tenant %s is rotating keys: add the next key %s to .sops.yaml and encrypt "+
+					"this file again, or run scripts/rotate.sh", tenantName, rot.NextPublicKey)}, nil
+		}
 	}
 	payload, err := document.ParsePlain(plain)
 	if err != nil {
@@ -175,7 +209,110 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	case err != nil:
 		return outcome{}, err
 	}
-	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid}, nil
+	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid,
+		rotation: rs, setRotation: rs != nil}, nil
+}
+
+// keySecretTenant returns the name of the SopsTenant in the SopsSecret's namespace whose key Secret
+// or next key Secret has the SopsSecret's name, or "" when there is none.
+func (r *SopsSecretReconciler) keySecretTenant(ctx context.Context, s *sopsv1alpha1.SopsSecret) (string, error) {
+	for _, suffix := range []string{sopsv1alpha1.NextKeySecretSuffix, sopsv1alpha1.KeySecretSuffix} {
+		name, ok := strings.CutSuffix(s.Name, suffix)
+		if !ok || name == "" {
+			continue
+		}
+		err := r.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &sopsv1alpha1.SopsTenant{})
+		if err == nil {
+			return name, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+// rotationKey returns the next key of the tenant rotation rot, or nil when there is no rotation. When
+// the key Secret already holds the next key (completion replaced it and the tenant status does not
+// know yet), the next key is the current primary key.
+func (r *SopsSecretReconciler) rotationKey(ctx context.Context, tc client.Client, ref sopsv1alpha1.TenantReference,
+	rot *sopsv1alpha1.TenantRotationStatus, current *crypto.KeySet) (*crypto.KeySet, error) {
+	switch {
+	case rot == nil:
+		return nil, nil
+	case current.Recipients[0] == rot.NextPublicKey:
+		return &crypto.KeySet{Identities: current.Identities[:1], Recipients: current.Recipients[:1]}, nil
+	}
+	return r.nextKey(ctx, tc, ref, rot.NextPublicKey)
+}
+
+// nextKey returns the tenant's next key. It returns nil when the Secret does not exist, is not a
+// valid key file or does not hold the published next key (the tenant reports why), and an error
+// for any other read failure.
+func (r *SopsSecretReconciler) nextKey(ctx context.Context, tc client.Client, ref sopsv1alpha1.TenantReference,
+	published string) (*crypto.KeySet, error) {
+	var key corev1.Secret
+	name := sopsv1alpha1.TenantNextKeySecretName(ref.Name)
+	if err := tc.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: name}, &key); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
+	if err != nil || keys.Recipients[0] != published {
+		return nil, nil
+	}
+	return keys, nil
+}
+
+// decryptRotating decrypts with the next key first, then with the current key. migrated
+// reports that the next key decrypted the document.
+func decryptRotating(doc []byte, current, next *crypto.KeySet, want string) (plain []byte, migrated bool, err error) {
+	if next != nil {
+		plain, err = crypto.Decrypt(doc, next, want)
+		if err == nil {
+			return plain, true, nil
+		}
+		if !errors.Is(err, crypto.ErrNotRecipient) {
+			return nil, false, err
+		}
+	}
+	plain, err = crypto.Decrypt(doc, current, want)
+	return plain, false, err
+}
+
+// offerEntry renews the next-key entry in rs when it was not made for the SopsSecret's generation.
+// The entry is made only for the next key that was read; without one, no entry is offered.
+func offerEntry(ctx context.Context, s *sopsv1alpha1.SopsSecret, rs *sopsv1alpha1.SecretRotationStatus, doc []byte,
+	keys, next *crypto.KeySet) {
+	if rs.NextRecipient != nil && rs.FromGeneration == s.Generation {
+		return
+	}
+	rs.NextRecipient, rs.FromGeneration = nil, 0
+	if next == nil {
+		return
+	}
+	entry, err := crypto.WrapDataKey(doc, keys, next.Recipients[0])
+	if err != nil {
+		log.FromContext(ctx).Error(err, "wrap the data key for the next key", "sopsSecret", client.ObjectKeyFromObject(s))
+		return
+	}
+	rs.NextRecipient = &sopsv1alpha1.SopsAgeRecipient{Recipient: entry.Recipient, Enc: entry.Enc}
+	rs.FromGeneration = s.Generation
+}
+
+// rotationStatus returns the SopsSecret's rotation status for the tenant rotation rot. The
+// generation stamped by the tenant controller when the rotation started is accepted with the
+// current key alone; any later generation must use the next key (DESIGN.md §4.4).
+func rotationStatus(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotationStatus, migrated bool) *sopsv1alpha1.SecretRotationStatus {
+	prev := s.Status.Rotation
+	rs := &sopsv1alpha1.SecretRotationStatus{StartedAt: rot.StartedAt, Migrated: migrated}
+	if prev != nil && prev.StartedAt.Equal(&rot.StartedAt) {
+		rs.AcceptedGeneration, rs.NextRecipient, rs.FromGeneration = prev.AcceptedGeneration, prev.NextRecipient, prev.FromGeneration
+	}
+	if migrated {
+		rs.MigratedGeneration = s.Generation
+		rs.NextRecipient, rs.FromGeneration = nil, 0
+	}
+	return rs
 }
 
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
@@ -249,6 +386,9 @@ func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1
 		Message:            o.message,
 		ObservedGeneration: s.Generation,
 	})
+	if o.setRotation {
+		s.Status.Rotation = o.rotation
+	}
 	s.Status.ObservedGeneration = s.Generation
 	return r.Status().Patch(ctx, s, client.MergeFrom(base))
 }

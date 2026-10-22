@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.usedBy
       name: Used By
       type: integer
+    - jsonPath: .status.lastRotation.completedAt
+      name: Last Rotated
+      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -58,6 +61,13 @@ spec:
                 default: true
                 description: GenerateKey generates a post-quantum age key when the
                   key Secret does not exist.
+                type: boolean
+              startRotation:
+                description: |-
+                  StartRotation set to true asks for a new tenant key: once every SopsSecret of the tenant is
+                  healthy, the operator creates the next key and both keys are accepted. Set it to false, or
+                  remove it, to complete the rotation: the next key replaces the current one once every
+                  SopsSecret was decrypted with it (DESIGN.md §4.4).
                 type: boolean
             type: object
           status:
@@ -126,9 +136,75 @@ spec:
                 description: KeySecretName is the Secret in the tenant namespace that
                   holds the tenant key and its public key.
                 type: string
+              lastRotation:
+                description: LastRotation is the last completed key rotation.
+                properties:
+                  completedAt:
+                    format: date-time
+                    type: string
+                  previousPublicKey:
+                    description: |-
+                      PreviousPublicKey is the public key of the key the rotation removed. The CLI removes its
+                      entries from files; it can decrypt nothing any more.
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                required:
+                - completedAt
+                - previousPublicKey
+                - startedAt
+                type: object
               observedGeneration:
                 format: int64
                 type: integer
+              publicKey:
+                description: PublicKey is the public key of the current key, for .sops.yaml.
+                type: string
+              rotation:
+                description: Rotation is the key rotation in progress.
+                properties:
+                  migrated:
+                    description: Migrated is the number of SopsSecrets decrypted with
+                      the next key.
+                    format: int32
+                    type: integer
+                  nextKeySecretName:
+                    description: NextKeySecretName is the Secret holding the next
+                      key, <tenant>-sops-keys-next.
+                    type: string
+                  nextPublicKey:
+                    description: NextPublicKey is the public key of the next key,
+                      for .sops.yaml.
+                    type: string
+                  pending:
+                    description: Pending is the number of SopsSecrets not yet decrypted
+                      with the next key.
+                    format: int32
+                    type: integer
+                  pendingSecrets:
+                    description: PendingSecrets names up to 50 pending SopsSecrets
+                      as <namespace>/<name>, sorted.
+                    items:
+                      type: string
+                    maxItems: 50
+                    type: array
+                  phase:
+                    description: Phase is InProgress, then Completing.
+                    enum:
+                    - InProgress
+                    - Completing
+                    type: string
+                  startedAt:
+                    description: StartedAt is when the next key was created.
+                    format: date-time
+                    type: string
+                required:
+                - nextKeySecretName
+                - nextPublicKey
+                - phase
+                - startedAt
+                type: object
               serviceAccountName:
                 description: |-
                   ServiceAccountName is the tenant identity the operator acts as: the ServiceAccount the cluster

@@ -349,3 +349,68 @@ func TestTenantServiceAccount(t *testing.T) {
 		assertUnchanged(t, sa)
 	})
 }
+
+func TestTenantKeyManualRotation(t *testing.T) {
+	t.Run("shall follow a new primary identity prepended to the key", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		_, newRecipient := prependIdentity(t, tenantNS)
+		consistentlyLoaded(t, tenant, newRecipient)
+	})
+
+	t.Run("shall load the key after the old identity was removed", func(t *testing.T) {
+		tenantNS, _ := onboardedTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		newFile, newRecipient := prependIdentity(t, tenantNS)
+		consistentlyLoaded(t, tenant, newRecipient)
+		key := &corev1.Secret{}
+		if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, key); err != nil {
+			t.Fatal(err)
+		}
+		update(t, key, func() { key.Data[crypto.KeyFileField] = newFile })
+		consistentlyLoaded(t, tenant, newRecipient)
+	})
+
+	t.Run("shall keep the recorded key during a rotation and still abandon it", func(t *testing.T) {
+		tenantNS, _, _, oldRecipient := rotatingTenant(t)
+		tenant := tenantOf(t, tenantNS)
+		prependIdentity(t, tenantNS)
+		consistentlyLoaded(t, tenant, oldRecipient)
+		deleteObject(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenantNS, Name: sopsv1alpha1.TenantNextKeySecretName(tenantName)}})
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonNextKeyMissing)
+		setStartRotation(t, tenant, false)
+		eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationAbandoned)
+	})
+}
+
+// consistentlyLoaded waits for the tenant to be KeyLoaded with status.publicKey == want, then keeps
+// checking over several resyncs, so a state from before the last change cannot satisfy it.
+func consistentlyLoaded(t *testing.T, tenant *sopsv1alpha1.SopsTenant, want string) {
+	t.Helper()
+	check := func(g Gomega) {
+		g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+		g.Expect(readyCondition(tenant).Reason).To(Equal(sopsv1alpha1.ReasonKeyLoaded))
+		g.Expect(tenant.Status.PublicKey).To(Equal(want))
+	}
+	NewWithT(t).Eventually(check).WithTimeout(20 * time.Second).Should(Succeed())
+	NewWithT(t).Consistently(check).WithTimeout(3 * resync).WithPolling(200 * time.Millisecond).Should(Succeed())
+}
+
+// prependIdentity puts a new identity before the existing ones in the tenant key Secret and sets
+// age.pub to it, as the admin does for a manual rotation. It returns the new identity's key file.
+func prependIdentity(t *testing.T, tenantNS string) (newFile []byte, recipient string) {
+	t.Helper()
+	newFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := &corev1.Secret{}
+	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, key); err != nil {
+		t.Fatal(err)
+	}
+	update(t, key, func() {
+		key.Data[crypto.KeyFileField] = append(append([]byte{}, newFile...), key.Data[crypto.KeyFileField]...)
+		key.Data[crypto.PublicKeyField] = []byte(recipient)
+	})
+	return newFile, recipient
+}

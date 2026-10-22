@@ -11,7 +11,9 @@ rules:
     resources: [serviceaccounts]
     verbs: [create, impersonate]
 ---
-# Bound to a tenant's ServiceAccount (<tenant>-sops-tenant) in the tenant namespace.
+# Bound to a tenant's ServiceAccount (<tenant>-sops-tenant) in the tenant namespace. update and delete
+# are used only to complete a key rotation (the next key replaces the current one, then the next key
+# Secret is deleted) and to delete a next key the operator created but never published (DESIGN.md §4.4, D50).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -19,7 +21,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create]
+    verbs: [get, create, update, delete]
 ---
 # Bound by the cluster admin to a tenant's ServiceAccount in each namespace the tenant may write to.
 apiVersion: rbac.authorization.k8s.io/v1

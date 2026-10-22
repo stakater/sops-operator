@@ -19,10 +19,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -45,6 +48,8 @@ import (
 // key Secret only as the tenant identity.
 type SopsTenantReconciler struct {
 	client.Client
+	// APIReader reads SopsSecrets uncached for the completion decision; Client is used when nil.
+	APIReader      client.Reader
 	Identities     *identity.Factory
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
@@ -74,6 +79,15 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var users sopsv1alpha1.SopsSecretList
 	if err := r.List(ctx, &users, client.MatchingFields{IndexTenantRef: TenantRefKey(tenant.Namespace, tenant.Name)}); err != nil {
 		return ctrl.Result{}, err
+	}
+	if reason == sopsv1alpha1.ReasonKeyLoaded || reason == sopsv1alpha1.ReasonKeyGenerated {
+		tc, err := r.Identities.ClientFor(tenant.Namespace, tenant.Name)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.reconcileRotation(ctx, &tenant, tc, users.Items); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	status := metav1.ConditionFalse
 	if reason == sopsv1alpha1.ReasonKeyLoaded || reason == sopsv1alpha1.ReasonKeyGenerated {
@@ -125,7 +139,8 @@ func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, t *sops
 }
 
 // reconcileKey returns the Ready reason and message for the tenant key. Only a 404 on the key
-// Secret leads to generation; the tenant identity cannot modify or delete an existing key.
+// Secret, without a next key, leads to generation; an existing key is changed only by the completion
+// of a rotation (DESIGN.md §4.4).
 func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
 	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
 	if err != nil {
@@ -145,12 +160,38 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 			return sopsv1alpha1.ReasonKeyInvalid, fmt.Sprintf("%s does not match the primary key in %s",
 				crypto.PublicKeyField, crypto.KeyFileField), nil
 		}
+		// status.publicKey records the key in use; a key file without that identity means the Secret
+		// was replaced, for example by restoring an old backup (DESIGN.md §4.4, guards). Manual
+		// rotation adds identities, so the record follows the primary identity while it is present. It does not
+		// move while completing or during a rotation: completion and abandon rely on the recorded key.
+		// The key may already be the next key: a completion that replaced it and then crashed before
+		// writing the status; the rotation finishes it.
+		completing := t.Status.Rotation != nil && keys.Recipients[0] == t.Status.Rotation.NextPublicKey
+		if t.Status.PublicKey != "" && !slices.Contains(keys.Recipients, t.Status.PublicKey) && !completing {
+			return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s does not hold the key recorded in "+
+				"status.publicKey (%s); restore the matching key", keyName, t.Status.PublicKey), nil
+		}
+		if !completing && t.Status.Rotation == nil {
+			t.Status.PublicKey = keys.Recipients[0]
+		}
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
 		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
 	case !apierrors.IsNotFound(err):
 		return "", "", err
 	}
+
+	var next corev1.Secret
+	nextName := sopsv1alpha1.TenantNextKeySecretName(t.Name)
+	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: nextName}, &next); err == nil {
+		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found while %s exists; restore "+
+			"the key instead of generating one", t.Namespace, keyName, nextName), nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", "", err
+	}
+
+	// No key Secret and no next key: whatever key appears next, generated or brought, is the new key.
+	t.Status.PublicKey = ""
 
 	if !t.ShouldGenerateKey() {
 		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
@@ -176,6 +217,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		// AlreadyExists: a key appeared since the read; the retry loads it.
 		return "", "", err
 	}
+	t.Status.PublicKey = recipient
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
 		"generated a post-quantum key in Secret %s", keyName)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil
@@ -196,7 +238,26 @@ func (r *SopsTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				ref := o.(*sopsv1alpha1.SopsSecret).Spec.TenantRef
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}}}
 			}),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, rotationProgressChanged{}))).
 		Named("sopstenant").
 		Complete(r)
+}
+
+// rotationProgressChanged passes SopsSecret updates that change what a rotation counts: the
+// rotation status or the Ready reason.
+type rotationProgressChanged struct{ predicate.Funcs }
+
+func (rotationProgressChanged) Update(e event.UpdateEvent) bool {
+	oldS, okOld := e.ObjectOld.(*sopsv1alpha1.SopsSecret)
+	newS, okNew := e.ObjectNew.(*sopsv1alpha1.SopsSecret)
+	if !okOld || !okNew {
+		return false
+	}
+	reason := func(s *sopsv1alpha1.SopsSecret) string {
+		if c := meta.FindStatusCondition(s.Status.Conditions, sopsv1alpha1.ConditionReady); c != nil {
+			return c.Reason
+		}
+		return ""
+	}
+	return !equality.Semantic.DeepEqual(oldS.Status.Rotation, newS.Status.Rotation) || reason(oldS) != reason(newS)
 }

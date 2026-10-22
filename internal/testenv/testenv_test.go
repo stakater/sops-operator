@@ -135,3 +135,25 @@ func namespaceAdminRole(t *testing.T) string {
 	}
 	return role.Name
 }
+
+func TestKeyOwnerMayCompleteRotation(t *testing.T) {
+	ns := env.Namespace(t, "tenant")
+	env.Onboard(t, ns, "my-team")
+	sa := "system:serviceaccount:" + ns + ":my-team-sops-tenant"
+	for _, verb := range []string{"get", "create", "update", "delete"} {
+		t.Run("shall allow "+verb+" on Secrets in the tenant namespace", func(t *testing.T) {
+			review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+				User: sa,
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: ns, Verb: verb, Resource: "secrets", Name: "my-team-sops-keys-next",
+				},
+			}}
+			if err := env.Admin.Create(context.Background(), review); err != nil {
+				t.Fatal(err)
+			}
+			if !review.Status.Allowed {
+				t.Fatalf("%s secrets is not allowed: %s", verb, review.Status.Reason)
+			}
+		})
+	}
+}

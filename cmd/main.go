@@ -174,6 +174,7 @@ func main() {
 	identities := identity.NewFactory(mgr.GetConfig(), mgr.GetScheme())
 	if err := (&controller.SopsTenantReconciler{
 		Client:         mgr.GetClient(),
+		APIReader:      mgr.GetAPIReader(),
 		Identities:     identities,
 		Recorder:       mgr.GetEventRecorder("sops-operator"),
 		ResyncInterval: resyncInterval,

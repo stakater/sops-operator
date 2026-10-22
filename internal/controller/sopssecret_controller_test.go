@@ -322,3 +322,24 @@ func TestSuspension(t *testing.T) {
 		}
 	})
 }
+
+func TestSecretKeyNames(t *testing.T) {
+	for _, name := range []string{sopsv1alpha1.TenantKeySecretName(tenantName), sopsv1alpha1.TenantNextKeySecretName(tenantName)} {
+		t.Run("shall refuse to write the key Secret name "+name+" of a tenant in its namespace", func(t *testing.T) {
+			tenantNS, recipient := onboardedTenant(t)
+			before := &corev1.Secret{}
+			beforeErr := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: name}, before)
+			s := encryptedSopsSecret(t, recipient, tenantNS, tenantNS, name, tenantNS+"/"+name, map[string]any{"a": "b"})
+			create(t, s)
+			eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
+			if c := readyCondition(s); !strings.Contains(c.Message, "SopsTenant") {
+				t.Fatalf("message %q does not name the SopsTenant", c.Message)
+			}
+			if apierrors.IsNotFound(beforeErr) {
+				assertNoSecret(t, tenantNS, name)
+				return
+			}
+			assertUnchanged(t, before)
+		})
+	}
+}
