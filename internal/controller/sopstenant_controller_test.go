@@ -65,8 +65,11 @@ func TestTenantKey(t *testing.T) {
 		if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
 			t.Fatal("generated key is not post-quantum")
 		}
-		if got := strings.TrimSpace(string(key.Data[crypto.PublicKeyField])); got != ks.Recipients[0] {
-			t.Fatal("the generated Secret does not hold the matching public key")
+		if len(key.Data) != 1 || len(key.Data[crypto.KeyFileField]) == 0 {
+			t.Fatalf("the generated Secret must hold only %s", crypto.KeyFileField)
+		}
+		if tenant.Status.PublicKey != ks.Recipients[0] {
+			t.Fatal("status.publicKey is not the public key of the generated key")
 		}
 		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
 			t.Fatal("generated key is missing the managed-by label")
@@ -90,7 +93,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall load the existing key for the console sample", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, "my-team-existing-key")
-		keyFile, _, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,7 +134,11 @@ func TestTenantKey(t *testing.T) {
 		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
 			t.Fatal(err)
 		}
-		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyLoaded)
+		tenant := newTenant(ns, nil)
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		if tenant.Status.PublicKey != x.Recipient().String() {
+			t.Fatal("status.publicKey is not the public key of the existing key")
+		}
 
 		var after corev1.Secret
 		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
@@ -147,30 +154,6 @@ func TestTenantKey(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, tenantName)
 		key := keySecret(ns, "-----BEGIN OPENSSH PRIVATE KEY-----\n")
-		if err := env.Admin.Create(ctx, key); err != nil {
-			t.Fatal(err)
-		}
-		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
-			t.Fatal(err)
-		}
-		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
-		assertUnchanged(t, key)
-	})
-
-	t.Run("shall report an invalid key when the public key does not match", func(t *testing.T) {
-		ctx := context.Background()
-		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns, tenantName)
-		x, err := age.GenerateX25519Identity()
-		if err != nil {
-			t.Fatal(err)
-		}
-		other, err := age.GenerateX25519Identity()
-		if err != nil {
-			t.Fatal(err)
-		}
-		key := keySecret(ns, x.String()+"\n")
-		key.Data[crypto.PublicKeyField] = []byte(other.Recipient().String())
 		if err := env.Admin.Create(ctx, key); err != nil {
 			t.Fatal(err)
 		}

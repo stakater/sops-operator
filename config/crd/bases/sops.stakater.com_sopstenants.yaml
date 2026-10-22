@@ -124,11 +124,15 @@ spec:
                 x-kubernetes-list-type: map
               keySecretName:
                 description: KeySecretName is the Secret in the tenant namespace that
-                  holds the tenant key and its public key.
+                  holds the tenant's private key.
                 type: string
               observedGeneration:
                 format: int64
                 type: integer
+              publicKey:
+                description: 'PublicKey is the public key (age recipient) of the primary
+                  key: the value to list in .sops.yaml.'
+                type: string
               serviceAccountName:
                 description: |-
                   ServiceAccountName is the tenant identity the operator acts as: the ServiceAccount the cluster
