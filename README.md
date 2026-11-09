@@ -512,6 +512,8 @@ vulnerability, open a private
 | SOPS CLI | Tested with v3.13.3 |
 | Keys | age post-quantum (`age1pq1…`) and X25519 (`age1…`) |
 
+Changes and the steps to take when upgrading are listed per release in [CHANGELOG.md](CHANGELOG.md).
+
 ## Roadmap
 
 - Key backends beyond Kubernetes Secrets (OpenBao, cloud KMS) behind the same API.
