@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -54,10 +53,6 @@ type SopsTenantReconciler struct {
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
 	Now            func() time.Time
-
-	// lastKeys holds, per tenant, the key file last loaded, so a key changed or deleted outside a
-	// rotation can be saved as a backup. It lives in memory only.
-	lastKeys sync.Map
 }
 
 func (r *SopsTenantReconciler) now() time.Time {
@@ -173,66 +168,39 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	if err != nil {
 		return "", "", err
 	}
+	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
 	var key corev1.Secret
-	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: sopsv1alpha1.TenantKeySecretName(t.Name)}, &key)
+	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, &key)
 	switch {
 	case err == nil:
-		return r.loadKey(ctx, tc, t, &key)
+		if reason, message, err := adoptKey(ctx, tc, t, &key); reason != "" || err != nil {
+			return reason, message, err
+		}
+		keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
+		if err != nil {
+			return sopsv1alpha1.ReasonKeyInvalid, err.Error(), nil
+		}
+		// status.publicKey records the key in use; a key file without that identity means the Secret
+		// was replaced, for example by restoring an old backup (DESIGN.md §4.4, guards). Manual
+		// rotation adds identities, so the record follows the primary identity while it is present. It does not
+		// move while completing or during a rotation: completion and abandon rely on the recorded key.
+		// The key may already be the next key: a completion that replaced it and then crashed before
+		// writing the status; the rotation finishes it.
+		completing := t.Status.Rotation != nil && keys.Recipients[0] == t.Status.Rotation.NextPublicKey
+		if t.Status.PublicKey != "" && !slices.Contains(keys.Recipients, t.Status.PublicKey) && !completing {
+			return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s does not hold the key recorded in "+
+				"status.publicKey (%s); restore the matching key", keyName, t.Status.PublicKey), nil
+		}
+		if !completing && t.Status.Rotation == nil {
+			t.Status.PublicKey = keys.Recipients[0]
+		}
+		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
 		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
 	case !apierrors.IsNotFound(err):
 		return "", "", err
 	}
-	return r.missingKey(ctx, tc, t)
-}
 
-// loadKey loads the existing key Secret key. A key whose content changed outside a rotation is saved
-// as a backup first (DESIGN.md §4.2).
-func (r *SopsTenantReconciler) loadKey(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant,
-	key *corev1.Secret) (string, string, error) {
-	backup, err := r.backUpChanged(ctx, tc, t, key.Data[crypto.KeyFileField])
-	if err != nil {
-		return "", "", err
-	}
-	if reason, message, err := adoptKey(ctx, tc, t, key); reason != "" || err != nil {
-		return reason, message, err
-	}
-	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-	if err != nil {
-		return sopsv1alpha1.ReasonKeyInvalid, err.Error() + restoreHint(backup), nil
-	}
-	// status.publicKey records the key in use; a key file without that identity means the Secret was
-	// replaced (DESIGN.md §4.4, guards). It does not move during a rotation: completion and abandon rely
-	// on the recorded key. The key may already be the next key: a completion that replaced it and then
-	// crashed before writing the status; the rotation finishes it.
-	completing := t.Status.Rotation != nil && keys.Recipients[0] == t.Status.Rotation.NextPublicKey
-	if t.Status.PublicKey != "" && !slices.Contains(keys.Recipients, t.Status.PublicKey) && !completing {
-		return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("the key in %s does not hold the key recorded in "+
-			"status.publicKey (%s)%s", key.Name, t.Status.PublicKey, restoreHint(backup)), nil
-	}
-	if !completing && t.Status.Rotation == nil {
-		t.Status.PublicKey = keys.Recipients[0]
-	}
-	r.remember(t, key.Data[crypto.KeyFileField])
-	return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
-}
-
-// restoreHint tells where the previous key was saved.
-func restoreHint(backup string) string {
-	if backup == "" {
-		return "; restore the matching key"
-	}
-	return "; the previous key is saved in Secret " + backup
-}
-
-// missingKey handles a missing key Secret. A key is generated only for a tenant that never had one:
-// once a key was recorded, a deleted key is reported, with the backup of it when the operator saved one.
-func (r *SopsTenantReconciler) missingKey(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant) (string, string, error) {
-	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
-	backup, err := r.backUpChanged(ctx, tc, t, nil)
-	if err != nil {
-		return "", "", err
-	}
 	var next corev1.Secret
 	nextName := sopsv1alpha1.TenantNextKeySecretName(t.Name)
 	if err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: nextName}, &next); err == nil {
@@ -241,10 +209,10 @@ func (r *SopsTenantReconciler) missingKey(ctx context.Context, tc client.Client,
 	} else if !apierrors.IsNotFound(err) {
 		return "", "", err
 	}
-	if t.Status.PublicKey != "" {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s with key %s was deleted%s",
-			t.Namespace, keyName, t.Status.PublicKey, restoreHint(backup)), nil
-	}
+
+	// No key Secret and no next key: whatever key appears next, generated or brought, is the new key.
+	t.Status.PublicKey = ""
+
 	if !t.ShouldGenerateKey() {
 		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
 	}
@@ -253,9 +221,13 @@ func (r *SopsTenantReconciler) missingKey(ctx context.Context, tc client.Client,
 		return "", "", err
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: t.Namespace, Labels: keyLabels(t)},
-		Type:       corev1.SecretTypeOpaque,
-		Data:       map[string][]byte{crypto.KeyFileField: keyFile},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keyName,
+			Namespace: t.Namespace,
+			Labels:    keyLabels(t),
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{crypto.KeyFileField: keyFile},
 	}
 	if err := tc.Create(ctx, secret); err != nil {
 		if apierrors.IsForbidden(err) {
@@ -266,7 +238,6 @@ func (r *SopsTenantReconciler) missingKey(ctx context.Context, tc client.Client,
 		return "", "", err
 	}
 	t.Status.PublicKey = recipient
-	r.remember(t, keyFile)
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
 		"generated a post-quantum key in Secret %s", keyName)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil

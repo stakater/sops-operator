@@ -176,10 +176,6 @@ func (r *SopsTenantReconciler) completeRotation(ctx context.Context, t *sopsv1al
 			return fmt.Errorf("delete %s/%s: %w", t.Namespace, next.Name, err)
 		}
 	}
-	if err := deleteBackups(ctx, tc, t); err != nil {
-		return err
-	}
-	r.remember(t, current.Data[crypto.KeyFileField])
 	for i := range users {
 		if err := clearRotation(ctx, r.Client, &users[i]); err != nil {
 			return err
