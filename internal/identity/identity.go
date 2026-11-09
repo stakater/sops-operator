@@ -53,6 +53,14 @@ func NewFactory(base *rest.Config, scheme *runtime.Scheme) *Factory {
 	return &Factory{base: base, scheme: scheme, clients: map[string]client.Client{}}
 }
 
+// ConfigFor returns a rest config acting as the identity of the tenant named tenant in
+// tenantNamespace.
+func (f *Factory) ConfigFor(tenantNamespace, tenant string) *rest.Config {
+	cfg := rest.CopyConfig(f.base)
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: UserName(tenantNamespace, tenant)}
+	return cfg
+}
+
 // ClientFor returns an uncached client acting as the identity of the tenant named tenant in
 // tenantNamespace.
 func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, error) {
@@ -62,9 +70,7 @@ func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, erro
 	if c, ok := f.clients[user]; ok {
 		return c, nil
 	}
-	cfg := rest.CopyConfig(f.base)
-	cfg.Impersonate = rest.ImpersonationConfig{UserName: user}
-	c, err := client.New(cfg, client.Options{Scheme: f.scheme})
+	c, err := client.New(f.ConfigFor(tenantNamespace, tenant), client.Options{Scheme: f.scheme})
 	if err != nil {
 		return nil, fmt.Errorf("client for %s: %w", user, err)
 	}
@@ -72,23 +78,32 @@ func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, erro
 	return c, nil
 }
 
-// CanWriteSecrets reports whether the identity of the tenant named tenant in tenantNamespace may
-// create Secrets in namespace. It is an early check; the API server enforces the same rule on
-// every write.
-func CanWriteSecrets(ctx context.Context, c client.Client, tenantNamespace, tenant, namespace string) (bool, error) {
-	sar := &authorizationv1.SubjectAccessReview{
-		Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:   UserName(tenantNamespace, tenant),
-			Groups: groups(tenantNamespace),
-			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Namespace: namespace,
-				Verb:      "create",
-				Resource:  "secrets",
+// ReconcileVerbs are the Secret verbs of sops-tenant-secret-reconciler: the identity writes output
+// Secrets and watches them, so a deleted or changed one is restored at once.
+var ReconcileVerbs = []string{"create", "update", "list", "watch"}
+
+// CanReconcileSecrets reports whether the identity of the tenant named tenant in tenantNamespace holds
+// every verb of ReconcileVerbs on Secrets in namespace. It is an early check; the API server enforces
+// the same rules on every call.
+func CanReconcileSecrets(ctx context.Context, c client.Client, tenantNamespace, tenant, namespace string) (bool, error) {
+	for _, verb := range ReconcileVerbs {
+		sar := &authorizationv1.SubjectAccessReview{
+			Spec: authorizationv1.SubjectAccessReviewSpec{
+				User:   UserName(tenantNamespace, tenant),
+				Groups: groups(tenantNamespace),
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: namespace,
+					Verb:      verb,
+					Resource:  "secrets",
+				},
 			},
-		},
+		}
+		if err := c.Create(ctx, sar); err != nil {
+			return false, fmt.Errorf("subject access review: %w", err)
+		}
+		if !sar.Status.Allowed {
+			return false, nil
+		}
 	}
-	if err := c.Create(ctx, sar); err != nil {
-		return false, fmt.Errorf("subject access review: %w", err)
-	}
-	return sar.Status.Allowed, nil
+	return true, nil
 }

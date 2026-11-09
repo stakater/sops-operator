@@ -62,9 +62,10 @@ and every access appears in the Kubernetes audit log under both identities.
 
 ### ✍️ Least privilege in application namespaces
 
-A tenant's identity may create and update Secrets in its namespaces, but **cannot read them**. The operator tracks
-ownership through the UID of the Secret it created, so it never needs to read what lives in an application
-namespace.
+A tenant's identity may create, update, list and watch Secrets only in the namespaces granted to it; listing
+includes reading them, so grant only namespaces the tenant may see. The operator
+watches **metadata only** of the Secrets it wrote, so a deleted or changed Secret is restored at once, and it
+holds no Secret contents. It tracks ownership through the UID of the Secret it created, never through a read.
 
 ### 🧩 Explicit grants, self-service tenants
 
@@ -133,7 +134,7 @@ flowchart TB
     OP -->|create| SA
     OP -->|"tenant impersonation"| SA
     SA -->|reads| KEY
-    SA -->|writes| OUT
+    SA -->|writes, watches| OUT
 ```
 
 For every `SopsSecret`, on every change and on a periodic resync, the operator:
@@ -145,6 +146,8 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 4. Decrypts **only the scope** first and verifies that it matches the `SopsSecret`'s namespace and name.
 5. Decrypts the values and writes the Secret **as the tenant identity**. The API server authorizes the write
    again.
+6. Watches the Secret's metadata as the tenant identity, so a deleted or changed Secret is restored at once
+   rather than at the next resync.
 
 Revoking a grant takes effect at the next reconcile. Grants and keys are re-checked every time, never cached as
 decisions.
@@ -155,7 +158,7 @@ decisions.
 
 - Let the operator use the tenant's ServiceAccount in the tenant namespace (`sops-operator-tenant`).
 - Let the tenant's ServiceAccount get, create, update and delete its key Secrets (`sops-key-owner`; update and delete only to complete a rotation or remove an orphaned next key).
-- Grant each namespace the tenant may write Secrets to (`sops-secret-writer`).
+- Grant each namespace the tenant may write Secrets to (`sops-tenant-secret-reconciler`).
 
 Never needs access to tenant keys or plaintext.
 
@@ -216,7 +219,7 @@ v0.0.4 → v0.0.5) as soon as the CatalogSource has polled the new catalog. To p
 use an immutable catalog tag such as `v0.0.5` and change it deliberately.
 
 The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
-`sops-secret-writer`.
+`sops-tenant-secret-reconciler`.
 
 ### 2. Onboard the tenant (cluster admin)
 
@@ -261,18 +264,18 @@ subjects:
     namespace: team-a-system
 ```
 
-**c. Let the tenant write Secrets into an application namespace** (one per namespace, here `team-a-foo`):
+**c. Let the tenant write and watch Secrets in an application namespace** (one per namespace, here `team-a-foo`):
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: team-a-secret-writer
+  name: team-a-secret-reconciler
   namespace: team-a-foo
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: sops-secret-writer
+  name: sops-tenant-secret-reconciler
 subjects:
   - kind: ServiceAccount
     name: team-a-sops-tenant
@@ -465,6 +468,10 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
 - **Disaster recovery**: restore key Secrets before `SopsTenant`s, or set `generateKey: false`, so no new key is
   generated in place of a lost one. Break-glass recipients can decrypt every file.
+- **Upgrading from v0.0.4**: `sops-tenant-secret-reconciler` replaces `sops-secret-writer` and adds `list` and
+  `watch`. Until each application namespace binds the new role (binding **c** of
+  [step 2](#2-onboard-the-tenant-cluster-admin)), its `SopsSecret`s report `AccessDenied` naming the role, and
+  existing Secrets stay as they are. Delete the old bindings afterwards; their role no longer exists.
 - **Revocation**: removing a namespace RoleBinding stops all writes there at the next reconcile; removing the
   key-owner RoleBinding stops all decryption for the tenant.
 
