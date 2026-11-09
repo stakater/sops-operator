@@ -1,0 +1,32 @@
+# Refuses direct changes to the Secrets the operator owns (DESIGN.md D53). Only Secrets carrying the
+# tenant label reach the webhook; failurePolicy Fail keeps them protected while the operator is down.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+  - name: vsecret.sops.stakater.com
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: webhook-service
+        namespace: system
+        path: /validate-v1-secret
+    failurePolicy: Fail
+    sideEffects: None
+    timeoutSeconds: 10
+    objectSelector:
+      matchExpressions:
+        - key: sops.stakater.com/tenant
+          operator: Exists
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - UPDATE
+          - DELETE
+        resources:
+          - secrets

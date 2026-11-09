@@ -17,11 +17,7 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
@@ -79,18 +75,4 @@ func TestSecretDecryption(t *testing.T) {
 		}
 		assertGolden(t, after, "updated", s)
 	})
-}
-
-// outputSecretOrNil returns the Secret "db-creds" in namespace, or nil when it does not exist.
-func outputSecretOrNil(t *testing.T, namespace string) *corev1.Secret {
-	t.Helper()
-	var s corev1.Secret
-	err := k8s.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: "db-creds"}, &s)
-	if client.IgnoreNotFound(err) != nil {
-		t.Fatal(err)
-	}
-	if err != nil {
-		return nil
-	}
-	return &s
 }

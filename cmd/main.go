@@ -38,8 +38,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
+	sopsadmission "github.com/stakater/sops-operator/internal/admission"
 	"github.com/stakater/sops-operator/internal/controller"
 	"github.com/stakater/sops-operator/internal/identity"
 	"github.com/stakater/sops-operator/internal/secretwatch"
@@ -198,6 +201,9 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsSecret")
 		os.Exit(1)
 	}
+	mgr.GetWebhookServer().Register(sopsadmission.Path, &webhook.Admission{Handler: &sopsadmission.SecretValidator{
+		Client: mgr.GetClient(), Decoder: admission.NewDecoder(mgr.GetScheme()),
+	}})
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
@@ -214,6 +220,10 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		setupLog.Error(err, "unable to set up webhook ready check")
 		os.Exit(1)
 	}
 

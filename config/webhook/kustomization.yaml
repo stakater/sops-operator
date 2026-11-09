@@ -1,0 +1,6 @@
+resources:
+  - validating-webhook.yaml
+  - service.yaml
+
+configurations:
+  - kustomizeconfig.yaml
