@@ -27,6 +27,7 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -70,6 +71,13 @@ func (v *SecretValidator) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Allowed("")
 	}
 	if owner, ok := old.Annotations[sopsv1alpha1.AnnotationSopsSecret]; ok {
+		// A Secret retained after its SopsSecret was deleted is no longer the operator's.
+		err := v.Client.Get(ctx, client.ObjectKey{Namespace: old.Namespace, Name: owner}, &sopsv1alpha1.SopsSecret{})
+		if apierrors.IsNotFound(err) {
+			return admission.Allowed("")
+		} else if err != nil {
+			return admission.Errored(http.StatusInternalServerError, err)
+		}
 		return admission.Denied(fmt.Sprintf("Secret %s/%s is written from SopsSecret %s; change the SopsSecret instead",
 			old.Namespace, old.Name, owner))
 	}

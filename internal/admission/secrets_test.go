@@ -95,6 +95,8 @@ func TestSecretValidator(t *testing.T) {
 	unusedKey := tenantSecret(tenantNS, sopsv1alpha1.TenantKeySecretName("team-b"), "team-b")
 	unlabelled := outputSecret()
 	unlabelled.Labels = nil
+	retained := outputSecret()
+	retained.Annotations[sopsv1alpha1.AnnotationSopsSecret] = "deleted"
 
 	cases := []struct {
 		name    string
@@ -114,6 +116,8 @@ func TestSecretValidator(t *testing.T) {
 			request(t, admissionv1.Delete, "system:serviceaccount:kube-system:generic-garbage-collector", outputSecret(), nil), true, ""},
 		{"shall allow the namespace controller to delete an output Secret",
 			request(t, admissionv1.Delete, "system:serviceaccount:kube-system:namespace-controller", outputSecret(), nil), true, ""},
+		{"shall allow a user to delete a retained Secret whose SopsSecret is gone",
+			request(t, admissionv1.Delete, user, retained, nil), true, ""},
 		{"shall refuse a user's change to the key of a tenant with SopsSecrets",
 			request(t, admissionv1.Update, user, key, edited(key)), false, "startRotation"},
 		{"shall refuse a user's deletion of the key of a tenant with SopsSecrets",
