@@ -23,6 +23,20 @@ if [ -z "$NEXT" ] && [ -z "$OLD" ]; then
   exit 1
 fi
 
+# nearest_config <file>: the .sops.yaml in the file's directory or the nearest directory above it.
+nearest_config() {
+  local dir
+  dir="$(cd "$(dirname "$1")" && pwd -P)"
+  while :; do
+    if [ -f "$dir/.sops.yaml" ]; then
+      echo "$dir/.sops.yaml"
+      return
+    fi
+    [ "$dir" = "/" ] && return
+    dir="$(dirname "$dir")"
+  done
+}
+
 # has_key <file> <public key>: the file has an entry for the key in sops.age.
 has_key() {
   [ "$(K="$2" yq '[.sops.age[].recipient] | contains([strenv(K)])' "$1")" = "true" ]
@@ -91,7 +105,8 @@ for i in ${FILES[@]+"${!FILES[@]}"}; do
   fi
 done
 
-# Step 6: update every .sops.yaml in the directory: add the next key where the current key is listed,
+# Step 6: update the .sops.yaml files: every one in the directory, and for each file the nearest one
+# above it, which is the one sops uses for that file. Add the next key where the current key is listed,
 # and remove the old key. Other recipients, such as break-glass keys, stay, and rules without an age key
 # (for example a kms-only rule) are not touched. The age list is a comma-separated string or a YAML list;
 # a string keeps its separator, "," or ", " (as sops reads keys folded over lines).
@@ -113,7 +128,10 @@ while IFS= read -r config; do
       join($sep))' "$config"
     O="$OLD" yq -i '(.creation_rules[] | select(has("age")) | .age | select(tag == "!!seq")) |= map(select(. != strenv(O)))' "$config"
   fi
-done < <(find "$DIR" -type f -name '.sops.yaml')
+done < <({
+  find "$DIR" -type f -name '.sops.yaml'
+  for file in ${FILES[@]+"${FILES[@]}"}; do nearest_config "$file"; done
+} | while IFS= read -r config; do echo "$(cd "$(dirname "$config")" && pwd -P)/.sops.yaml"; done | sort -u)
 
 # Step 7: report SopsSecrets of the tenant in the cluster that have no file here: they belong to
 # another directory, or their file is missing.

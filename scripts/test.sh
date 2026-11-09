@@ -253,6 +253,12 @@ check "stops when one of two files has no SopsSecret in the cluster" \
 check "changes no file when one of two files fails" diff -r "$WORK/rot.two" "$ROT"
 rm -r "$ROT/team-a/zz"
 
+# Run on a subdirectory, the .sops.yaml that sops uses for its files is above it.
+cp -R "$WORK/rot.before" "$WORK/sub"
+check "adds the next key to the files of a subdirectory" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$WORK/sub/team-a"
+check "adds the next key to the .sops.yaml above the subdirectory" \
+  yq -e ".creation_rules[0].age | contains(\"$NEXT\")" "$WORK/sub/.sops.yaml"
+
 check "adds the next key to the tenant's files" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "the file decrypts with the next key" \
   env SOPS_AGE_KEY_FILE="$WORK/next.key" sops decrypt "$ROT/team-a/db.sops.yaml"
@@ -276,6 +282,10 @@ check "leaves rotated files unchanged" cmp "$WORK/db.rotated" "$ROT/team-a/db.so
 yq -n -o json ".status.publicKey = \"$NEXT\" | .status.lastRotation.previousPublicKey = \"$CURRENT\"" \
   >"$WORK/cluster/sopstenant-team-a-system-team-a.json"
 check "removes the old key after completion" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "removes the old key after completion from a subdirectory" \
+  "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$WORK/sub/team-a"
+check "removes the old key from the .sops.yaml above the subdirectory" \
+  yq -e ".creation_rules[0].age == \"$BREAKGLASS,$NEXT\"" "$WORK/sub/.sops.yaml"
 check "the file no longer lists the old key" \
   yq -e "[.sops.age[].recipient] | contains([\"$CURRENT\"]) | not" "$ROT/team-a/db.sops.yaml"
 check "the file decrypts with the new key after cleanup" \
