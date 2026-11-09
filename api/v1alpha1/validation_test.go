@@ -132,3 +132,24 @@ func TestSopsTenantValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestSopsTenantRotationFields(t *testing.T) {
+	ns := env.Namespace(t, "validation")
+	t.Run("shall accept startRotation", func(t *testing.T) {
+		tenant := &sopsv1alpha1.SopsTenant{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-team", Namespace: ns},
+			Spec:       sopsv1alpha1.SopsTenantSpec{StartRotation: true},
+		}
+		if err := env.Admin.Create(context.Background(), tenant); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if !tenant.Spec.StartRotation {
+			t.Fatal("startRotation was not stored")
+		}
+	})
+	t.Run("shall name the next key Secret after the tenant", func(t *testing.T) {
+		if got := sopsv1alpha1.TenantNextKeySecretName("my-team"); got != "my-team-sops-keys-next" {
+			t.Fatalf("TenantNextKeySecretName = %q", got)
+		}
+	})
+}

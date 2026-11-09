@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,20 +57,37 @@ func TestTenantIdentity(t *testing.T) {
 		}
 	})
 
-	t.Run("shall report Secret write only in granted namespaces", func(t *testing.T) {
+	t.Run("shall report Secret reconcile only in namespaces granted sops-tenant-secret-reconciler", func(t *testing.T) {
 		ctx := context.Background()
 		tenantNS := env.Namespace(t, "tenant")
 		granted := env.Namespace(t, "granted")
+		writeOnly := env.Namespace(t, "write-only")
 		other := env.Namespace(t, "other")
 		env.Onboard(t, tenantNS, "my-team", granted)
+		// A binding of v0.0.4's write-only role: it cannot watch the Secrets it writes.
+		role := &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "write-only-"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "update"}}},
+		}
+		if err := env.Admin.Create(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "write-only", Namespace: writeOnly},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+			Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "my-team-sops-tenant", Namespace: tenantNS}},
+		}
+		if err := env.Admin.Create(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
 
-		for ns, want := range map[string]bool{granted: true, other: false} {
-			got, err := identity.CanWriteSecrets(ctx, env.Operator, tenantNS, "my-team", ns)
+		for ns, want := range map[string]bool{granted: true, writeOnly: false, other: false} {
+			got, err := identity.CanReconcileSecrets(ctx, env.Operator, tenantNS, "my-team", ns)
 			if err != nil {
-				t.Fatalf("CanWriteSecrets(%s): %v", ns, err)
+				t.Fatalf("CanReconcileSecrets(%s): %v", ns, err)
 			}
 			if got != want {
-				t.Fatalf("CanWriteSecrets(%s) = %v, want %v", ns, got, want)
+				t.Fatalf("CanReconcileSecrets(%s) = %v, want %v", ns, got, want)
 			}
 		}
 	})

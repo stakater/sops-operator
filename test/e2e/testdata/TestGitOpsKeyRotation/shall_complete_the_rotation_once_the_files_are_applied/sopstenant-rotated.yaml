@@ -1,0 +1,35 @@
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsTenant
+metadata:
+  creationTimestamp: <timestamp>
+  generation: 3
+  name: my-team
+  namespace: e2e-gitops-rotate
+  resourceVersion: <resourceVersion>
+  uid: <uid:sopstenant/my-team>
+spec:
+  generateKey: true
+status:
+  conditions:
+  - lastTransitionTime: <timestamp>
+    message: key loaded
+    observedGeneration: 3
+    reason: KeyLoaded
+    status: "True"
+    type: Ready
+  - lastTransitionTime: <timestamp>
+    message: the next key replaced the old key; remove the old public key from .sops.yaml
+      and run scripts/rotate.sh
+    observedGeneration: 3
+    reason: RotationComplete
+    status: "True"
+    type: Rotated
+  keySecretName: my-team-sops-keys
+  lastRotation:
+    completedAt: <timestamp>
+    previousPublicKey: <publicKey>
+    startedAt: <timestamp>
+  observedGeneration: 3
+  publicKey: <publicKey>
+  serviceAccountName: my-team-sops-tenant
+  usedBy: 2

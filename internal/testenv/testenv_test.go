@@ -135,3 +135,59 @@ func namespaceAdminRole(t *testing.T) string {
 	}
 	return role.Name
 }
+
+func TestKeyOwnerMayCompleteRotation(t *testing.T) {
+	ns := env.Namespace(t, "tenant")
+	env.Onboard(t, ns, "my-team")
+	sa := "system:serviceaccount:" + ns + ":my-team-sops-tenant"
+	for _, verb := range []string{"get", "create", "update", "delete"} {
+		t.Run("shall allow "+verb+" on Secrets in the tenant namespace", func(t *testing.T) {
+			review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+				User: sa,
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: ns, Verb: verb, Resource: "secrets", Name: "my-team-sops-keys-next",
+				},
+			}}
+			if err := env.Admin.Create(context.Background(), review); err != nil {
+				t.Fatal(err)
+			}
+			if !review.Status.Allowed {
+				t.Fatalf("%s secrets is not allowed: %s", verb, review.Status.Reason)
+			}
+		})
+	}
+}
+
+// The rotation completes on SopsSecret status (DESIGN.md §4.4): tenant users edit SopsSecrets but
+// cannot write their status, or they could mark a file migrated and have the old key removed.
+func TestTenantUsersCannotWriteSopsSecretStatus(t *testing.T) {
+	ns := env.Namespace(t, "tenant")
+	user := "tenant-admin-" + ns
+	if _, err := env.AddUser(user, namespaceAdminRole(t), ns); err != nil {
+		t.Fatal(err)
+	}
+	allowed := func(t *testing.T, verb, subresource string) bool {
+		t.Helper()
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User: user,
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: ns, Verb: verb, Group: sopsv1alpha1.GroupVersion.Group, Resource: "sopssecrets",
+				Subresource: subresource, Name: "db",
+			},
+		}}
+		if err := env.Admin.Create(context.Background(), review); err != nil {
+			t.Fatal(err)
+		}
+		return review.Status.Allowed
+	}
+	for _, verb := range []string{"update", "patch"} {
+		t.Run("shall allow a namespace admin to "+verb+" a SopsSecret but not its status", func(t *testing.T) {
+			if !allowed(t, verb, "") {
+				t.Fatalf("%s sopssecrets is not allowed; the review below would pass for the wrong reason", verb)
+			}
+			if allowed(t, verb, "status") {
+				t.Fatalf("%s sopssecrets/status is allowed", verb)
+			}
+		})
+	}
+}

@@ -60,5 +60,8 @@ func TestSecretDeletion(t *testing.T) {
 			t.Fatalf("a retained Secret must have no owner, got %v", kept.OwnerReferences)
 		}
 		assertGolden(t, kept, "retained")
+		if err := k8s.Delete(context.Background(), kept); err != nil {
+			t.Fatalf("delete the retained Secret: %v", err)
+		}
 	})
 }

@@ -53,6 +53,8 @@ const (
 	tenantSA = tenantName + "-sops-tenant"
 	// tenantKeySecret holds the tenant key, which the operator generates.
 	tenantKeySecret = tenantName + "-sops-keys"
+	// secretRole grants the tenant's ServiceAccount Secret write and watch in a namespace (D52).
+	secretRole = "sops-tenant-secret-reconciler"
 	// password is the plaintext value the use cases encrypt.
 	password = "hunter2"
 )
@@ -128,7 +130,16 @@ func onboard(t *testing.T, tenantNamespace string, writeNamespaces ...string) {
 	t.Helper()
 	apply(t, render(t, "onboarding.yaml", map[string]any{
 		"TenantNamespace": tenantNamespace, "TenantSA": tenantSA, "WriteNamespaces": writeNamespaces,
-		"OperatorNamespace": operatorNamespace,
+		"OperatorNamespace": operatorNamespace, "SecretRole": secretRole,
+	}))
+}
+
+// grantSecrets binds role to the tenant's ServiceAccount in namespace, as the cluster admin does for
+// each namespace the tenant writes Secrets to.
+func grantSecrets(t *testing.T, role, tenantNamespace, namespace string) {
+	t.Helper()
+	apply(t, render(t, "secret-binding.yaml", map[string]any{
+		"TenantSA": tenantSA, "TenantNamespace": tenantNamespace, "Namespace": namespace, "Role": role,
 	}))
 }
 

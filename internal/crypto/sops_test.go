@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -26,7 +25,7 @@ const wantScope = "my-app-prod/db-creds"
 
 func newKeys(t *testing.T) *crypto.KeySet {
 	t.Helper()
-	keyFile, _, err := crypto.GenerateKeyFile(time.Now())
+	keyFile, _, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +114,11 @@ func TestDecryption(t *testing.T) {
 	})
 
 	t.Run("shall decrypt with a key that is not the primary one", func(t *testing.T) {
-		oldFile, oldRecipient, err := crypto.GenerateKeyFile(time.Now())
+		oldFile, oldRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
-		newFile, _, err := crypto.GenerateKeyFile(time.Now())
+		newFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,6 +228,60 @@ func TestDecryption(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "my-app-prod") {
 			t.Fatalf("error leaks the scope plaintext: %q", err)
+		}
+	})
+}
+
+// withEntry appends an age entry to a document's sops.age, as the rotation CLI does in Git.
+func withEntry(t *testing.T, doc []byte, e crypto.AgeEntry) []byte {
+	t.Helper()
+	return viaAPI(t, doc, func(m map[string]any) {
+		s := m["sops"].(map[string]any)
+		s["age"] = append(s["age"].([]any), map[string]any{"recipient": e.Recipient, "enc": e.Enc})
+	})
+}
+
+func TestWrapDataKey(t *testing.T) {
+	t.Run("shall let the next key decrypt the unchanged document", func(t *testing.T) {
+		current, next := newKeys(t), newKeys(t)
+		doc := viaAPI(t, encrypt(t, sortedPlain, current.Recipients[0]), nil)
+		entry, err := crypto.WrapDataKey(doc, current, next.Recipients[0])
+		if err != nil {
+			t.Fatalf("WrapDataKey: %v", err)
+		}
+		if entry.Recipient != next.Recipients[0] || !strings.Contains(entry.Enc, "BEGIN AGE ENCRYPTED FILE") {
+			t.Fatalf("entry = %+v", entry)
+		}
+		rotated := withEntry(t, doc, entry)
+		plain, err := crypto.Decrypt(rotated, next, wantScope)
+		if err != nil {
+			t.Fatalf("Decrypt with the next key: %v", err)
+		}
+		if !strings.Contains(string(plain), "two") {
+			t.Fatal("the next key did not decrypt the values")
+		}
+		if _, err := crypto.Decrypt(rotated, current, wantScope); err != nil {
+			t.Fatalf("Decrypt with the current key: %v", err)
+		}
+	})
+	t.Run("shall reject keys the document is not encrypted for", func(t *testing.T) {
+		owner, other, next := newKeys(t), newKeys(t), newKeys(t)
+		doc := viaAPI(t, encrypt(t, sortedPlain, owner.Recipients[0]), nil)
+		_, err := crypto.WrapDataKey(doc, other, next.Recipients[0])
+		if !errors.Is(err, crypto.ErrNotRecipient) {
+			t.Fatalf("err = %v, want ErrNotRecipient", err)
+		}
+	})
+	t.Run("shall reject an invalid recipient", func(t *testing.T) {
+		current := newKeys(t)
+		doc := viaAPI(t, encrypt(t, sortedPlain, current.Recipients[0]), nil)
+		const bad = "age1notarecipient"
+		_, err := crypto.WrapDataKey(doc, current, bad)
+		if !errors.Is(err, crypto.ErrUnsupported) {
+			t.Fatalf("err = %v, want ErrUnsupported", err)
+		}
+		if strings.Contains(err.Error(), bad) {
+			t.Fatalf("the error echoes the input: %v", err)
 		}
 	})
 }
