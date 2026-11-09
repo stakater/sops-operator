@@ -64,6 +64,13 @@ const (
 // ActionGenerateKey is the events.k8s.io action recorded when the operator generates a tenant key.
 const ActionGenerateKey = "GenerateKey"
 
+// ReasonKeyBackedUp is the Warning event reason, and ActionBackUpKey its action, when the operator saves
+// the previous key of a key Secret that was changed or deleted outside a rotation.
+const (
+	ReasonKeyBackedUp = "KeyBackedUp"
+	ActionBackUpKey   = "BackUpKey"
+)
+
 // SopsSecret Ready reasons. ReasonAccessDenied is shared with SopsTenant.
 const (
 	ReasonDecrypted      = "Decrypted"
@@ -95,6 +102,11 @@ const (
 	// Secret they bring, for the operator to adopt it.
 	LabelTenant          = "sops.stakater.com/tenant"
 	LabelTenantNamespace = "sops.stakater.com/tenant-namespace"
+	// LabelKeyBackup marks a backup of a tenant key, <tenant>-sops-keys-<timestamp>, made when the key
+	// Secret was changed or deleted outside a rotation; AnnotationPublicKey holds the backed-up key's
+	// public key.
+	LabelKeyBackup      = "sops.stakater.com/key-backup"
+	AnnotationPublicKey = "sops.stakater.com/public-key"
 	// ReservedPrefix is the prefix of the operator's own labels and annotations; a SopsSecret's template
 	// cannot set them.
 	ReservedPrefix = "sops.stakater.com/"

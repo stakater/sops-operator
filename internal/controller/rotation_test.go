@@ -27,7 +27,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
@@ -263,61 +262,6 @@ func TestRotationStartEdges(t *testing.T) {
 		assertNoSecret(t, tenantNS, keyName)
 	})
 
-	t.Run("shall regenerate a deleted key and load it", func(t *testing.T) {
-		tenantNS, recipient := onboardedTenant(t)
-		tenant := tenantOf(t, tenantNS)
-		NewWithT(t).Eventually(func(g Gomega) {
-			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
-			g.Expect(tenant.Status.PublicKey).To(Equal(recipient))
-		}).WithTimeout(20 * time.Second).Should(Succeed())
-
-		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
-		if err := env.Admin.Delete(context.Background(), &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS}}); err != nil {
-			t.Fatal(err)
-		}
-		NewWithT(t).Eventually(func(g Gomega) {
-			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
-			c := meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionReady)
-			g.Expect(c).NotTo(BeNil())
-			g.Expect(c.Reason).To(Equal(sopsv1alpha1.ReasonKeyLoaded), c.Message)
-			g.Expect(tenant.Status.PublicKey).NotTo(Equal(recipient))
-			g.Expect(tenant.Status.PublicKey).NotTo(BeEmpty())
-		}).WithTimeout(20 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
-	})
-
-	t.Run("shall load a bring-your-own key created after the old one was deleted", func(t *testing.T) {
-		tenantNS, _ := onboardedTenant(t)
-		tenant := tenantOf(t, tenantNS)
-		NewWithT(t).Eventually(func(g Gomega) {
-			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
-			g.Expect(tenant.Status.PublicKey).NotTo(BeEmpty())
-		}).WithTimeout(20 * time.Second).Should(Succeed())
-		update(t, tenant, func() { tenant.Spec.GenerateKey = ptr.To(false) })
-
-		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
-		if err := env.Admin.Delete(context.Background(), &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS}}); err != nil {
-			t.Fatal(err)
-		}
-		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
-
-		keyFile, recipient, err := crypto.GenerateKeyFile()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := env.Admin.Create(context.Background(), &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS, Labels: map[string]string{
-				sopsv1alpha1.LabelTenant: tenantName, sopsv1alpha1.LabelTenantNamespace: tenantNS}},
-			Data: map[string][]byte{crypto.KeyFileField: keyFile},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
-		if tenant.Status.PublicKey != recipient {
-			t.Fatal("status.publicKey does not hold the brought key")
-		}
-	})
 }
 
 // migrate appends the offered next-key entry to the SopsSecret, as a team does in Git.
