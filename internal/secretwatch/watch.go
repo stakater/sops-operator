@@ -32,6 +32,7 @@ import (
 	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
@@ -46,9 +47,13 @@ const syncTimeout = 30 * time.Second
 // values, labels and annotations again.
 type Watches struct {
 	configFor func(tenantNamespace, tenant string) *rest.Config
-	events    chan event.GenericEvent
-	ctx       context.Context
-	cancel    context.CancelFunc
+	// selector selects the watched Secrets of a tenant, and owner maps one to the object to reconcile,
+	// nil to ignore it.
+	selector func(tenant types.NamespacedName) labels.Set
+	owner    func(tenant types.NamespacedName, m *metav1.PartialObjectMetadata) client.Object
+	events   chan event.GenericEvent
+	ctx      context.Context
+	cancel   context.CancelFunc
 
 	mu      sync.Mutex
 	watches map[key]*watch
@@ -65,12 +70,45 @@ type watch struct {
 	owners int
 }
 
-// New returns Watches that act as the identity configFor returns.
+// New returns Watches of output Secrets that act as the identity configFor returns: a changed output
+// Secret reports the SopsSecret named in its annotation.
 func New(configFor func(tenantNamespace, tenant string) *rest.Config) *Watches {
+	return newWatches(configFor, func(tenant types.NamespacedName) labels.Set {
+		s := tenantLabels(tenant)
+		s[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
+		return s
+	}, func(_ types.NamespacedName, m *metav1.PartialObjectMetadata) client.Object {
+		name := m.Annotations[sopsv1alpha1.AnnotationSopsSecret]
+		if name == "" {
+			return nil
+		}
+		return &sopsv1alpha1.SopsSecret{ObjectMeta: metav1.ObjectMeta{Namespace: m.Namespace, Name: name}}
+	})
+}
+
+// NewKeyWatches returns Watches of a tenant's key Secrets in its tenant namespace, selected by the tenant
+// labels alone (a brought key carries no managed-by label): a changed key Secret reports the tenant.
+// Output Secrets in the tenant namespace belong to their SopsSecret and are ignored.
+func NewKeyWatches(configFor func(tenantNamespace, tenant string) *rest.Config) *Watches {
+	return newWatches(configFor, tenantLabels, func(tenant types.NamespacedName, m *metav1.PartialObjectMetadata) client.Object {
+		if _, output := m.Annotations[sopsv1alpha1.AnnotationSopsSecret]; output {
+			return nil
+		}
+		return &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Namespace: tenant.Namespace, Name: tenant.Name}}
+	})
+}
+
+func tenantLabels(tenant types.NamespacedName) labels.Set {
+	return labels.Set{sopsv1alpha1.LabelTenant: tenant.Name, sopsv1alpha1.LabelTenantNamespace: tenant.Namespace}
+}
+
+func newWatches(configFor func(tenantNamespace, tenant string) *rest.Config,
+	selector func(types.NamespacedName) labels.Set,
+	owner func(types.NamespacedName, *metav1.PartialObjectMetadata) client.Object) *Watches {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Watches{
-		configFor: configFor, events: make(chan event.GenericEvent, 100), ctx: ctx, cancel: cancel,
-		watches: map[key]*watch{}, owners: map[types.NamespacedName]key{},
+		configFor: configFor, selector: selector, owner: owner, events: make(chan event.GenericEvent, 100),
+		ctx: ctx, cancel: cancel, watches: map[key]*watch{}, owners: map[types.NamespacedName]key{},
 	}
 }
 
@@ -145,11 +183,7 @@ func (w *Watches) start(ctx context.Context, k key) (context.CancelFunc, error) 
 	if err != nil {
 		return nil, err
 	}
-	selector := labels.Set{
-		sopsv1alpha1.LabelManagedBy:       sopsv1alpha1.ManagedByValue,
-		sopsv1alpha1.LabelTenant:          k.tenant.Name,
-		sopsv1alpha1.LabelTenantNamespace: k.tenant.Namespace,
-	}.String()
+	selector := w.selector(k.tenant).String()
 	informer := metadatainformer.NewFilteredMetadataInformer(mc, corev1.SchemeGroupVersion.WithResource("secrets"),
 		k.namespace, 0, cache.Indexers{}, func(o *metav1.ListOptions) { o.LabelSelector = selector }).Informer()
 	wctx, cancel := context.WithCancel(w.ctx)
@@ -158,11 +192,13 @@ func (w *Watches) start(ctx context.Context, k key) (context.CancelFunc, error) 
 			obj = d.Obj
 		}
 		m, ok := obj.(*metav1.PartialObjectMetadata)
-		if !ok || m.Annotations[sopsv1alpha1.AnnotationSopsSecret] == "" {
+		if !ok {
 			return
 		}
-		owner := &sopsv1alpha1.SopsSecret{ObjectMeta: metav1.ObjectMeta{
-			Namespace: m.Namespace, Name: m.Annotations[sopsv1alpha1.AnnotationSopsSecret]}}
+		owner := w.owner(k.tenant, m)
+		if owner == nil {
+			return
+		}
 		select {
 		case w.events <- event.GenericEvent{Object: owner}:
 		case <-wctx.Done():

@@ -191,3 +191,39 @@ func TestWatchesSelectTheirTenant(t *testing.T) {
 		}
 	})
 }
+
+func TestKeyWatches(t *testing.T) {
+	ctx := context.Background()
+	tenantNS := env.Namespace(t, "tenant")
+	env.Onboard(t, tenantNS, "my-team")
+	tenant := types.NamespacedName{Namespace: tenantNS, Name: "my-team"}
+	w := secretwatch.NewKeyWatches(identity.NewFactory(env.OperatorConfig, env.Scheme).ConfigFor)
+	events := w.Events()
+	t.Cleanup(w.Stop)
+	key := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-team-sops-keys", Namespace: tenantNS, Labels: map[string]string{
+			sopsv1alpha1.LabelTenant: "my-team", sopsv1alpha1.LabelTenantNamespace: tenantNS}},
+		Data: map[string][]byte{"age.agekey": []byte("key")},
+	}
+	unrelated := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: tenantNS}}
+	for _, s := range []*corev1.Secret{key, unrelated} {
+		if err := env.Admin.Create(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Watch(ctx, tenant, tenant); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("shall report a deleted key Secret as its tenant and ignore unrelated Secrets", func(t *testing.T) {
+		if err := env.Admin.Delete(ctx, unrelated); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Delete(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if got := nextEvent(t, events); got != tenant {
+			t.Fatalf("event for %v, want the tenant %v", got, tenant)
+		}
+	})
+}

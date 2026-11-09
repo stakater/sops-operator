@@ -36,12 +36,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/identity"
+	"github.com/stakater/sops-operator/internal/secretwatch"
 )
 
 // SopsTenantReconciler loads or generates a tenant key and reports its state. It accesses the
@@ -49,9 +52,12 @@ import (
 type SopsTenantReconciler struct {
 	client.Client
 	// APIReader reads SopsSecrets uncached for the completion decision; Client is used when nil.
-	APIReader      client.Reader
-	Identities     *identity.Factory
-	Recorder       events.EventRecorder
+	APIReader  client.Reader
+	Identities *identity.Factory
+	Recorder   events.EventRecorder
+	// KeyWatches, when set, watches the tenant's key Secrets, so a changed or deleted key is noticed, and
+	// its previous key saved, at once rather than at the next resync.
+	KeyWatches     *secretwatch.Watches
 	ResyncInterval time.Duration
 	Now            func() time.Time
 
@@ -71,6 +77,9 @@ func (r *SopsTenantReconciler) now() time.Time {
 func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var tenant sopsv1alpha1.SopsTenant
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+		if apierrors.IsNotFound(err) && r.KeyWatches != nil {
+			r.KeyWatches.Release(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	reason, message, err := r.ensureServiceAccount(ctx, &tenant)
@@ -80,6 +89,7 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	r.watchKeys(ctx, &tenant, reason)
 	var users sopsv1alpha1.SopsSecretList
 	if err := r.List(ctx, &users, client.MatchingFields{IndexTenantRef: TenantRefKey(tenant.Namespace, tenant.Name)}); err != nil {
 		return ctrl.Result{}, err
@@ -279,17 +289,35 @@ func onboardHint(t *sopsv1alpha1.SopsTenant) string {
 }
 
 // SetupWithManager registers the controller.
+// watchKeys holds the watch of the tenant's key Secrets while the tenant identity may read them.
+func (r *SopsTenantReconciler) watchKeys(ctx context.Context, t *sopsv1alpha1.SopsTenant, reason string) {
+	if r.KeyWatches == nil {
+		return
+	}
+	tenant := client.ObjectKeyFromObject(t)
+	if reason == sopsv1alpha1.ReasonAccessDenied {
+		r.KeyWatches.Release(tenant)
+		return
+	}
+	if err := r.KeyWatches.Watch(ctx, tenant, tenant); err != nil {
+		// The resync still notices a changed key; the next reconcile tries the watch again.
+		log.FromContext(ctx).Error(err, "watch key Secrets", "tenant", tenant)
+	}
+}
+
 func (r *SopsTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&sopsv1alpha1.SopsTenant{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&sopsv1alpha1.SopsSecret{},
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
 				ref := o.(*sopsv1alpha1.SopsSecret).Spec.TenantRef
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}}}
 			}),
-			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, rotationProgressChanged{}))).
-		Named("sopstenant").
-		Complete(r)
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, rotationProgressChanged{})))
+	if r.KeyWatches != nil {
+		b = b.WatchesRawSource(source.Channel(r.KeyWatches.Events(), &handler.EnqueueRequestForObject{}))
+	}
+	return b.Named("sopstenant").Complete(r)
 }
 
 // rotationProgressChanged passes SopsSecret updates that change what a rotation counts: the
