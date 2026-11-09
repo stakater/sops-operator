@@ -174,6 +174,7 @@ Cannot grant the tenant new namespaces.
 
 - Write a `SopsSecret` with its scope, encrypt it with `sops`, and commit it.
 - Check its `Ready` reason when a Secret does not appear.
+- During a key rotation, run `scripts/rotate.sh` on their files and commit the result (needs read access to the `SopsTenant` and `SopsSecret`s).
 
 Cannot read keys, decrypt files or target another namespace.
 
@@ -184,8 +185,10 @@ application namespace, `team-a-foo`.
 
 ### 1. Install the operator (cluster admin)
 
-On OpenShift, find **SOPS Operator** in OperatorHub once the catalog is added, or create the subscription
-directly:
+On OpenShift, find **SOPS Operator** in OperatorHub once the catalog is added, or create the catalog and the
+subscription directly.
+
+Add the catalog:
 
 ```yaml
 apiVersion: operators.coreos.com/v1alpha1
@@ -200,7 +203,11 @@ spec:
   updateStrategy:
     registryPoll:
       interval: 1h                   # picks up new releases from the moving latest tag
----
+```
+
+Subscribe:
+
+```yaml
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -246,7 +253,7 @@ subjects:
     namespace: openshift-operators
 ```
 
-**b. Let the tenant read and create its key** (once per tenant):
+**b. Let the tenant own its key** (once per tenant; update and delete are used only to complete a rotation):
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -300,12 +307,16 @@ spec:
 
 ```console
 $ kubectl get sopstenant -n team-a-system
-NAME     READY   REASON         USED BY   AGE
-team-a   True    KeyGenerated   0         5s
+NAME     READY   REASON         USED BY   LAST ROTATED   AGE
+team-a   True    KeyGenerated   0                        5s
 ```
 
-The private key is in the Secret `team-a-sops-keys`. Read the public key from the tenant's status and commit it to
-the team's `.sops.yaml`:
+The private key is in the Secret `team-a-sops-keys`. To use an existing key, create the Secret
+`team-a-system/team-a-sops-keys` with your identity in `age.agekey` first, and set `generateKey: false`.
+
+### 3b. Share the public key (tenant admin)
+
+Read the public key from the tenant's status and commit it to the team's `.sops.yaml`:
 
 ```bash
 kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
@@ -320,9 +331,6 @@ creation_rules:
     age:
       - age1pq1...   # team-a
 ```
-
-To use an existing key, create the Secret `team-a-system/team-a-sops-keys` with your identity in `age.agekey` first, and
-set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
 
@@ -348,6 +356,8 @@ yq -i 'sort_keys(..)' team-a-foo/db-credentials.sops.yaml
 sops encrypt -i team-a-foo/db-credentials.sops.yaml
 git add team-a-foo/db-credentials.sops.yaml && git commit -m "Add database credentials"
 ```
+
+[`scripts/encrypt.sh`](scripts/encrypt.sh) runs these three steps; see [scripts/README.md](scripts/README.md).
 
 Once your GitOps tool applies the file:
 
@@ -377,16 +387,20 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 | `spec.type` | `Opaque` | `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. |
 | `spec.template.metadata` | — | Labels and annotations for the Secret, for example for Reloader. |
 | `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
+| `status.rotation` | — | During a key rotation: the `sops.age` entry that `scripts/rotate.sh` adds to the file. |
 | `sops.stakater.com/suspend: "true"` | — | Annotation that pauses reconciliation. |
 
 ### `SopsTenant`
 
-| Field | Default | Description |
-|---|---|---|
-| `spec.startRotation` | `false` | `true` starts a key rotation once every `SopsSecret` is `Decrypted`; `false` or unset completes it once every `SopsSecret` uses the next key. |
-| `status.lastRotation` | — | Start and completion time of the last rotation and the removed `previousPublicKey`. Shown as the `LAST ROTATED` column. |
-| `status.rotation` | — | The rotation in progress: `phase`, `nextKeySecretName`, `nextPublicKey`, `migrated`, `pending` and `pendingSecrets`. |
-| `status.publicKey` | — | Public key of the current key. |
+- `spec.generateKey` (default `true`): generates a post-quantum key when the key Secret does not exist. Set `false`
+  to bring your own key.
+- `spec.startRotation` (default `false`): `true` starts a key rotation once every `SopsSecret` is `Decrypted`.
+  `false` or unset completes it once every `SopsSecret` uses the next key (see [Operations](#operations)).
+- `status.publicKey`: the public key of the current key.
+- `status.lastRotation`: the start and completion time of the last rotation and the removed `previousPublicKey`.
+  Shown as the `LAST ROTATED` column.
+- `status.rotation`: the rotation in progress: `phase`, `nextKeySecretName`, `nextPublicKey`, `migrated`,
+  `pending` and `pendingSecrets`.
 
 ### Status reasons
 
@@ -394,16 +408,18 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 |---|---|
 | `Decrypted` | The Secret is up to date. |
 | `AccessDenied` | The tenant is not granted this namespace. |
-| `TenantNotFound` / `TenantNotReady` | The `SopsTenant` does not exist, or its key cannot be read or is invalid. |
+| `TenantNotFound` / `TenantNotReady` | The `SopsTenant` does not exist, or it is not Ready (see its reason) or its key cannot be read. |
 | `NotRecipient` | The file is not encrypted for the tenant's key. |
 | `ScopeMismatch` | The file was encrypted for another namespace or name. |
 | `DecryptFailed` | The file is malformed, tampered with, or has unsorted keys or unquoted values. |
-| `Conflict` | A Secret with this name exists and was not created by this `SopsSecret`. |
+| `Conflict` | A Secret with this name exists and was not created by this `SopsSecret`, or the name is a tenant's key Secret (`<tenant>-sops-keys` or `-next`). |
 | `ApplyFailed` | The API server rejected the Secret, for example an invalid TLS Secret. |
-| `NextKeyRequired` | During a rotation, the file is not encrypted for the next key. The Secret keeps its last values. |
+| `NextKeyRequired` | During a rotation, a new or changed file is not encrypted for the next key. An existing Secret keeps its last values. |
 | `Suspended` | Reconciliation is paused by annotation. |
 
 `SopsTenant` reports `KeyGenerated`, `KeyLoaded`, `KeyMissing`, `KeyInvalid`, `KeyMismatch` (the key file no longer holds the key in `status.publicKey`, for example after restoring an old backup) or `AccessDenied` (a RoleBinding is missing; the message names it).
+
+`SopsTenant` also reports a `Rotated` condition once a rotation is asked for: `RotationRefused`, `RotationPending`, `RotationBlocked`, `RotationComplete`, `RotationAbandoned` or `NextKeyMissing` (see [Operations](#operations)).
 
 ### Configuration
 
@@ -426,7 +442,9 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
      ```
 
   2. Each team runs the script on its GitOps directory. It appends the operator-prepared entry to every file of
-     the tenant and adds the next public key to `.sops.yaml`.
+     the tenant and adds the next public key to the `.sops.yaml` files sops uses for those files. While teams do
+     this, `Rotated` reports `RotationPending` with the number of `SopsSecret`s that do not use the next key yet.
+     See [scripts/README.md](scripts/README.md#rotate-the-tenant-key).
 
      ```bash
      scripts/rotate.sh tenant.yaml gitops/team-a
@@ -441,7 +459,7 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
      ```
 
   4. After `Rotated` reports `RotationComplete`, each team runs the same script again. It removes the old key's
-     entries from the files and `.sops.yaml`.
+     entries from the files and from those `.sops.yaml` files.
 
      ```bash
      scripts/rotate.sh tenant.yaml gitops/team-a
@@ -450,7 +468,7 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
   Follow the progress with:
 
   ```bash
-  oc get sopstenant team-a -n team-a-system -o jsonpath='{.status.rotation}'
+  kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.rotation}'
   ```
 
   If `<tenant>-sops-keys-next` is lost, `Rotated` reports `NextKeyMissing`: restore the Secret from a backup, or
@@ -466,12 +484,15 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
   encrypted only for the old key no longer decrypt; prefer a key rotation.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
-- **Disaster recovery**: restore key Secrets before `SopsTenant`s, or set `generateKey: false`, so no new key is
-  generated in place of a lost one. Break-glass recipients can decrypt every file.
+- **Disaster recovery**: restore key Secrets, and `<tenant>-sops-keys-next` during a rotation, before
+  `SopsTenant`s, or set `generateKey: false`, so no new key is generated in place of a lost one. Break-glass recipients can decrypt every file.
 - **Upgrading from v0.0.4**: `sops-tenant-secret-reconciler` replaces `sops-secret-writer` and adds `list` and
   `watch`. Until each application namespace binds the new role (binding **c** of
   [step 2](#2-onboard-the-tenant-cluster-admin)), its `SopsSecret`s report `AccessDenied` naming the role, and
-  existing Secrets stay as they are. Delete the old bindings afterwards; their role no longer exists.
+  existing Secrets stay as they are. Delete the old bindings afterwards; their role no longer exists. Read the
+  public key from `status.publicKey` of the `SopsTenant` instead of the key Secret's `age.pub` field, which is no
+  longer written and is ignored. Keys generated by v0.0.4 keep working. The bundle also adds `update` and `delete`
+  to `sops-key-owner`, used only by key rotations; existing bindings need no change.
 - **Revocation**: removing a namespace RoleBinding stops all writes there at the next reconcile; removing the
   key-owner RoleBinding stops all decryption for the tenant.
 
@@ -504,15 +525,16 @@ vulnerability, open a private
 
 ## Development
 
-Requirements: Go 1.25, Docker (or Colima), and `make`. All other tools (operator-sdk, opm, kind, kustomize, sops,
+Requirements: Go 1.26, Docker (or Colima), and `make`. All other tools (operator-sdk, opm, kind, kustomize, sops,
 yq, golangci-lint) are pinned in the Makefile and installed into `bin/`.
 
 ```bash
 make test               # unit and envtest tests with the RBAC authorizer
 make lint
+make test-scripts       # scripts/encrypt.sh and scripts/rotate.sh with a throwaway key and a fake oc
 make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
 make test-upgrade       # upgrade paths through catalog/channels.yaml: published bundles, then this build
-make scorecard          # operator-sdk scorecard against the bundle
+make scorecard          # operator-sdk scorecard against the bundle, on the kind cluster of make test-e2e
 ```
 
 Install from source on a cluster of your choice:

@@ -1,7 +1,7 @@
 # Scripts for SopsSecrets
 
 [`encrypt.sh`](encrypt.sh) encrypts a `SopsSecret` file in your GitOps repository, so it can be committed.
-Copy it into your GitOps repository, for example to `scripts/`.
+Copy both scripts into your GitOps repository, for example to `scripts/`.
 
 It only changes the file. You commit it and your GitOps tool, for example Argo CD, applies it; nothing is
 changed in the cluster directly.
@@ -72,8 +72,8 @@ scripts/encrypt.sh environments/stage/team-a/db-credentials.sops.yaml
 Encrypted environments/stage/team-a/db-credentials.sops.yaml
 ```
 
-The script sets `spec.scope` to `<namespace>/<name>`, sorts the keys and runs `sops encrypt`. Each step is
-explained in the script.
+The script sets `spec.scope` to `<namespace>/<name>` unless the file already has a scope, sorts the keys and
+runs `sops encrypt`. Each step is explained in the script.
 
 **Step 3.** Check that the values are encrypted. Every value starts with `ENC[`:
 
@@ -126,10 +126,12 @@ Added the next key to environments/stage/team-a/db-credentials.sops.yaml
 Done. Review the changes and commit them.
 ```
 
-The script also adds the next key to the tenant's rule in every `.sops.yaml` in the directory, so files
-you encrypt from now on can be decrypted with both keys. Other recipients, such as break-glass keys, stay.
-It changes no file if one is not in the cluster yet, or the operator has not prepared the entry for its
-latest change yet, so let your GitOps tool apply every file first and run it again a little later.
+The script also adds the next key to every rule that lists the current key in the `.sops.yaml` files sops
+uses for your files (the nearest one above each file) and in every `.sops.yaml` inside the directory, so
+files you encrypt from now on can be decrypted with both keys. Other recipients, such as break-glass keys,
+stay. The script changes no file if one is not in the cluster yet, differs from the `SopsSecret` in the
+cluster, or the operator has not prepared the entry for its latest change yet, so let your GitOps tool apply
+every file first and run it again a little later.
 
 **Step 3.** Review the changes with `git diff`, then commit and push.
 
@@ -142,8 +144,8 @@ spec:
   startRotation: false
 ```
 
-**Step 5.** Each team runs the same script again. It now removes the old key from the files and from the
-`.sops.yaml`. Commit and push.
+**Step 5.** Each team runs the same script again. It now removes the old key from the files and from those
+same `.sops.yaml` files. Commit and push.
 
 ```bash
 scripts/rotate.sh environments/stage/team-a-system/tenant.yaml environments/stage
@@ -156,5 +158,6 @@ Done. Review the changes and commit them.
 
 > [!NOTE]
 > - The script is safe to run again: files that are already up to date stay unchanged.
-> - It lists the tenant's `SopsSecret`s that have no file in the directory, so you can find the ones in
->   another directory.
+> - It lists the tenant's `SopsSecret`s that have no file in the directory, so you can find the ones in another
+>   directory. It looks only in the namespaces your files target; for the others, follow
+>   `status.rotation.pendingSecrets` of the `SopsTenant`.

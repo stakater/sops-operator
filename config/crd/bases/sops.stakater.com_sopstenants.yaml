@@ -54,7 +54,7 @@ spec:
             type: object
           spec:
             description: |-
-              SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+              SopsTenantSpec defines a tenant key. The key is the Secret `<tenant>-sops-keys` in the
               tenant's namespace.
             properties:
               generateKey:
@@ -67,7 +67,7 @@ spec:
                   StartRotation set to true asks for a new tenant key: once every SopsSecret of the tenant is
                   healthy, the operator creates the next key and both keys are accepted. Set it to false, or
                   remove it, to complete the rotation: the next key replaces the current one once every
-                  SopsSecret was decrypted with it (DESIGN.md §4.4).
+                  SopsSecret was decrypted with it.
                 type: boolean
             type: object
           status:
@@ -134,7 +134,7 @@ spec:
                 x-kubernetes-list-type: map
               keySecretName:
                 description: KeySecretName is the Secret in the tenant namespace that
-                  holds the tenant key and its public key.
+                  holds the tenant's private key, `<tenant>-sops-keys`.
                 type: string
               lastRotation:
                 description: LastRotation is the last completed key rotation.

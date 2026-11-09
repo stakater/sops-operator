@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+// SopsTenantSpec defines a tenant key. The key is the Secret `<tenant>-sops-keys` in the
 // tenant's namespace.
 type SopsTenantSpec struct {
 	// GenerateKey generates a post-quantum age key when the key Secret does not exist.
@@ -31,7 +31,7 @@ type SopsTenantSpec struct {
 	// StartRotation set to true asks for a new tenant key: once every SopsSecret of the tenant is
 	// healthy, the operator creates the next key and both keys are accepted. Set it to false, or
 	// remove it, to complete the rotation: the next key replaces the current one once every
-	// SopsSecret was decrypted with it (DESIGN.md §4.4).
+	// SopsSecret was decrypted with it.
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Start rotation",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
 	// +optional
 	StartRotation bool `json:"startRotation,omitempty"`
@@ -47,7 +47,7 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
-	// KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+	// KeySecretName is the Secret in the tenant namespace that holds the tenant's private key, `<tenant>-sops-keys`.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
 	// +optional
 	KeySecretName string `json:"keySecretName,omitempty"`
