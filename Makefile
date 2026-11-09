@@ -111,7 +111,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: test-scripts
-test-scripts: sops yq age-keygen ## Test scripts/encrypt.sh with a throwaway key (no cluster).
+test-scripts: sops yq age-keygen ## Test scripts/encrypt.sh and scripts/rotate.sh with a throwaway key (no cluster).
 	PATH="$(LOCALBIN):$$PATH" scripts/test.sh
 
 # e2e tests install the operator the way customers do: OLM installs it from a catalog built from this tree, on a
