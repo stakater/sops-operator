@@ -3,6 +3,8 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -150,11 +152,21 @@ func nextKeySet(t *testing.T, tenantNS string) *crypto.KeySet {
 	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: name}, &key); err != nil {
 		t.Fatal(err)
 	}
+	assertOnlyKeyFile(t, &key)
 	ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
 	if err != nil {
 		t.Fatal(err)
 	}
 	return ks
+}
+
+// assertOnlyKeyFile checks that a key Secret holds the private key file and nothing else.
+func assertOnlyKeyFile(t *testing.T, key *corev1.Secret) {
+	t.Helper()
+	fields := slices.Sorted(maps.Keys(key.Data))
+	if !slices.Equal(fields, []string{crypto.KeyFileField}) {
+		t.Fatalf("key Secret %s holds fields %v, want only %s", key.Name, fields, crypto.KeyFileField)
+	}
 }
 
 // tenantOf returns the tenant object of an onboarded tenant namespace.

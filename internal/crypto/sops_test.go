@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -26,7 +25,7 @@ const wantScope = "my-app-prod/db-creds"
 
 func newKeys(t *testing.T) *crypto.KeySet {
 	t.Helper()
-	keyFile, _, err := crypto.GenerateKeyFile(time.Now())
+	keyFile, _, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +114,11 @@ func TestDecryption(t *testing.T) {
 	})
 
 	t.Run("shall decrypt with a key that is not the primary one", func(t *testing.T) {
-		oldFile, oldRecipient, err := crypto.GenerateKeyFile(time.Now())
+		oldFile, oldRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
-		newFile, _, err := crypto.GenerateKeyFile(time.Now())
+		newFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}

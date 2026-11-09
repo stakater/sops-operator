@@ -65,7 +65,7 @@ func TestRotationStart(t *testing.T) {
 	t.Run("shall refuse to start while a SopsSecret is not healthy", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+		_, otherRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestRotationStart(t *testing.T) {
 	t.Run("shall start on its own once the tenant is healthy", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+		_, otherRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestRotationStart(t *testing.T) {
 
 	t.Run("shall adopt a next key created before a crash", func(t *testing.T) {
 		tenantNS, _ := onboardedTenant(t)
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, recipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,7 @@ func TestRotationStart(t *testing.T) {
 				Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS,
 				Labels: map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 			},
-			Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := env.Admin.Create(context.Background(), orphan); err != nil {
 			t.Fatal(err)
@@ -147,7 +147,7 @@ func TestRotationStart(t *testing.T) {
 			g.Expect(tenant.Status.PublicKey).NotTo(BeEmpty())
 		}).WithTimeout(20 * time.Second).Should(Succeed())
 
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +156,7 @@ func TestRotationStart(t *testing.T) {
 			t.Fatal(err)
 		}
 		update(t, key, func() {
-			key.Data = map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)}
+			key.Data = map[string][]byte{crypto.KeyFileField: keyFile}
 		})
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMismatch)
 	})
@@ -166,7 +166,7 @@ func TestRotationStartEdges(t *testing.T) {
 	t.Run("shall drop the refusal when the flag is cleared", func(t *testing.T) {
 		prod := env.Namespace(t, "prod")
 		tenantNS, _ := onboardedTenant(t, prod)
-		_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+		_, otherRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -206,13 +206,13 @@ func TestRotationStartEdges(t *testing.T) {
 
 	t.Run("shall refuse a next key the operator did not create", func(t *testing.T) {
 		tenantNS, _ := onboardedTenant(t)
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
 		foreign := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS},
-			Data:       map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := env.Admin.Create(context.Background(), foreign); err != nil {
 			t.Fatal(err)
@@ -228,7 +228,7 @@ func TestRotationStartEdges(t *testing.T) {
 
 	t.Run("shall delete an unpublished next key when no rotation is asked for", func(t *testing.T) {
 		tenantNS, _ := onboardedTenant(t)
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +237,7 @@ func TestRotationStartEdges(t *testing.T) {
 				Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS,
 				Labels: map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 			},
-			Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := env.Admin.Create(context.Background(), orphan); err != nil {
 			t.Fatal(err)
@@ -302,13 +302,13 @@ func TestRotationStartEdges(t *testing.T) {
 		}
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
 
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, recipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := env.Admin.Create(context.Background(), &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS},
-			Data:       map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -370,10 +370,10 @@ func TestRotationCompletion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ks.Recipients) != 1 || ks.Recipients[0] != next.Recipients[0] ||
-			strings.TrimSpace(string(key.Data[crypto.PublicKeyField])) != next.Recipients[0] {
+		if len(ks.Recipients) != 1 || ks.Recipients[0] != next.Recipients[0] {
 			t.Fatal("the key Secret does not hold exactly the next key")
 		}
+		assertOnlyKeyFile(t, &key)
 		assertNoSecret(t, tenantNS, sopsv1alpha1.TenantNextKeySecretName(tenantName))
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
@@ -537,7 +537,7 @@ func TestRotationGuards(t *testing.T) {
 		tenantNS, prod, s, _ := rotatingTenant(t)
 		migrate(t, s)
 		eventuallyMigrated(t, s)
-		_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+		_, otherRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -596,14 +596,14 @@ func TestRotationGuards(t *testing.T) {
 	t.Run("shall offer no entry while the next key Secret holds another key", func(t *testing.T) {
 		tenantNS, prod, s, recipient := rotatingTenant(t)
 		eventuallyNextRecipient(t, s)
-		keyFile, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
 		next := &corev1.Secret{}
 		next.Namespace, next.Name = tenantNS, sopsv1alpha1.TenantNextKeySecretName(tenantName)
 		update(t, next, func() {
-			next.Data = map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(otherRecipient)}
+			next.Data = map[string][]byte{crypto.KeyFileField: keyFile}
 		})
 		eventuallyRotated(t, tenantOf(t, tenantNS), sopsv1alpha1.ReasonNextKeyMissing)
 
@@ -637,7 +637,7 @@ func TestRotationNextKeyOwnership(t *testing.T) {
 	// labelledNextKey creates a next key Secret with the operator's label and mark, as an output Secret has.
 	labelledNextKey := func(t *testing.T, tenantNS string, mark func(*corev1.Secret)) *corev1.Secret {
 		t.Helper()
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -646,7 +646,7 @@ func TestRotationNextKeyOwnership(t *testing.T) {
 				Name: sopsv1alpha1.TenantNextKeySecretName(tenantName), Namespace: tenantNS,
 				Labels: map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 			},
-			Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		mark(s)
 		if err := env.Admin.Create(context.Background(), s); err != nil {

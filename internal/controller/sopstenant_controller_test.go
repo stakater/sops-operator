@@ -65,9 +65,7 @@ func TestTenantKey(t *testing.T) {
 		if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
 			t.Fatal("generated key is not post-quantum")
 		}
-		if got := strings.TrimSpace(string(key.Data[crypto.PublicKeyField])); got != ks.Recipients[0] {
-			t.Fatal("the generated Secret does not hold the matching public key")
-		}
+		assertOnlyKeyFile(t, &key)
 		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
 			t.Fatal("generated key is missing the managed-by label")
 		}
@@ -90,7 +88,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall load the existing key for the console sample", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, "my-team-existing-key")
-		keyFile, _, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,7 +155,7 @@ func TestTenantKey(t *testing.T) {
 		assertUnchanged(t, key)
 	})
 
-	t.Run("shall report an invalid key when the public key does not match", func(t *testing.T) {
+	t.Run("shall ignore an age.pub field written by an earlier version", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, tenantName)
@@ -170,14 +168,17 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		key := keySecret(ns, x.String()+"\n")
-		key.Data[crypto.PublicKeyField] = []byte(other.Recipient().String())
+		key.Data["age.pub"] = []byte(other.Recipient().String())
 		if err := env.Admin.Create(ctx, key); err != nil {
 			t.Fatal(err)
 		}
 		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
 			t.Fatal(err)
 		}
-		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyLoaded)
+		if got := tenantOf(t, ns).Status.PublicKey; got != x.Recipient().String() {
+			t.Fatalf("status.publicKey = %q, want the primary key from age.agekey", got)
+		}
 		assertUnchanged(t, key)
 	})
 
@@ -396,11 +397,11 @@ func consistentlyLoaded(t *testing.T, tenant *sopsv1alpha1.SopsTenant, want stri
 	NewWithT(t).Consistently(check).WithTimeout(3 * resync).WithPolling(200 * time.Millisecond).Should(Succeed())
 }
 
-// prependIdentity puts a new identity before the existing ones in the tenant key Secret and sets
-// age.pub to it, as the admin does for a manual rotation. It returns the new identity's key file.
+// prependIdentity puts a new identity before the existing ones in the tenant key Secret, as the
+// admin does for a manual rotation. It returns the new identity's key file.
 func prependIdentity(t *testing.T, tenantNS string) (newFile []byte, recipient string) {
 	t.Helper()
-	newFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+	newFile, recipient, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +411,6 @@ func prependIdentity(t *testing.T, tenantNS string) (newFile []byte, recipient s
 	}
 	update(t, key, func() {
 		key.Data[crypto.KeyFileField] = append(append([]byte{}, newFile...), key.Data[crypto.KeyFileField]...)
-		key.Data[crypto.PublicKeyField] = []byte(recipient)
 	})
 	return newFile, recipient
 }

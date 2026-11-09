@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
-	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -105,7 +104,7 @@ func TestConfigSamples(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		keyFile, _, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}

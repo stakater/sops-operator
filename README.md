@@ -301,10 +301,11 @@ NAME     READY   REASON         USED BY   AGE
 team-a   True    KeyGenerated   0         5s
 ```
 
-The key is in the Secret `team-a-sops-keys`. Read its public key and commit it to the team's `.sops.yaml`:
+The private key is in the Secret `team-a-sops-keys`. Read the public key from the tenant's status and commit it to
+the team's `.sops.yaml`:
 
 ```bash
-kubectl get secret team-a-sops-keys -n team-a-system -o jsonpath='{.data.age\.pub}' | base64 -d
+kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```
 
 ```yaml
@@ -317,7 +318,7 @@ creation_rules:
       - age1pq1...   # team-a
 ```
 
-To use an existing key, create the Secret `team-a-system/team-a` with your identity in `age.agekey` first, and
+To use an existing key, create the Secret `team-a-system/team-a-sops-keys` with your identity in `age.agekey` first, and
 set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)

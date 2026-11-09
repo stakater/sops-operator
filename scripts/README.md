@@ -39,7 +39,7 @@ creation_rules:
 Ask your tenant admin for the public key of the tenant, or read it from the cluster:
 
 ```bash
-oc extract secret/team-a-sops-keys -n team-a-system --keys=age.pub --to=-
+oc get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```
 
 ## Encrypt a secret

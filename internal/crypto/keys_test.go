@@ -1,12 +1,10 @@
 package crypto_test
 
 import (
-	"bytes"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"filippo.io/age"
 
@@ -15,15 +13,16 @@ import (
 
 func TestKeyFile(t *testing.T) {
 	t.Run("shall generate a post-quantum key", func(t *testing.T) {
-		keyFile, recipient, err := crypto.GenerateKeyFile(time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC))
+		keyFile, recipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatalf("GenerateKeyFile: %v", err)
 		}
 		if !strings.HasPrefix(recipient, "age1pq1") {
 			t.Fatalf("recipient %.12q… is not post-quantum", recipient)
 		}
-		if !bytes.Contains(keyFile, []byte("# public key: "+recipient)) {
-			t.Fatal("key file does not contain the public key comment")
+		if lines := strings.Split(strings.TrimSpace(string(keyFile)), "\n"); len(lines) != 1 ||
+			!strings.HasPrefix(lines[0], "AGE-SECRET-KEY-PQ-1") {
+			t.Fatal("the key file must be the private key alone")
 		}
 		ks, err := crypto.ParseKeyFile(keyFile)
 		if err != nil {

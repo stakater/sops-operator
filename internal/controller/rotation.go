@@ -167,9 +167,7 @@ func (r *SopsTenantReconciler) completeRotation(ctx context.Context, t *sopsv1al
 	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
 	if next != nil {
 		if !holdsKey(current, rot.NextPublicKey) {
-			current.Data = map[string][]byte{
-				crypto.KeyFileField: next.Data[crypto.KeyFileField], crypto.PublicKeyField: []byte(rot.NextPublicKey),
-			}
+			current.Data = map[string][]byte{crypto.KeyFileField: next.Data[crypto.KeyFileField]}
 			if err := tc.Update(ctx, current); err != nil {
 				return fmt.Errorf("replace the key in %s/%s: %w", t.Namespace, keyName, err)
 			}
@@ -306,7 +304,7 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 		}
 	}
 	if !orphaned {
-		keyFile, rec, err := crypto.GenerateKeyFile(r.now())
+		keyFile, rec, err := crypto.GenerateKeyFile()
 		if err != nil {
 			return err
 		}
@@ -316,7 +314,7 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 				Labels: map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 			},
 			Type: corev1.SecretTypeOpaque,
-			Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(rec)},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := tc.Create(ctx, next); err != nil {
 			return fmt.Errorf("create next key Secret %s/%s: %w", t.Namespace, nextName, err)
