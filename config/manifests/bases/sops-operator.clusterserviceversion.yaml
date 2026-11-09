@@ -141,12 +141,16 @@ spec:
   description: |
     SOPS Operator turns SOPS-encrypted `SopsSecret` resources committed to Git into Kubernetes Secrets.
 
-    - **Tenant keys**: a `SopsTenant` holds a post-quantum age key. The operator generates it when the key
-      Secret does not exist, or uses a key you provide.
+    - **Tenant keys**: a `SopsTenant` holds a post-quantum age key. The operator generates it for a new tenant,
+      or uses a key you provide, keeps an immutable backup of it and restores the key Secret from it when it is
+      deleted or changed. Its public key is in the `SopsTenant` status.
+    - **Key rotation through Git**: `startRotation` replaces the tenant key while every `SopsSecret` keeps
+      decrypting; `scripts/rotate.sh` moves the files in Git to the new key without any private key.
     - **Zero trust**: the operator holds no Secret permissions of its own. It reads keys and writes Secrets
       only through each tenant's identity, in the namespaces the cluster admin granted to that tenant.
     - **Scoped ciphertext**: every file carries an encrypted `<namespace>/<name>` scope, so ciphertext copied
       to another namespace or name is rejected.
+    - **Self-healing Secrets**: a deleted or changed output Secret is written back at once.
 
     Each tenant acts as its own ServiceAccount, `<tenant>-sops-tenant`, which the operator creates. To onboard
     a tenant, bind `sops-operator-tenant` to the operator and `sops-key-owner` to the tenant's ServiceAccount
