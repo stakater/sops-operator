@@ -127,6 +127,15 @@ func TestSnapshotNormalization(t *testing.T) {
 		mustNotContain(t, out, "ENC[", "age1pq1abc", "BEGIN AGE", "77aa")
 	})
 
+	t.Run("shall replace the tenant's public key", func(t *testing.T) {
+		out := render(t, &sopsv1alpha1.SopsTenant{
+			ObjectMeta: meta("my-team"),
+			Status:     sopsv1alpha1.SopsTenantStatus{PublicKey: "age1pqcurrent"},
+		})
+		mustContain(t, out, "publicKey: <publicKey>")
+		mustNotContain(t, out, "age1pq")
+	})
+
 	t.Run("shall replace valid condition timestamps", func(t *testing.T) {
 		out := render(t, &sopsv1alpha1.SopsTenant{
 			ObjectMeta: meta("my-team"),

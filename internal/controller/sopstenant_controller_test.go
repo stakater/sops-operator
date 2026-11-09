@@ -65,8 +65,9 @@ func TestTenantKey(t *testing.T) {
 		if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
 			t.Fatal("generated key is not post-quantum")
 		}
-		if got := strings.TrimSpace(string(key.Data[crypto.PublicKeyField])); got != ks.Recipients[0] {
-			t.Fatal("the generated Secret does not hold the matching public key")
+		assertOnlyKeyFile(t, &key)
+		if tenant.Status.PublicKey != ks.Recipients[0] {
+			t.Fatalf("status.publicKey = %q, want the generated key's public key", tenant.Status.PublicKey)
 		}
 		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
 			t.Fatal("generated key is missing the managed-by label")
@@ -90,7 +91,7 @@ func TestTenantKey(t *testing.T) {
 	t.Run("shall load the existing key for the console sample", func(t *testing.T) {
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, "my-team-existing-key")
-		keyFile, _, err := crypto.GenerateKeyFile(time.Now())
+		keyFile, _, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,30 +158,6 @@ func TestTenantKey(t *testing.T) {
 		assertUnchanged(t, key)
 	})
 
-	t.Run("shall report an invalid key when the public key does not match", func(t *testing.T) {
-		ctx := context.Background()
-		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns, tenantName)
-		x, err := age.GenerateX25519Identity()
-		if err != nil {
-			t.Fatal(err)
-		}
-		other, err := age.GenerateX25519Identity()
-		if err != nil {
-			t.Fatal(err)
-		}
-		key := keySecret(ns, x.String()+"\n")
-		key.Data[crypto.PublicKeyField] = []byte(other.Recipient().String())
-		if err := env.Admin.Create(ctx, key); err != nil {
-			t.Fatal(err)
-		}
-		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
-			t.Fatal(err)
-		}
-		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyInvalid)
-		assertUnchanged(t, key)
-	})
-
 	t.Run("shall report a missing key when generation is disabled", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
@@ -223,6 +200,35 @@ func TestTenantKey(t *testing.T) {
 			g.Expect(env.Admin.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
 			g.Expect(tenant.Status.UsedBy).To(Equal(int32(2)))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+}
+
+func TestTenantPublicKey(t *testing.T) {
+	t.Run("shall ignore an age.pub field written by an earlier version", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		other, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, x.String()+"\n")
+		key.Data["age.pub"] = []byte(other.Recipient().String())
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(ctx, newTenant(ns, nil)); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyLoaded)
+		if got := tenantOf(t, ns).Status.PublicKey; got != x.Recipient().String() {
+			t.Fatalf("status.publicKey = %q, want the primary key from age.agekey", got)
+		}
+		assertUnchanged(t, key)
 	})
 }
 

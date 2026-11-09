@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -18,7 +17,7 @@ import (
 // sops encrypt) and returns it as the API server would hand it to the operator.
 func encryptedSopsSecret(t *testing.T, spec map[string]any) (*sopsv1alpha1.SopsSecret, *crypto.KeySet) {
 	t.Helper()
-	keyFile, recipient, err := crypto.GenerateKeyFile(time.Now())
+	keyFile, recipient, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
