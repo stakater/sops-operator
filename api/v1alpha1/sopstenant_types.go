@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -93,6 +95,15 @@ const KeySecretSuffix = "-sops-keys"
 // TenantKeySecretName returns the name of the key Secret of the tenant named tenant.
 func TenantKeySecretName(tenant string) string {
 	return tenant + KeySecretSuffix
+}
+
+// KeyBackupTimeFormat is the UTC timestamp format in the name of a key backup.
+const KeyBackupTimeFormat = "20060102-150405"
+
+// TenantKeyBackupName returns the name of the key backup of the tenant named tenant written at at:
+// <tenant>-sops-keys-<YYYYMMDD-HHMMSS> in UTC.
+func TenantKeyBackupName(tenant string, at time.Time) string {
+	return TenantKeySecretName(tenant) + "-" + at.UTC().Format(KeyBackupTimeFormat)
 }
 
 // ShouldGenerateKey reports whether a missing key Secret should be generated.

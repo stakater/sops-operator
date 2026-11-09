@@ -22,6 +22,8 @@ var env *testenv.Env
 
 var watches *secretwatch.Watches
 
+var keyWatches *secretwatch.Watches
+
 func TestMain(m *testing.M) {
 	var err error
 	if env, err = testenv.Start(); err != nil {
@@ -55,8 +57,12 @@ func startManager(ctx context.Context) error {
 	}
 	ids := identity.NewFactory(env.OperatorConfig, env.Scheme)
 	recorder := mgr.GetEventRecorder("sops-operator")
+	keyWatches = secretwatch.NewForKeys(ids.ConfigFor)
+	if err := mgr.Add(keyWatches); err != nil {
+		return err
+	}
 	if err := (&controller.SopsTenantReconciler{
-		Client: mgr.GetClient(), Identities: ids, Recorder: recorder, ResyncInterval: resync,
+		Client: mgr.GetClient(), Identities: ids, Watches: keyWatches, Recorder: recorder, ResyncInterval: resync,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

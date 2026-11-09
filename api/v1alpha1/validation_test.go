@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -131,4 +132,13 @@ func TestSopsTenantValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTenantKeyBackupName(t *testing.T) {
+	t.Run("shall name a key backup after the key Secret and the time in UTC", func(t *testing.T) {
+		at := time.Date(2026, 11, 9, 13, 4, 5, 0, time.FixedZone("CET", 3600))
+		if got, want := sopsv1alpha1.TenantKeyBackupName("my-team", at), "my-team-sops-keys-20261109-120405"; got != want {
+			t.Fatalf("TenantKeyBackupName = %q, want %q", got, want)
+		}
+	})
 }

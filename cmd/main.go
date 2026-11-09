@@ -173,9 +173,15 @@ func main() {
 		os.Exit(1)
 	}
 	identities := identity.NewFactory(mgr.GetConfig(), mgr.GetScheme())
+	keyWatches := secretwatch.NewForKeys(identities.ConfigFor)
+	if err := mgr.Add(keyWatches); err != nil {
+		setupLog.Error(err, "unable to add key Secret watches")
+		os.Exit(1)
+	}
 	if err := (&controller.SopsTenantReconciler{
 		Client:         mgr.GetClient(),
 		Identities:     identities,
+		Watches:        keyWatches,
 		Recorder:       mgr.GetEventRecorder("sops-operator"),
 		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
