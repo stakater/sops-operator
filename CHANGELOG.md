@@ -28,7 +28,8 @@ they are marked **Breaking** with the steps to take.
 - `scripts/rotate.sh` adds the operator-prepared next-key entry to every `SopsSecret` file of a tenant and the
   next key to the `.sops.yaml` files sops uses for them, and removes the old key after the rotation completed.
 - Output Secrets are watched (metadata only) as the tenant identity: a deleted or changed output Secret is
-  restored at once instead of at the next resync.
+  restored at once instead of at the next resync. Its labels and annotations come only from
+  `spec.template.metadata`.
 
 ### Changed
 

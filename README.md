@@ -147,7 +147,8 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 5. Decrypts the values and writes the Secret **as the tenant identity**. The API server authorizes the write
    again.
 6. Watches the Secret's metadata as the tenant identity, so a deleted or changed Secret is restored at once
-   rather than at the next resync.
+   rather than at the next resync. Its labels and annotations come only from the `SopsSecret`'s
+   `spec.template.metadata`; changes made directly on the Secret are reverted.
 
 Revoking a grant takes effect at the next reconcile. Grants and keys are re-checked every time, never cached as
 decisions.

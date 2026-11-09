@@ -217,6 +217,57 @@ func TestSecretSyncAccess(t *testing.T) {
 	})
 }
 
+func TestSecretMetadata(t *testing.T) {
+	t.Run("shall replace labels and annotations set directly on the output Secret with the SopsSecret's", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"example.com/team": "a"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		tagged := outputSecret(t, prod)
+		tagged.Labels["example.com/team"] = "b"
+		tagged.Labels["example.com/set-on-secret"] = "x"
+		if err := env.Admin.Update(ctx, tagged); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(outputSecret(t, prod).Labels).To(Equal(map[string]string{
+				"example.com/team":          "a",
+				sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+			}))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall leave an up-to-date output Secret unchanged", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		before := outputSecret(t, prod).ResourceVersion
+		eventuallyResynced(t, s)
+		eventuallyResynced(t, s)
+		if after := outputSecret(t, prod).ResourceVersion; after != before {
+			t.Fatalf("resourceVersion %s became %s: an unchanged Secret was rewritten", before, after)
+		}
+	})
+}
+
+// eventuallyResynced waits until s is reconciled again after its last sync.
+func eventuallyResynced(t *testing.T, s *sopsv1alpha1.SopsSecret) {
+	t.Helper()
+	if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Status.LastSyncTime.DeepCopy()
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+		g.Expect(s.Status.LastSyncTime.After(before.Time)).To(BeTrue())
+	}).WithTimeout(20 * time.Second).Should(Succeed())
+}
+
 func TestSecretOwnership(t *testing.T) {
 	t.Run("shall not overwrite an existing Secret", func(t *testing.T) {
 		ctx := context.Background()

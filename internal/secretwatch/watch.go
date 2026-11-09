@@ -42,7 +42,8 @@ const syncTimeout = 30 * time.Second
 
 // Watches runs one metadata-only watch of output Secrets per tenant and namespace, as the tenant
 // identity, while a SopsSecret of the tenant in that namespace holds it. A deleted or changed output
-// Secret is reported on the events channel as the SopsSecret named in its annotation.
+// Secret is reported on the events channel as the SopsSecret named in its annotation, which writes its
+// values, labels and annotations again.
 type Watches struct {
 	configFor func(tenantNamespace, tenant string) *rest.Config
 	events    chan event.GenericEvent
@@ -186,3 +187,4 @@ func (w *Watches) start(ctx context.Context, k key) (context.CancelFunc, error) 
 	}
 	return cancel, nil
 }
+
