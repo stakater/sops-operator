@@ -115,13 +115,12 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("SopsTenant %s is not ready", tenantName)}, nil
 	}
 
-	allowed, err := identity.CanWriteSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
+	allowed, err := identity.CanReconcileSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
 	if err != nil {
 		return outcome{}, err
 	}
 	if !allowed {
-		return outcome{reason: sopsv1alpha1.ReasonAccessDenied,
-			message: fmt.Sprintf("tenant %s is not granted Secret write in namespace %s", tenantName, s.Namespace)}, nil
+		return reconcileDenied(tenantName, s.Namespace), nil
 	}
 
 	tc, err := r.Identities.ClientFor(ref.Namespace, ref.Name)
@@ -170,8 +169,7 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		return outcome{reason: sopsv1alpha1.ReasonConflict,
 			message: fmt.Sprintf("Secret %s/%s exists and is not managed by this SopsSecret", s.Namespace, s.Name)}, nil
 	case apierrors.IsForbidden(err):
-		return outcome{reason: sopsv1alpha1.ReasonAccessDenied,
-			message: fmt.Sprintf("tenant %s is not granted Secret write in namespace %s", tenantName, s.Namespace)}, nil
+		return reconcileDenied(tenantName, s.Namespace), nil
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err), apierrors.IsRequestEntityTooLargeError(err):
 		return outcome{reason: sopsv1alpha1.ReasonApplyFailed, message: err.Error()}, nil
 	case err != nil:
@@ -254,6 +252,13 @@ func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1
 	})
 	s.Status.ObservedGeneration = s.Generation
 	return r.Status().Patch(ctx, s, client.MergeFrom(base))
+}
+
+// reconcileDenied is the outcome for a tenant that may not sync Secrets in namespace.
+func reconcileDenied(tenantName, namespace string) outcome {
+	return outcome{reason: sopsv1alpha1.ReasonAccessDenied, message: fmt.Sprintf(
+		"tenant %s is not granted sops-tenant-secret-reconciler in namespace %s (Secrets: %s)",
+		tenantName, namespace, strings.Join(identity.ReconcileVerbs, ", "))}
 }
 
 // SetupWithManager registers the controller. Status updates do not retrigger reconciliation;

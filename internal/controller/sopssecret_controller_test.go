@@ -9,6 +9,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -163,6 +164,38 @@ func TestSecretDecryption(t *testing.T) {
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+}
+
+func TestSecretSyncAccess(t *testing.T) {
+	t.Run("shall report AccessDenied naming sops-tenant-secret-reconciler where only Secret write is granted", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t)
+		role := &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "write-only-"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "update"}}},
+		}
+		if err := env.Admin.Create(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "write-only", Namespace: prod},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+			Subjects: []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind,
+				Name: sopsv1alpha1.TenantServiceAccountName(tenantName), Namespace: tenantNS}},
+		}
+		if err := env.Admin.Create(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonAccessDenied)
+		if c := readyCondition(s); !strings.Contains(c.Message, "sops-tenant-secret-reconciler") ||
+			!strings.Contains(c.Message, "create, update, list, watch") {
+			t.Fatalf("message %q does not name the role to bind and its verbs", c.Message)
+		}
+		assertNoSecret(t, prod, "db")
 	})
 }
 
