@@ -38,10 +38,13 @@ import (
 // customer can run, the path OLM takes to the channel head, reduced to the smallest set that
 // traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
 // each channel head is `make test-e2e`.
-var upgradePaths = []struct{ channel, from, to string }{
-	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 (head). Not tested:
-	// v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps the key in a Secret
-	// named after the tenant (D48); none was deployed beyond trials. Paths start from v0.0.4.
+var upgradePaths = []struct{ channel, from, to, secretRole string }{
+	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 --replaces--> v0.0.5
+	// (head). Not tested: v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps
+	// the key in a Secret named after the tenant (D48); none was deployed beyond trials.
+	// secretRole is the role that grants Secret write in from: v0.0.5 replaced sops-secret-writer with
+	// sops-tenant-secret-reconciler.
+	{channel: "alpha", from: "0.0.4", to: "0.0.5", secretRole: "sops-secret-writer"},
 }
 
 const (
@@ -68,7 +71,8 @@ func TestUpgrade(t *testing.T) {
 				installAt(t, p.channel, p.from)
 
 				prod := namespace(t, "e2e-upgrade-prod")
-				tenantNS, recipient := onboardedTenant(t, "e2e-upgrade-tenant", prod)
+				tenantNS, recipient := onboardedTenant(t, "e2e-upgrade-tenant")
+				grantSecrets(t, p.secretRole, tenantNS, prod)
 				secret := sopsSecret{
 					Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
 					StringData: map[string]string{"password": "v1"},
@@ -85,6 +89,14 @@ func TestUpgrade(t *testing.T) {
 				secret.StringData = map[string]string{"password": "v2"}
 				next := encryptSopsSecret(t, recipient, secret)
 				update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
+				if p.secretRole != secretRole {
+					// Until the namespace binds the new role, the change waits and the Secret is kept.
+					waitForMessage(t, s, sopsv1alpha1.ReasonAccessDenied, secretRole)
+					if got := string(outputSecret(t, prod).Data["password"]); got != "v1" {
+						t.Fatalf("password = %q while access is denied, want the earlier value", got)
+					}
+					grantSecrets(t, secretRole, tenantNS, prod)
+				}
 				poll(t, "the upgraded operator to deliver the new value", func() (bool, error) {
 					return string(outputSecret(t, prod).Data["password"]) == "v2", nil
 				})
@@ -97,6 +109,33 @@ func TestUpgrade(t *testing.T) {
 				if keyAfter.UID != keyBefore.UID || keyFile(keyAfter) != keyFile(keyBefore) {
 					t.Fatal("the upgrade replaced the tenant key")
 				}
+				if keyAfter.Labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue {
+					t.Fatal("the upgraded operator did not mark the key it generated earlier as enabled")
+				}
+
+				// The key generated earlier (v0.0.4 also wrote age.pub) is the key the tenant reports and
+				// backs up, and a rotation starts on the SopsSecret created before the upgrade.
+				tenant := &sopsv1alpha1.SopsTenant{}
+				tenant.Name, tenant.Namespace = tenantName, tenantNS
+				poll(t, "status.publicKey to report the existing key and its backup", func() (bool, error) {
+					if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant); err != nil {
+						return false, err
+					}
+					return tenant.Status.PublicKey == recipient && backedUpKeys(t, tenantNS) == recipient, nil
+				})
+				update(t, tenant, func() { tenant.Spec.StartRotation = true })
+				poll(t, "the existing SopsSecret to get an entry for the new key", func() (bool, error) {
+					if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant); err != nil {
+						return false, err
+					}
+					if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(s), s); err != nil {
+						return false, err
+					}
+					r := s.Status.Rotation
+					return tenant.Status.Rotation != nil && tenant.Status.Rotation.PreviousPublicKey == recipient &&
+						tenant.Status.PublicKey != recipient && r != nil && r.NewRecipient != nil &&
+						r.NewRecipient.Recipient == tenant.Status.PublicKey, nil
+				})
 			})
 	}
 }
@@ -181,7 +220,7 @@ func approveUntilSucceeded(t *testing.T, csv string, approve func(csvs []string)
 
 func csvName(version string) string { return "sops-operator.v" + version }
 
-// tenantKey returns the tenant's key Secret, named after the SopsTenant.
+// tenantKey returns the tenant's key Secret.
 func tenantKey(t *testing.T, tenantNamespace string) *corev1.Secret {
 	t.Helper()
 	var key corev1.Secret
