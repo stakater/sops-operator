@@ -31,25 +31,16 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// outputSecret returns a Secret as the operator writes it for the SopsSecret named owner of the tenant
-// my-team in tenantNS.
+// outputSecret returns a Secret as the operator writes it for the SopsSecret named owner.
 func outputSecret(ns, name, owner string, managed bool) *corev1.Secret {
-	return tenantOutputSecret(ns, name, owner, managed, tenantNSOf[ns], "my-team")
-}
-
-// tenantNSOf maps a namespace to the tenant namespace of the tenant whose Secrets it holds in a test.
-var tenantNSOf = map[string]string{}
-
-func tenantOutputSecret(ns, name, owner string, managed bool, tenantNS, tenant string) *corev1.Secret {
 	s := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Data:       map[string][]byte{"password": []byte("v1")},
 	}
 	if managed {
 		s.Labels = map[string]string{
-			sopsv1alpha1.LabelManagedBy:       sopsv1alpha1.ManagedByValue,
-			sopsv1alpha1.LabelTenant:          tenant,
-			sopsv1alpha1.LabelTenantNamespace: tenantNS,
+			sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+			sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
 		}
 		s.Annotations = map[string]string{sopsv1alpha1.AnnotationSopsSecret: owner}
 	}
@@ -75,7 +66,6 @@ func TestWatches(t *testing.T) {
 	tenantNS := env.Namespace(t, "tenant")
 	ns := env.Namespace(t, "prod")
 	env.Onboard(t, tenantNS, "my-team", ns)
-	tenantNSOf[ns] = tenantNS
 	tenant := types.NamespacedName{Namespace: tenantNS, Name: "my-team"}
 	owner := types.NamespacedName{Namespace: ns, Name: "db"}
 
@@ -155,39 +145,6 @@ func TestWatchesFollowTenantGrants(t *testing.T) {
 		}
 		if got := w.Watching(); got != 1 {
 			t.Fatalf("watching %d namespaces, want only the granted one", got)
-		}
-	})
-}
-
-func TestWatchesSelectTheirTenant(t *testing.T) {
-	ctx := context.Background()
-	tenantNS := env.Namespace(t, "tenant")
-	ns := env.Namespace(t, "shared")
-	env.Onboard(t, tenantNS, "my-team", ns)
-	tenantNSOf[ns] = tenantNS
-	w := secretwatch.New(identity.NewFactory(env.OperatorConfig, env.Scheme).ConfigFor)
-	events := w.Events()
-	t.Cleanup(w.Stop)
-	other := tenantOutputSecret(ns, "other", "other", true, tenantNS, "other-team")
-	own := outputSecret(ns, "own", "own", true)
-	for _, s := range []*corev1.Secret{other, own} {
-		if err := env.Admin.Create(ctx, s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := w.Watch(ctx, types.NamespacedName{Namespace: ns, Name: "own"}, types.NamespacedName{Namespace: tenantNS, Name: "my-team"}); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("shall report the tenant's own output Secret and not another tenant's in the same namespace", func(t *testing.T) {
-		if err := env.Admin.Delete(ctx, other); err != nil {
-			t.Fatal(err)
-		}
-		if err := env.Admin.Delete(ctx, own); err != nil {
-			t.Fatal(err)
-		}
-		if got := nextEvent(t, events); got.Name != "own" {
-			t.Fatalf("first event for %v, want the tenant's own Secret", got)
 		}
 	})
 }

@@ -137,23 +137,21 @@ func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, t *sops
 	return "", "", fmt.Errorf("create ServiceAccount %s/%s: %w", sa.Namespace, sa.Name, err)
 }
 
-// adoptKey checks that the key Secret key belongs to tenant t. A key Secret the operator generated
-// before key Secrets carried the tenant labels is labelled; any other unlabelled Secret is refused with
-// KeyMissing naming the labels a tenant admin adds to adopt it.
-func adoptKey(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant, key *corev1.Secret) (string, string, error) {
-	if adopted(key, t) {
+// adoptKey checks that the key Secret key is enabled for the operator. A key Secret the operator
+// generated before key Secrets carried the label is marked; any other unmarked Secret is refused with
+// KeyMissing naming the label a tenant admin adds to adopt it.
+func adoptKey(ctx context.Context, tc client.Client, key *corev1.Secret) (string, string, error) {
+	if adopted(key) {
 		return "", "", nil
 	}
 	if !createdByOperator(key) {
 		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("Secret %s/%s is not adopted as the key of this tenant; "+
-			"to use it, add the labels %s=%s and %s=%s", key.Namespace, key.Name,
-			sopsv1alpha1.LabelTenant, t.Name, sopsv1alpha1.LabelTenantNamespace, t.Namespace), nil
+			"to use it, add the label %s=%s", key.Namespace, key.Name, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue), nil
 	}
 	if key.Labels == nil {
 		key.Labels = map[string]string{}
 	}
-	key.Labels[sopsv1alpha1.LabelTenant] = t.Name
-	key.Labels[sopsv1alpha1.LabelTenantNamespace] = t.Namespace
+	key.Labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue
 	if err := tc.Update(ctx, key); err != nil {
 		return "", "", fmt.Errorf("label key Secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
@@ -173,7 +171,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, &key)
 	switch {
 	case err == nil:
-		if reason, message, err := adoptKey(ctx, tc, t, &key); reason != "" || err != nil {
+		if reason, message, err := adoptKey(ctx, tc, &key); reason != "" || err != nil {
 			return reason, message, err
 		}
 		keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
@@ -224,7 +222,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      keyName,
 			Namespace: t.Namespace,
-			Labels:    keyLabels(t),
+			Labels:    keyLabels(),
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{crypto.KeyFileField: keyFile},

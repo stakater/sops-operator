@@ -90,11 +90,12 @@ const (
 	LabelComponent          = "app.kubernetes.io/component"
 	LabelInstance           = "app.kubernetes.io/instance"
 	ComponentTenantIdentity = "tenant-identity"
-	// LabelTenant and LabelTenantNamespace name the tenant a Secret belongs to. The operator sets them on
-	// every Secret it manages and watches only Secrets that carry them; a tenant admin sets them on a key
-	// Secret they bring, for the operator to adopt it.
-	LabelTenant          = "sops.stakater.com/tenant"
-	LabelTenantNamespace = "sops.stakater.com/tenant-namespace"
+	// LabelEnabled set to EnabledValue marks a Secret as the operator's: an output Secret it writes, or a
+	// tenant key Secret. A tenant admin sets it on a key Secret they bring, for the operator to adopt it.
+	// The tenant follows from where the Secret is: a key Secret is <tenant>-sops-keys or -next in the
+	// tenant's namespace, an output Secret has the name of its SopsSecret in the same namespace.
+	LabelEnabled = "sops.stakater.com/enabled"
+	EnabledValue = "true"
 	// ReservedPrefix is the prefix of the operator's own labels and annotations; a SopsSecret's template
 	// cannot set them.
 	ReservedPrefix = "sops.stakater.com/"

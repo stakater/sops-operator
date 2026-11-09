@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -47,15 +48,18 @@ var systemUsers = []string{
 	"system:kube-controller-manager",
 }
 
-// SecretValidator validates updates and deletions of Secrets carrying the tenant labels.
+// SecretValidator validates updates and deletions of Secrets enabled for the operator.
 type SecretValidator struct {
-	// Client counts a tenant's SopsSecrets through the controllers' tenantRef index.
+	// Client reads SopsSecrets and SopsTenants, and counts a tenant's SopsSecrets through the
+	// controllers' tenantRef index.
 	Client  client.Reader
 	Decoder admission.Decoder
 }
 
 // Handle implements admission.Handler. A request is judged by the Secret as it was before the change,
-// so removing its labels does not escape the check.
+// so removing its label does not escape the check. The tenant follows from where the Secret is: an
+// output Secret has its SopsSecret's name, a key Secret is <tenant>-sops-keys or -next in the tenant's
+// namespace.
 func (v *SecretValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	if req.Operation != admissionv1.Update && req.Operation != admissionv1.Delete {
 		return admission.Allowed("")
@@ -64,30 +68,54 @@ func (v *SecretValidator) Handle(ctx context.Context, req admission.Request) adm
 	if err := v.Decoder.DecodeRaw(req.OldObject, &old); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	tenant, tenantNS := old.Labels[sopsv1alpha1.LabelTenant], old.Labels[sopsv1alpha1.LabelTenantNamespace]
-	username := req.UserInfo.Username
-	if tenant == "" || tenantNS == "" || username == identity.UserName(tenantNS, tenant) ||
-		slices.Contains(systemUsers, username) {
+	if old.Labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue || slices.Contains(systemUsers, req.UserInfo.Username) {
 		return admission.Allowed("")
 	}
-	if owner, ok := old.Annotations[sopsv1alpha1.AnnotationSopsSecret]; ok {
-		// A Secret retained after its SopsSecret was deleted is no longer the operator's.
-		err := v.Client.Get(ctx, client.ObjectKey{Namespace: old.Namespace, Name: owner}, &sopsv1alpha1.SopsSecret{})
-		if apierrors.IsNotFound(err) {
-			return admission.Allowed("")
-		} else if err != nil {
-			return admission.Errored(http.StatusInternalServerError, err)
-		}
-		return admission.Denied(fmt.Sprintf("Secret %s/%s is written from SopsSecret %s; change the SopsSecret instead",
-			old.Namespace, old.Name, owner))
+	if _, output := old.Annotations[sopsv1alpha1.AnnotationSopsSecret]; output {
+		return v.output(ctx, req, &old)
 	}
-	if old.Namespace != tenantNS || (old.Name != sopsv1alpha1.TenantKeySecretName(tenant) &&
-		old.Name != sopsv1alpha1.TenantNextKeySecretName(tenant)) {
+	return v.key(ctx, req, &old)
+}
+
+// output allows changes to an output Secret by its SopsSecret's tenant identity only. A Secret whose
+// SopsSecret is gone, retained after its deletion, is the user's again.
+func (v *SecretValidator) output(ctx context.Context, req admission.Request, old *corev1.Secret) admission.Response {
+	var owner sopsv1alpha1.SopsSecret
+	err := v.Client.Get(ctx, client.ObjectKey{Namespace: old.Namespace, Name: old.Name}, &owner)
+	switch {
+	case apierrors.IsNotFound(err):
+		return admission.Allowed("")
+	case err != nil:
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+	ref := owner.Spec.TenantRef
+	if req.UserInfo.Username == identity.UserName(ref.Namespace, ref.Name) {
+		return admission.Allowed("")
+	}
+	return admission.Denied(fmt.Sprintf("Secret %s/%s is written from SopsSecret %s; change the SopsSecret instead",
+		old.Namespace, old.Name, owner.Name))
+}
+
+// key allows changes to a tenant's key Secret by its tenant identity, or by anyone while no SopsSecret
+// uses the tenant: once one does, only a key rotation changes the key.
+func (v *SecretValidator) key(ctx context.Context, req admission.Request, old *corev1.Secret) admission.Response {
+	tenant := tenantOfKey(old.Name)
+	if tenant == "" {
+		return admission.Allowed("")
+	}
+	err := v.Client.Get(ctx, client.ObjectKey{Namespace: old.Namespace, Name: tenant}, &sopsv1alpha1.SopsTenant{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return admission.Allowed("")
+	case err != nil:
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+	if req.UserInfo.Username == identity.UserName(old.Namespace, tenant) {
 		return admission.Allowed("")
 	}
 	var users sopsv1alpha1.SopsSecretList
 	if err := v.Client.List(ctx, &users, client.MatchingFields{
-		controller.IndexTenantRef: controller.TenantRefKey(tenantNS, tenant),
+		controller.IndexTenantRef: controller.TenantRefKey(old.Namespace, tenant),
 	}); err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
@@ -95,6 +123,16 @@ func (v *SecretValidator) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Allowed("")
 	}
 	return admission.Denied(fmt.Sprintf("Secret %s/%s holds a key of SopsTenant %s/%s, which %d SopsSecrets use; "+
-		"change the key with a key rotation (spec.startRotation: true)", old.Namespace, old.Name, tenantNS, tenant,
+		"change the key with a key rotation (spec.startRotation: true)", old.Namespace, old.Name, old.Namespace, tenant,
 		len(users.Items)))
+}
+
+// tenantOfKey returns the tenant whose key Secret, or next key Secret, is named name, or "".
+func tenantOfKey(name string) string {
+	for _, suffix := range []string{sopsv1alpha1.TenantNextKeySecretName(""), sopsv1alpha1.TenantKeySecretName("")} {
+		if tenant, ok := strings.CutSuffix(name, suffix); ok && tenant != "" {
+			return tenant
+		}
+	}
+	return ""
 }

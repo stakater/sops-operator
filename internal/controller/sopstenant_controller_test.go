@@ -34,14 +34,14 @@ func keySecret(ns string, keyFile string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns,
-			Labels: map[string]string{sopsv1alpha1.LabelTenant: tenantName, sopsv1alpha1.LabelTenantNamespace: ns},
+			Labels: map[string]string{sopsv1alpha1.LabelEnabled: sopsv1alpha1.EnabledValue},
 		},
 		Data: map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
 	}
 }
 
 func TestTenantKeyAdoption(t *testing.T) {
-	t.Run("shall not adopt a key Secret without the tenant labels and name the labels to add", func(t *testing.T) {
+	t.Run("shall not adopt a key Secret without the enabled label and name the label to add", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, tenantName)
@@ -59,9 +59,8 @@ func TestTenantKeyAdoption(t *testing.T) {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
-		if c := readyCondition(tenant); !strings.Contains(c.Message, sopsv1alpha1.LabelTenant) ||
-			!strings.Contains(c.Message, sopsv1alpha1.LabelTenantNamespace) {
-			t.Fatalf("message %q does not name the labels to add", c.Message)
+		if c := readyCondition(tenant); !strings.Contains(c.Message, sopsv1alpha1.LabelEnabled) {
+			t.Fatalf("message %q does not name the label to add", c.Message)
 		}
 		if tenantOf(t, ns).Status.PublicKey != "" {
 			t.Fatal("an unadopted key was recorded in status.publicKey")
@@ -91,7 +90,7 @@ func TestTenantKeyAdoption(t *testing.T) {
 		assertUnchanged(t, output)
 	})
 
-	t.Run("shall label and use a key Secret it generated before the tenant labels existed", func(t *testing.T) {
+	t.Run("shall mark and use a key Secret it generated before the enabled label existed", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, tenantName)
@@ -116,7 +115,7 @@ func TestTenantKeyAdoption(t *testing.T) {
 		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
 			t.Fatal(err)
 		}
-		if after.Labels[sopsv1alpha1.LabelTenant] != tenantName || after.Labels[sopsv1alpha1.LabelTenantNamespace] != ns ||
+		if after.Labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue ||
 			string(after.Data[crypto.KeyFileField]) != string(keyFile) {
 			t.Fatalf("labels %v: the key was not labelled, or its content changed", after.Labels)
 		}
@@ -154,7 +153,7 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal("generated key is not post-quantum")
 		}
 		assertOnlyKeyFile(t, &key)
-		assertKeyLabels(t, &key, ns)
+		assertKeyLabels(t, &key)
 		if len(key.OwnerReferences) != 0 {
 			t.Fatal("key Secret must not have an ownerReference")
 		}
@@ -181,7 +180,7 @@ func TestTenantKey(t *testing.T) {
 		key := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns,
-				Labels: map[string]string{sopsv1alpha1.LabelTenant: "my-team-existing-key", sopsv1alpha1.LabelTenantNamespace: ns},
+				Labels: map[string]string{sopsv1alpha1.LabelEnabled: sopsv1alpha1.EnabledValue},
 			},
 			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
@@ -504,13 +503,12 @@ func prependIdentity(t *testing.T, tenantNS string) (newFile []byte, recipient s
 	return newFile, recipient
 }
 
-// assertKeyLabels checks that a key Secret the operator created carries managed-by and the tenant labels.
-func assertKeyLabels(t *testing.T, key *corev1.Secret, tenantNS string) {
+// assertKeyLabels checks that a key Secret the operator created carries managed-by and the enabled label.
+func assertKeyLabels(t *testing.T, key *corev1.Secret) {
 	t.Helper()
 	want := map[string]string{
-		sopsv1alpha1.LabelManagedBy:       sopsv1alpha1.ManagedByValue,
-		sopsv1alpha1.LabelTenant:          tenantName,
-		sopsv1alpha1.LabelTenantNamespace: tenantNS,
+		sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+		sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
 	}
 	if !maps.Equal(key.Labels, want) {
 		t.Fatalf("key Secret %s labels %v, want %v", key.Name, key.Labels, want)

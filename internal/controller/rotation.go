@@ -311,7 +311,7 @@ func (r *SopsTenantReconciler) startRotation(ctx context.Context, t *sopsv1alpha
 		next := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: nextName, Namespace: t.Namespace,
-				Labels: keyLabels(t),
+				Labels: keyLabels(),
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: map[string][]byte{crypto.KeyFileField: keyFile},
@@ -366,21 +366,21 @@ func createdByOperator(s *corev1.Secret) bool {
 		len(s.OwnerReferences) == 0
 }
 
-// keyLabels are the labels of a key Secret the operator creates for tenant t.
-func keyLabels(t *sopsv1alpha1.SopsTenant) map[string]string {
+// keyLabels are the labels of a key Secret the operator creates.
+func keyLabels() map[string]string {
 	return map[string]string{
-		sopsv1alpha1.LabelManagedBy:       sopsv1alpha1.ManagedByValue,
-		sopsv1alpha1.LabelTenant:          t.Name,
-		sopsv1alpha1.LabelTenantNamespace: t.Namespace,
+		sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+		sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
 	}
 }
 
-// adopted reports whether the key Secret s belongs to tenant t: it carries t's labels and is no output
-// Secret of a SopsSecret, which carries the same labels but also an annotation and an owner.
-func adopted(s *corev1.Secret, t *sopsv1alpha1.SopsTenant) bool {
+// adopted reports whether the key Secret s is enabled for the operator and is no output Secret of a
+// SopsSecret, which is enabled too but carries an annotation and an owner. The tenant follows from
+// the Secret's name and namespace.
+func adopted(s *corev1.Secret) bool {
 	_, fromSopsSecret := s.Annotations[sopsv1alpha1.AnnotationSopsSecret]
-	return s.Labels[sopsv1alpha1.LabelTenant] == t.Name && s.Labels[sopsv1alpha1.LabelTenantNamespace] == t.Namespace &&
-		!fromSopsSecret && len(s.OwnerReferences) == 0
+	return s.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue && !fromSopsSecret &&
+		len(s.OwnerReferences) == 0
 }
 
 // holdsKey reports whether the key Secret's primary key is recipient.

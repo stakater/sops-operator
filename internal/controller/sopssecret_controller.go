@@ -352,8 +352,7 @@ func rotationStatus(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotation
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
 	labels := withoutTracking(s.Spec.Template.Metadata.Labels)
 	labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
-	labels[sopsv1alpha1.LabelTenant] = s.Spec.TenantRef.Name
-	labels[sopsv1alpha1.LabelTenantNamespace] = s.Spec.TenantRef.Namespace
+	labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue
 	annotations := withoutTracking(s.Spec.Template.Metadata.Annotations)
 	annotations[sopsv1alpha1.AnnotationSopsSecret] = s.Name
 	secretType := s.Spec.Type
