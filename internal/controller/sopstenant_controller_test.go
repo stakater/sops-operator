@@ -28,10 +28,14 @@ func newTenant(ns string, generate *bool) *sopsv1alpha1.SopsTenant {
 	}
 }
 
+// keySecret returns a key Secret a tenant admin brings for tenantName in ns, labelled for adoption.
 func keySecret(ns string, keyFile string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns},
-		Data:       map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns,
+			Labels: map[string]string{sopsv1alpha1.LabelTenant: tenantName, sopsv1alpha1.LabelTenantNamespace: ns},
+		},
+		Data: map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
 	}
 }
 
@@ -66,8 +70,9 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal("generated key is not post-quantum")
 		}
 		assertOnlyKeyFile(t, &key)
-		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
-			t.Fatal("generated key is missing the managed-by label")
+		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue ||
+			key.Labels[sopsv1alpha1.LabelTenant] != tenantName || key.Labels[sopsv1alpha1.LabelTenantNamespace] != ns {
+			t.Fatalf("generated key labels %v, want managed-by and the tenant labels", key.Labels)
 		}
 		if len(key.OwnerReferences) != 0 {
 			t.Fatal("key Secret must not have an ownerReference")
@@ -93,8 +98,11 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		key := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns},
-			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns,
+				Labels: map[string]string{sopsv1alpha1.LabelTenant: "my-team-existing-key", sopsv1alpha1.LabelTenantNamespace: ns},
+			},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := env.Admin.Create(context.Background(), key); err != nil {
 			t.Fatal(err)
@@ -137,6 +145,87 @@ func TestTenantKey(t *testing.T) {
 		}
 		if after.ResourceVersion != key.ResourceVersion {
 			t.Fatal("existing key Secret was modified")
+		}
+	})
+
+	t.Run("shall not adopt a key Secret without the tenant labels and name the labels to add", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, x.String()+"\n")
+		key.Labels = nil
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		if c := readyCondition(tenant); !strings.Contains(c.Message, sopsv1alpha1.LabelTenant) ||
+			!strings.Contains(c.Message, sopsv1alpha1.LabelTenantNamespace) {
+			t.Fatalf("message %q does not name the labels to add", c.Message)
+		}
+		if tenantOf(t, ns).Status.PublicKey != "" {
+			t.Fatal("an unadopted key was recorded in status.publicKey")
+		}
+		assertUnchanged(t, key)
+	})
+
+	t.Run("shall not adopt an output Secret named like the key Secret", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := keySecret(ns, x.String()+"\n")
+		output.Labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
+		output.Annotations = map[string]string{sopsv1alpha1.AnnotationSopsSecret: output.Name}
+		if err := env.Admin.Create(ctx, output); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		assertUnchanged(t, output)
+	})
+
+	t.Run("shall label and use a key Secret it generated before the tenant labels existed", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		keyFile, recipient, err := crypto.GenerateKeyFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, string(keyFile))
+		key.Labels = map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue}
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		if got := tenantOf(t, ns).Status.PublicKey; got != recipient {
+			t.Fatalf("status.publicKey = %q, want the existing key", got)
+		}
+		var after corev1.Secret
+		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
+			t.Fatal(err)
+		}
+		if after.Labels[sopsv1alpha1.LabelTenant] != tenantName || after.Labels[sopsv1alpha1.LabelTenantNamespace] != ns ||
+			string(after.Data[crypto.KeyFileField]) != string(keyFile) {
+			t.Fatalf("labels %v: the key was not labelled, or its content changed", after.Labels)
 		}
 	})
 

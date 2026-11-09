@@ -307,8 +307,9 @@ func TestRotationStartEdges(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := env.Admin.Create(context.Background(), &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS},
-			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
+			ObjectMeta: metav1.ObjectMeta{Name: keyName, Namespace: tenantNS, Labels: map[string]string{
+				sopsv1alpha1.LabelTenant: tenantName, sopsv1alpha1.LabelTenantNamespace: tenantNS}},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}); err != nil {
 			t.Fatal(err)
 		}
