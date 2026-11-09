@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -28,11 +29,122 @@ func newTenant(ns string, generate *bool) *sopsv1alpha1.SopsTenant {
 	}
 }
 
+// keySecret returns a key Secret a tenant admin brings for tenantName in ns, labelled for adoption.
 func keySecret(ns string, keyFile string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns},
-		Data:       map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns,
+			Labels: map[string]string{sopsv1alpha1.LabelEnabled: sopsv1alpha1.EnabledValue},
+		},
+		Data: map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
 	}
+}
+
+func TestTenantKeyAdoption(t *testing.T) {
+	t.Run("shall not adopt a key Secret without the enabled label and name the label to add", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, x.String()+"\n")
+		key.Labels = nil
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		if c := readyCondition(tenant); !strings.Contains(c.Message, sopsv1alpha1.LabelEnabled) {
+			t.Fatalf("message %q does not name the label to add", c.Message)
+		}
+		if tenantOf(t, ns).Status.PublicKey != "" {
+			t.Fatal("an unadopted key was recorded in status.publicKey")
+		}
+		assertUnchanged(t, key)
+	})
+
+	t.Run("shall not adopt an output Secret named like the key Secret", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := keySecret(ns, x.String()+"\n")
+		output.Labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
+		output.Annotations = map[string]string{sopsv1alpha1.AnnotationSopsSecret: output.Name}
+		if err := env.Admin.Create(ctx, output); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		assertUnchanged(t, output)
+	})
+
+	t.Run("shall not adopt a labelled key Secret that has an owner", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		x, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: ns}}
+		if err := env.Admin.Create(ctx, owner); err != nil {
+			t.Fatal(err)
+		}
+		owned := keySecret(ns, x.String()+"\n")
+		owned.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: owner.Name, UID: owner.UID}}
+		if err := env.Admin.Create(ctx, owned); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		assertUnchanged(t, owned)
+	})
+
+	t.Run("shall mark and use a key Secret it generated before the enabled label existed", func(t *testing.T) {
+		ctx := context.Background()
+		ns := env.Namespace(t, "tenant")
+		env.Onboard(t, ns, tenantName)
+		keyFile, recipient, err := crypto.GenerateKeyFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keySecret(ns, string(keyFile))
+		key.Labels = map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue}
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		tenant := newTenant(ns, nil)
+		if err := env.Admin.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
+		if got := tenantOf(t, ns).Status.PublicKey; got != recipient {
+			t.Fatalf("status.publicKey = %q, want the existing key", got)
+		}
+		var after corev1.Secret
+		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
+			t.Fatal(err)
+		}
+		assertKeyLabels(t, &after)
+		if string(after.Data[crypto.KeyFileField]) != string(keyFile) {
+			t.Fatal("labelling the key changed its content")
+		}
+	})
 }
 
 func TestTenantKey(t *testing.T) {
@@ -66,11 +178,9 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal("generated key is not post-quantum")
 		}
 		assertOnlyKeyFile(t, &key)
+		assertKeyLabels(t, &key)
 		if tenant.Status.PublicKey != ks.Recipients[0] {
 			t.Fatalf("status.publicKey = %q, want the generated key's public key", tenant.Status.PublicKey)
-		}
-		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
-			t.Fatal("generated key is missing the managed-by label")
 		}
 		if len(key.OwnerReferences) != 0 {
 			t.Fatal("key Secret must not have an ownerReference")
@@ -96,8 +206,11 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		key := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns},
-			Data:       map[string][]byte{crypto.KeyFileField: keyFile},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns,
+				Labels: map[string]string{sopsv1alpha1.LabelEnabled: sopsv1alpha1.EnabledValue},
+			},
+			Data: map[string][]byte{crypto.KeyFileField: keyFile},
 		}
 		if err := env.Admin.Create(context.Background(), key); err != nil {
 			t.Fatal(err)
@@ -354,4 +467,16 @@ func TestTenantServiceAccount(t *testing.T) {
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
 		assertUnchanged(t, sa)
 	})
+}
+
+// assertKeyLabels checks that a key Secret the operator created or adopted carries managed-by and the enabled label.
+func assertKeyLabels(t *testing.T, key *corev1.Secret) {
+	t.Helper()
+	want := map[string]string{
+		sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+		sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
+	}
+	if !maps.Equal(key.Labels, want) {
+		t.Fatalf("key Secret %s labels %v, want %v", key.Name, key.Labels, want)
+	}
 }
