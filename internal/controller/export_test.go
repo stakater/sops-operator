@@ -28,3 +28,6 @@ import (
 func (r *SopsSecretReconciler) RecordDecryptedForTest(ctx context.Context, s *sopsv1alpha1.SopsSecret, uid types.UID) error {
 	return r.updateStatus(ctx, s, outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid})
 }
+
+// HealthyForTest reports whether the rotation start counts s as healthy.
+var HealthyForTest = healthy

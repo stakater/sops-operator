@@ -142,3 +142,27 @@ func TestTenantKeyBackupName(t *testing.T) {
 		}
 	})
 }
+
+func TestSopsTenantRotationFields(t *testing.T) {
+	ns := env.Namespace(t, "validation")
+	tenant := &sopsv1alpha1.SopsTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-team", Namespace: ns},
+		Spec:       sopsv1alpha1.SopsTenantSpec{StartRotation: true},
+	}
+	t.Run("shall accept startRotation", func(t *testing.T) {
+		if err := env.Admin.Create(context.Background(), tenant); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if !tenant.Spec.StartRotation {
+			t.Fatal("startRotation was not stored")
+		}
+	})
+	t.Run("shall reject an unknown rotation phase", func(t *testing.T) {
+		tenant.Status.Rotation = &sopsv1alpha1.TenantRotationStatus{
+			Phase: "Completing", StartedAt: metav1.Now(), PreviousPublicKey: "age1pqold",
+		}
+		if err := env.Admin.Status().Update(context.Background(), tenant); !apierrors.IsInvalid(err) {
+			t.Fatalf("status update with phase Completing: got %v, want Invalid", err)
+		}
+	})
+}

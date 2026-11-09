@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +33,30 @@ import (
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
 )
+
+// readKeys reads the key Secret, nil when it does not exist, and the key backups of tenant t. A
+// refused read is returned as the AccessDenied reason and message.
+func readKeys(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant) (*corev1.Secret, []corev1.Secret,
+	string, string, error) {
+	key := &corev1.Secret{}
+	err := tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: sopsv1alpha1.TenantKeySecretName(t.Name)}, key)
+	switch {
+	case apierrors.IsNotFound(err):
+		key = nil
+	case apierrors.IsForbidden(err):
+		return nil, nil, sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
+	case err != nil:
+		return nil, nil, "", "", err
+	}
+	backups, err := listBackups(ctx, tc, t)
+	if apierrors.IsForbidden(err) {
+		return nil, nil, sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot list its key backups; " + onboardHint(t), nil
+	}
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	return key, backups, "", "", nil
+}
 
 // listBackups returns the key backups of tenant t, oldest first: the Secrets labelled as key backups
 // in the tenant namespace named <tenant>-sops-keys-<YYYYMMDD-HHMMSS>.
@@ -101,9 +126,9 @@ func needsRestore(key, from *corev1.Secret) bool {
 // unless backups already has one. The name carries the time of r's clock in UTC; a name taken by a
 // backup of another key written in the same second fails, and the retry takes the next second.
 func (r *SopsTenantReconciler) ensureBackup(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant,
-	backups []corev1.Secret, keyFile []byte, recipient string) error {
-	if backupOf(backups, recipient) != nil {
-		return nil
+	backups []corev1.Secret, keyFile []byte, recipient string) (*corev1.Secret, error) {
+	if b := backupOf(backups, recipient); b != nil {
+		return b, nil
 	}
 	b := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -121,9 +146,9 @@ func (r *SopsTenantReconciler) ensureBackup(ctx context.Context, tc client.Clien
 		Data:      map[string][]byte{crypto.KeyFileField: keyFile},
 	}
 	if err := tc.Create(ctx, b); err != nil {
-		return fmt.Errorf("back up the key %s in %s/%s: %w", recipient, t.Namespace, b.Name, err)
+		return nil, fmt.Errorf("back up the key %s in %s/%s: %w", recipient, t.Namespace, b.Name, err)
 	}
-	return nil
+	return b, nil
 }
 
 // writeKey writes the key file of backup from into the key Secret: it creates the Secret when key is

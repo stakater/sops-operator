@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -71,15 +73,15 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.release(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
-	reason, message, err := r.ensureServiceAccount(ctx, &tenant)
-	if err == nil && reason == "" {
-		reason, message, err = r.reconcileKey(ctx, &tenant)
-	}
-	if err != nil {
-		return ctrl.Result{}, err
-	}
 	var users sopsv1alpha1.SopsSecretList
 	if err := r.List(ctx, &users, client.MatchingFields{IndexTenantRef: TenantRefKey(tenant.Namespace, tenant.Name)}); err != nil {
+		return ctrl.Result{}, err
+	}
+	reason, message, err := r.ensureServiceAccount(ctx, &tenant)
+	if err == nil && reason == "" {
+		reason, message, err = r.reconcileTenantKey(ctx, &tenant, users.Items)
+	}
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	status := metav1.ConditionFalse
@@ -210,32 +212,40 @@ func keyLabels() map[string]string {
 	}
 }
 
-// reconcileKey returns the Ready reason and message for the tenant key. Outside a rotation the key
-// Secret holds the key recorded in status.publicKey: a deleted or changed key Secret, or one that lost
-// the enabled label, is restored from the backup of that key. A key is generated only for a tenant
-// that never had one: no key Secret, no recorded key and no backup.
-func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
+// reconcileTenantKey returns the Ready reason and message for the tenant key, outside a rotation or
+// during one, and runs the rotation: its start, its key, and its progress.
+func (r *SopsTenantReconciler) reconcileTenantKey(ctx context.Context, t *sopsv1alpha1.SopsTenant,
+	users []sopsv1alpha1.SopsSecret) (string, string, error) {
 	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
 	if err != nil {
 		return "", "", err
 	}
+	if t.Status.Rotation == nil {
+		reason, message, err := r.reconcileKey(ctx, tc, t)
+		if err != nil || reason != sopsv1alpha1.ReasonKeyLoaded && reason != sopsv1alpha1.ReasonKeyGenerated {
+			return reason, message, err
+		}
+		if started, err := r.startRotation(ctx, t, users); err != nil || !started {
+			return reason, message, err
+		}
+	}
+	reason, message, err := r.rotatingKey(ctx, tc, t)
+	if err != nil || reason != sopsv1alpha1.ReasonKeyLoaded {
+		return reason, message, err
+	}
+	reconcileRotation(t, users)
+	return reason, message, nil
+}
+
+// reconcileKey returns the Ready reason and message for the tenant key. Outside a rotation the key
+// Secret holds the key recorded in status.publicKey: a deleted or changed key Secret, or one that lost
+// the enabled label, is restored from the backup of that key. A key is generated only for a tenant
+// that never had one: no key Secret, no recorded key and no backup.
+func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant) (string, string, error) {
 	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
-	key := &corev1.Secret{}
-	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, key)
-	switch {
-	case apierrors.IsNotFound(err):
-		key = nil
-	case apierrors.IsForbidden(err):
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
-	case err != nil:
-		return "", "", err
-	}
-	backups, err := listBackups(ctx, tc, t)
-	if apierrors.IsForbidden(err) {
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot list its key backups; " + onboardHint(t), nil
-	}
-	if err != nil {
-		return "", "", err
+	key, backups, reason, message, err := readKeys(ctx, tc, t)
+	if reason != "" || err != nil {
+		return reason, message, err
 	}
 	recorded := t.Status.PublicKey
 	if from := restoreSource(recorded, key, backups); from != nil && (key == nil || needsRestore(key, from)) {
@@ -255,7 +265,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		return sopsv1alpha1.ReasonKeyMismatch, fmt.Sprintf("Secret %s does not hold the key recorded in "+
 			"status.publicKey (%s) and there is no backup of it; restore the matching key", keyName, recorded), nil
 	}
-	if err := r.ensureBackup(ctx, tc, t, backups, key.Data[crypto.KeyFileField], keys.Recipients[0]); err != nil {
+	if _, err := r.ensureBackup(ctx, tc, t, backups, key.Data[crypto.KeyFileField], keys.Recipients[0]); err != nil {
 		return "", "", err
 	}
 	t.Status.PublicKey = keys.Recipients[0]
@@ -312,7 +322,7 @@ func (r *SopsTenantReconciler) generateKey(ctx context.Context, tc client.Client
 		return "", "", err
 	}
 	// A failed backup is retried by the next reconcile, which loads the key and backs it up.
-	if err := r.ensureBackup(ctx, tc, t, nil, keyFile, recipient); err != nil {
+	if _, err := r.ensureBackup(ctx, tc, t, nil, keyFile, recipient); err != nil {
 		return "", "", err
 	}
 	t.Status.PublicKey = recipient
@@ -336,9 +346,28 @@ func (r *SopsTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				ref := o.(*sopsv1alpha1.SopsSecret).Spec.TenantRef
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}}}
 			}),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, rotationProgressChanged{})))
 	if r.Watches != nil {
 		b = b.WatchesRawSource(source.Channel(r.Watches.Events(), &handler.EnqueueRequestForObject{}))
 	}
 	return b.Named("sopstenant").Complete(r)
+}
+
+// rotationProgressChanged passes SopsSecret updates that change what a rotation counts: the
+// rotation status or the Ready reason.
+type rotationProgressChanged struct{ predicate.Funcs }
+
+func (rotationProgressChanged) Update(e event.UpdateEvent) bool {
+	oldS, okOld := e.ObjectOld.(*sopsv1alpha1.SopsSecret)
+	newS, okNew := e.ObjectNew.(*sopsv1alpha1.SopsSecret)
+	if !okOld || !okNew {
+		return false
+	}
+	reason := func(s *sopsv1alpha1.SopsSecret) string {
+		if c := meta.FindStatusCondition(s.Status.Conditions, sopsv1alpha1.ConditionReady); c != nil {
+			return c.Reason
+		}
+		return ""
+	}
+	return !equality.Semantic.DeepEqual(oldS.Status.Rotation, newS.Status.Rotation) || reason(oldS) != reason(newS)
 }

@@ -145,3 +145,38 @@ func tenantOf(t *testing.T, tenantNS string) *sopsv1alpha1.SopsTenant {
 	}
 	return tenant
 }
+
+// setStartRotation sets spec.startRotation on the tenant.
+func setStartRotation(t *testing.T, tenant *sopsv1alpha1.SopsTenant, start bool) {
+	t.Helper()
+	update(t, tenant, func() { tenant.Spec.StartRotation = start })
+}
+
+// eventuallyRotated waits until the tenant's Rotated condition has the given reason.
+func eventuallyRotated(t *testing.T, tenant *sopsv1alpha1.SopsTenant, reason string) {
+	t.Helper()
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(tenant), tenant)).To(Succeed())
+		c := meta.FindStatusCondition(tenant.Status.Conditions, sopsv1alpha1.ConditionRotated)
+		g.Expect(c).NotTo(BeNil(), "Rotated condition")
+		g.Expect(c.Reason).To(Equal(reason), "message: %s", c.Message)
+	}).WithTimeout(20 * time.Second).WithPolling(200 * time.Millisecond).Should(Succeed())
+}
+
+// deleteObject deletes obj, ignoring NotFound.
+func deleteObject(t *testing.T, obj client.Object) {
+	t.Helper()
+	if err := env.Admin.Delete(context.Background(), obj); client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
+	}
+}
+
+// keyRecipient returns the primary public key of a key file.
+func keyRecipient(t *testing.T, keyFile []byte) string {
+	t.Helper()
+	ks, err := crypto.ParseKeyFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ks.Recipients[0]
+}
