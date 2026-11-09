@@ -46,8 +46,10 @@ import (
 	"github.com/stakater/sops-operator/internal/secretwriter"
 )
 
-// trackingPrefixes are GitOps tracking label/annotation prefixes never copied to output Secrets.
-var trackingPrefixes = []string{"argocd.argoproj.io/", "kustomize.toolkit.fluxcd.io/", "helm.toolkit.fluxcd.io/"}
+// trackingPrefixes are label/annotation prefixes never copied from the template to output Secrets:
+// GitOps tracking, and the operator's own, which a template must not set.
+var trackingPrefixes = []string{"argocd.argoproj.io/", "kustomize.toolkit.fluxcd.io/", "helm.toolkit.fluxcd.io/",
+	sopsv1alpha1.ReservedPrefix}
 
 // SopsSecretReconciler decrypts SopsSecrets into Secrets, acting as the referenced tenant identity.
 type SopsSecretReconciler struct {
@@ -350,6 +352,8 @@ func rotationStatus(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotation
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
 	labels := withoutTracking(s.Spec.Template.Metadata.Labels)
 	labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
+	labels[sopsv1alpha1.LabelTenant] = s.Spec.TenantRef.Name
+	labels[sopsv1alpha1.LabelTenantNamespace] = s.Spec.TenantRef.Namespace
 	annotations := withoutTracking(s.Spec.Template.Metadata.Annotations)
 	annotations[sopsv1alpha1.AnnotationSopsSecret] = s.Name
 	secretType := s.Spec.Type

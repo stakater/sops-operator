@@ -234,10 +234,28 @@ func TestSecretMetadata(t *testing.T) {
 		}
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(outputSecret(t, prod).Labels).To(Equal(map[string]string{
-				"example.com/team":          "a",
-				sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+				"example.com/team":                "a",
+				sopsv1alpha1.LabelManagedBy:       sopsv1alpha1.ManagedByValue,
+				sopsv1alpha1.LabelTenant:          tenantName,
+				sopsv1alpha1.LabelTenantNamespace: tenantNS,
 			}))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall label the output Secret with its tenant whatever the template says", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{
+			sopsv1alpha1.LabelTenant:          "someone-else",
+			sopsv1alpha1.LabelTenantNamespace: "elsewhere",
+		}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		labels := outputSecret(t, prod).Labels
+		if labels[sopsv1alpha1.LabelTenant] != tenantName || labels[sopsv1alpha1.LabelTenantNamespace] != tenantNS {
+			t.Fatalf("labels %v, want the tenant %s/%s", labels, tenantNS, tenantName)
+		}
 	})
 
 	t.Run("shall leave an up-to-date output Secret unchanged", func(t *testing.T) {

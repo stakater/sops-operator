@@ -145,7 +145,11 @@ func (w *Watches) start(ctx context.Context, k key) (context.CancelFunc, error) 
 	if err != nil {
 		return nil, err
 	}
-	selector := labels.Set{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue}.String()
+	selector := labels.Set{
+		sopsv1alpha1.LabelManagedBy:       sopsv1alpha1.ManagedByValue,
+		sopsv1alpha1.LabelTenant:          k.tenant.Name,
+		sopsv1alpha1.LabelTenantNamespace: k.tenant.Namespace,
+	}.String()
 	informer := metadatainformer.NewFilteredMetadataInformer(mc, corev1.SchemeGroupVersion.WithResource("secrets"),
 		k.namespace, 0, cache.Indexers{}, func(o *metav1.ListOptions) { o.LabelSelector = selector }).Informer()
 	wctx, cancel := context.WithCancel(w.ctx)

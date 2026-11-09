@@ -90,6 +90,14 @@ const (
 	LabelComponent          = "app.kubernetes.io/component"
 	LabelInstance           = "app.kubernetes.io/instance"
 	ComponentTenantIdentity = "tenant-identity"
+	// LabelTenant and LabelTenantNamespace name the tenant a Secret belongs to. The operator sets them on
+	// every Secret it manages and watches only Secrets that carry them; a tenant admin sets them on a key
+	// Secret they bring, for the operator to adopt it.
+	LabelTenant          = "sops.stakater.com/tenant"
+	LabelTenantNamespace = "sops.stakater.com/tenant-namespace"
+	// ReservedPrefix is the prefix of the operator's own labels and annotations; a SopsSecret's template
+	// cannot set them.
+	ReservedPrefix = "sops.stakater.com/"
 	// AnnotationSopsSecret names the SopsSecret an output Secret was created from. It is an
 	// annotation because object names can be longer than label values allow (63 characters).
 	AnnotationSopsSecret = "sops.stakater.com/sopssecret"
