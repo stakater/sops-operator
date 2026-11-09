@@ -31,3 +31,14 @@ func (r *SopsSecretReconciler) RecordDecryptedForTest(ctx context.Context, s *so
 
 // HealthyForTest reports whether the rotation start counts s as healthy.
 var HealthyForTest = healthy
+
+// ReconcileRotationForTest runs one rotation step for t with users as the cached list of its
+// SopsSecrets, accessing key Secrets as the tenant identity.
+func (r *SopsTenantReconciler) ReconcileRotationForTest(ctx context.Context, t *sopsv1alpha1.SopsTenant,
+	users []sopsv1alpha1.SopsSecret) error {
+	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
+	if err != nil {
+		return err
+	}
+	return r.reconcileRotation(ctx, t, tc, users)
+}

@@ -50,6 +50,9 @@ import (
 // key Secret only as the tenant identity.
 type SopsTenantReconciler struct {
 	client.Client
+	// APIReader reads SopsSecrets uncached for the decision to complete or abandon a rotation; Client
+	// is used when nil.
+	APIReader  client.Reader
 	Identities *identity.Factory
 	// Watches, when set, watches the key Secret as the tenant identity, so a deleted or changed key is
 	// restored from its backup at once; otherwise it is restored at the next resync.
@@ -229,12 +232,19 @@ func (r *SopsTenantReconciler) reconcileTenantKey(ctx context.Context, t *sopsv1
 			return reason, message, err
 		}
 	}
+	if !t.Spec.StartRotation {
+		if abandoned, reason, message, err := r.abandonRotation(ctx, tc, t); abandoned || err != nil {
+			return reason, message, err
+		}
+		if t.Status.Rotation.Phase == sopsv1alpha1.RotationPhaseWaitingForKey {
+			return sopsv1alpha1.ReasonKeyLoaded, "key loaded; the rotation waits for the new key", nil
+		}
+	}
 	reason, message, err := r.rotatingKey(ctx, tc, t)
 	if err != nil || reason != sopsv1alpha1.ReasonKeyLoaded {
 		return reason, message, err
 	}
-	reconcileRotation(t, users)
-	return reason, message, nil
+	return reason, message, r.reconcileRotation(ctx, t, tc, users)
 }
 
 // reconcileKey returns the Ready reason and message for the tenant key. Outside a rotation the key
