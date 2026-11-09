@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -48,14 +47,6 @@ type SopsTenantReconciler struct {
 	Identities     *identity.Factory
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
-	Now            func() time.Time
-}
-
-func (r *SopsTenantReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
 }
 
 // Reconcile implements reconcile.Reconciler.
@@ -140,11 +131,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		if err != nil {
 			return sopsv1alpha1.ReasonKeyInvalid, err.Error(), nil
 		}
-		// A public key that does not match would make developers encrypt for a key nobody holds.
-		if pub, ok := key.Data[crypto.PublicKeyField]; ok && strings.TrimSpace(string(pub)) != keys.Recipients[0] {
-			return sopsv1alpha1.ReasonKeyInvalid, fmt.Sprintf("%s does not match the primary key in %s",
-				crypto.PublicKeyField, crypto.KeyFileField), nil
-		}
+		t.Status.PublicKey = keys.Recipients[0]
 		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
 	case apierrors.IsForbidden(err):
 		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
@@ -155,7 +142,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 	if !t.ShouldGenerateKey() {
 		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
 	}
-	keyFile, recipient, err := crypto.GenerateKeyFile(r.now())
+	keyFile, recipient, err := crypto.GenerateKeyFile()
 	if err != nil {
 		return "", "", err
 	}
@@ -166,7 +153,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 			Labels:    map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
+		Data: map[string][]byte{crypto.KeyFileField: keyFile},
 	}
 	if err := tc.Create(ctx, secret); err != nil {
 		if apierrors.IsForbidden(err) {
@@ -176,6 +163,7 @@ func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1
 		// AlreadyExists: a key appeared since the read; the retry loads it.
 		return "", "", err
 	}
+	t.Status.PublicKey = recipient
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
 		"generated a post-quantum key in Secret %s", keyName)
 	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil

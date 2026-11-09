@@ -19,7 +19,6 @@ package e2e
 import (
 	"context"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,18 +40,17 @@ func TestKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldKey := key.Data[crypto.KeyFileField]
-	newKey, newRecipient, err := crypto.GenerateKeyFile(time.Now())
+	newKey, newRecipient, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
 	// setKey stands in for the tenant admin editing the key Secret.
-	setKey := func(t *testing.T, keyFile []byte, primary string) {
+	setKey := func(t *testing.T, keyFile []byte) {
 		t.Helper()
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(key), key); err != nil {
 			t.Fatal(err)
 		}
 		key.Data[crypto.KeyFileField] = keyFile
-		key.Data[crypto.PublicKeyField] = []byte(primary)
 		if err := k8s.Update(ctx, key); err != nil {
 			t.Fatal(err)
 		}
@@ -66,7 +64,7 @@ func TestKeyRotation(t *testing.T) {
 
 	var rotated *sopsv1alpha1.SopsSecret
 	t.Run("shall decrypt old and new files while both keys are present", func(t *testing.T) {
-		setKey(t, append(append(newKey, '\n'), oldKey...), newRecipient)
+		setKey(t, append(append(newKey, '\n'), oldKey...))
 		rotated = createSopsSecret(t, newRecipient, sopsSecret{
 			Name: "new-file", Namespace: prod, Scope: prod + "/new-file", TenantNamespace: tenantNS,
 			StringData: map[string]string{"password": "new"},
@@ -82,7 +80,7 @@ func TestKeyRotation(t *testing.T) {
 			t.Skip("needs the new file from the previous subtest")
 		}
 		removed := metav1.Now()
-		setKey(t, newKey, newRecipient)
+		setKey(t, newKey)
 		waitForReason(t, existing, sopsv1alpha1.ReasonNotRecipient)
 		assertGolden(t, existing, "retired key")
 		var kept corev1.Secret

@@ -36,6 +36,7 @@ const (
 	Timestamp       = "<timestamp>"
 	Redacted        = "<redacted>"
 	Encrypted       = "<encrypted>"
+	PublicKey       = "<publicKey>"
 )
 
 // YAML returns obj as normalized YAML with keys sorted. UIDs found in known (UID → label such as
@@ -108,6 +109,7 @@ func normalize(u map[string]any, known map[string]string) error {
 		if err := timestamp(status, "lastSyncTime", "status.lastSyncTime", false); err != nil {
 			return err
 		}
+		setIfPresent(status, "publicKey", PublicKey)
 		conditions, _ := status["conditions"].([]any)
 		for i, c := range conditions {
 			if cond, ok := c.(map[string]any); ok {

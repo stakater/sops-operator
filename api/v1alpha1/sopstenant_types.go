@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+// SopsTenantSpec defines a tenant key. The key is the Secret `<tenant>-sops-keys` in the
 // tenant's namespace.
 type SopsTenantSpec struct {
 	// GenerateKey generates a post-quantum age key when the key Secret does not exist.
@@ -40,10 +40,14 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
-	// KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+	// KeySecretName is the Secret in the tenant namespace that holds the tenant's private key, `<tenant>-sops-keys`.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
 	// +optional
 	KeySecretName string `json:"keySecretName,omitempty"`
+	// PublicKey is the public key of the current key, for .sops.yaml.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Public key"
+	// +optional
+	PublicKey string `json:"publicKey,omitempty"`
 	// UsedBy is the number of SopsSecrets referencing this tenant.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Used by"
 	// +optional

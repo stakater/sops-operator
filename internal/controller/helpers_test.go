@@ -3,6 +3,8 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -123,4 +125,23 @@ func assertUnchanged(t *testing.T, obj client.Object) {
 	if current.GetResourceVersion() != obj.GetResourceVersion() {
 		t.Fatalf("%s was modified", client.ObjectKeyFromObject(obj))
 	}
+}
+
+// assertOnlyKeyFile checks that a key Secret holds the private key file and nothing else.
+func assertOnlyKeyFile(t *testing.T, key *corev1.Secret) {
+	t.Helper()
+	fields := slices.Sorted(maps.Keys(key.Data))
+	if !slices.Equal(fields, []string{crypto.KeyFileField}) {
+		t.Fatalf("key Secret %s holds fields %v, want only %s", key.Name, fields, crypto.KeyFileField)
+	}
+}
+
+// tenantOf returns the tenant object of an onboarded tenant namespace.
+func tenantOf(t *testing.T, tenantNS string) *sopsv1alpha1.SopsTenant {
+	t.Helper()
+	tenant := &sopsv1alpha1.SopsTenant{}
+	if err := env.Admin.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: tenantName}, tenant); err != nil {
+		t.Fatal(err)
+	}
+	return tenant
 }

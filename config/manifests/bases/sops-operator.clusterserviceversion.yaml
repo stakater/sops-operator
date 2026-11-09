@@ -95,13 +95,16 @@ spec:
             path: conditions
             x-descriptors:
               - urn:alm:descriptor:io.kubernetes.conditions
-          - description: KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+          - description: KeySecretName is the Secret in the tenant namespace that holds the tenant's private key, `<tenant>-sops-keys`.
             displayName: Key Secret
             path: keySecretName
             x-descriptors:
               - urn:alm:descriptor:io.kubernetes:Secret
           - displayName: Observed generation
             path: observedGeneration
+          - description: PublicKey is the public key of the current key, for .sops.yaml.
+            displayName: Public key
+            path: publicKey
           - description: |-
               ServiceAccountName is the tenant identity the operator acts as: the ServiceAccount the cluster
               admin binds to grant this tenant access.
