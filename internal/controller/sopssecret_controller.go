@@ -33,13 +33,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/document"
 	"github.com/stakater/sops-operator/internal/identity"
+	"github.com/stakater/sops-operator/internal/secretwatch"
 	"github.com/stakater/sops-operator/internal/secretwriter"
 )
 
@@ -53,8 +56,11 @@ type SopsSecretReconciler struct {
 	client.Client
 	// APIReader reads SopsSecrets uncached, so status.secretUID written by the previous reconcile
 	// is always seen; a stale cache would otherwise report Conflict for the operator's own Secret.
-	APIReader      client.Reader
-	Identities     *identity.Factory
+	APIReader  client.Reader
+	Identities *identity.Factory
+	// Watches, when set, watches output Secrets as the tenant identity, so a deleted or changed one
+	// is restored at once; otherwise it is restored at the next resync.
+	Watches        *secretwatch.Watches
 	ResyncInterval time.Duration
 	Now            func() time.Time
 }
@@ -80,9 +86,13 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	var s sopsv1alpha1.SopsSecret
 	if err := reader.Get(ctx, req.NamespacedName, &s); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.release(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !s.DeletionTimestamp.IsZero() {
+		r.release(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 	o := outcome{reason: sopsv1alpha1.ReasonSuspended, message: "reconciliation is suspended"}
@@ -95,7 +105,32 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.updateStatus(ctx, &s, o); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.watchOutput(ctx, &s, o)
 	return ctrl.Result{RequeueAfter: r.ResyncInterval}, nil
+}
+
+// watchOutput holds the watch of the output Secret while it is up to date, and releases it
+// otherwise: a suspended or failing SopsSecret leaves its Secret alone.
+func (r *SopsSecretReconciler) watchOutput(ctx context.Context, s *sopsv1alpha1.SopsSecret, o outcome) {
+	if r.Watches == nil {
+		return
+	}
+	owner := client.ObjectKeyFromObject(s)
+	if o.reason != sopsv1alpha1.ReasonDecrypted {
+		r.Watches.Release(owner)
+		return
+	}
+	tenant := types.NamespacedName{Namespace: s.Spec.TenantRef.Namespace, Name: s.Spec.TenantRef.Name}
+	if err := r.Watches.Watch(ctx, owner, tenant); err != nil {
+		// The resync still restores the Secret; the next reconcile tries the watch again.
+		log.FromContext(ctx).Error(err, "watch output Secrets", "tenant", tenant)
+	}
+}
+
+func (r *SopsSecretReconciler) release(owner types.NamespacedName) {
+	if r.Watches != nil {
+		r.Watches.Release(owner)
+	}
 }
 
 // sync runs the checks of DESIGN.md §6.2 in order. Policy failures are returned as outcomes;
@@ -264,12 +299,14 @@ func reconcileDenied(tenantName, namespace string) outcome {
 // SetupWithManager registers the controller. Status updates do not retrigger reconciliation;
 // tenant changes reconcile every SopsSecret that references the tenant.
 func (r *SopsSecretReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&sopsv1alpha1.SopsSecret{}, builder.WithPredicates(
 			predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}))).
-		Watches(&sopsv1alpha1.SopsTenant{}, handler.EnqueueRequestsFromMapFunc(r.sopsSecretsOfTenant)).
-		Named("sopssecret").
-		Complete(r)
+		Watches(&sopsv1alpha1.SopsTenant{}, handler.EnqueueRequestsFromMapFunc(r.sopsSecretsOfTenant))
+	if r.Watches != nil {
+		b = b.WatchesRawSource(source.Channel(r.Watches.Events(), &handler.EnqueueRequestForObject{}))
+	}
+	return b.Named("sopssecret").Complete(r)
 }
 
 func (r *SopsSecretReconciler) sopsSecretsOfTenant(ctx context.Context, o client.Object) []reconcile.Request {

@@ -199,6 +199,96 @@ func TestSecretSyncAccess(t *testing.T) {
 	})
 }
 
+func TestOutputSecretWatch(t *testing.T) {
+	t.Run("shall hold the watch of the output Secret while the SopsSecret is Decrypted", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		eventuallyHeld(t, s, true)
+	})
+
+	t.Run("shall release the watch while the SopsSecret is suspended", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyHeld(t, s, true)
+		update(t, s, func() { s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"} })
+		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
+		eventuallyHeld(t, s, false)
+	})
+
+	t.Run("shall release the watch when the SopsSecret is deleted", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyHeld(t, s, true)
+		if err := env.Admin.Delete(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyHeld(t, s, false)
+	})
+
+	t.Run("shall restore a deleted output Secret", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		deleted := outputSecret(t, prod)
+		if err := env.Admin.Delete(ctx, deleted); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			var restored corev1.Secret
+			g.Expect(env.Admin.Get(ctx, client.ObjectKey{Namespace: prod, Name: "db"}, &restored)).To(Succeed())
+			g.Expect(restored.UID).NotTo(Equal(deleted.UID))
+			g.Expect(string(restored.Data["password"])).To(Equal("v1"))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall leave an up-to-date output Secret unchanged", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"app": "billing"}
+		s.Spec.Template.Metadata.Annotations = map[string]string{"example.com/note": "n"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		before := outputSecret(t, prod).ResourceVersion
+		eventuallyResynced(t, s)
+		eventuallyResynced(t, s)
+		if after := outputSecret(t, prod).ResourceVersion; after != before {
+			t.Fatalf("resourceVersion %s became %s: an unchanged Secret was rewritten", before, after)
+		}
+	})
+}
+
+// eventuallyHeld waits until the output Secret watch is held for s, or released when held is false.
+func eventuallyHeld(t *testing.T, s *sopsv1alpha1.SopsSecret, held bool) {
+	t.Helper()
+	NewWithT(t).Eventually(func() bool {
+		return watches.Holds(client.ObjectKeyFromObject(s))
+	}).WithTimeout(20*time.Second).Should(Equal(held), "output Secret watch held for %s", client.ObjectKeyFromObject(s))
+}
+
+// eventuallyResynced waits until s is synced again after its last sync.
+func eventuallyResynced(t *testing.T, s *sopsv1alpha1.SopsSecret) {
+	t.Helper()
+	if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Status.LastSyncTime.DeepCopy()
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+		g.Expect(s.Status.LastSyncTime.After(before.Time)).To(BeTrue())
+	}).WithTimeout(20 * time.Second).Should(Succeed())
+}
+
 func TestSecretMetadata(t *testing.T) {
 	t.Run("shall replace labels and annotations set directly on the output Secret with the SopsSecret's", func(t *testing.T) {
 		ctx := context.Background()
