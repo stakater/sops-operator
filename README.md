@@ -316,7 +316,8 @@ The private key is in the Secret `team-a-sops-keys`. To use an existing key, cre
 
 ### 3b. Share the public key (tenant admin)
 
-Read the public key from the tenant's status and commit it to the team's `.sops.yaml`:
+Add the tenant's public key to its rule in the GitOps repository's `.sops.yaml`. sops and the scripts encrypt
+each file for the keys of the rule whose `path_regex` matches it.
 
 ```bash
 kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'

@@ -13,9 +13,8 @@ Install:
 - [sops](https://github.com/getsops/sops)
 - [yq](https://github.com/mikefarah/yq) (the Go version by mikefarah)
 
-Your GitOps repository needs a `.sops.yaml` that says which keys to encrypt for. sops uses the first
-`.sops.yaml` it finds in the file's directory or a directory above it, for example one at the top of the
-repository:
+The scripts follow the `.sops.yaml` of your GitOps repository: sops encrypts each file for the keys of the
+rule whose `path_regex` matches it. The examples use this layout:
 
 ```text
 gitops/
@@ -24,22 +23,6 @@ gitops/
     stage/
       team-a/
         db-credentials.sops.yaml
-```
-
-```yaml
-# gitops/.sops.yaml
-creation_rules:
-  - path_regex: ^environments/stage/.*\.sops\.ya?ml$
-    encrypted_regex: ^(data|stringData|scope)$
-    mac_only_encrypted: true
-    age:
-      - age1pq1...   # public key of tenant team-a
-```
-
-Ask your tenant admin for the public key of the tenant, or read it from the cluster:
-
-```bash
-oc get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```
 
 ## Encrypt a secret
