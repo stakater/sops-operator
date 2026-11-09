@@ -187,4 +187,3 @@ func (w *Watches) start(ctx context.Context, k key) (context.CancelFunc, error) 
 	}
 	return cancel, nil
 }
-
