@@ -31,6 +31,16 @@ fails() {
   ! "$@"
 }
 
+# fails_with <text> <command...>: succeeds when the command fails with text in its output.
+fails_with() {
+  local text="$1" output
+  shift
+  if output="$("$@" 2>&1)"; then
+    return 1
+  fi
+  grep -qF -- "$text" <<<"$output"
+}
+
 # decrypts <file> <yq check>: the file decrypts with the test key and the check holds.
 decrypts() {
   SOPS_AGE_KEY_FILE="$WORK/tenant.key" sops decrypt "$1" | yq -e "$2"
@@ -167,6 +177,36 @@ EOF
 chmod +x "$WORK/bin/oc"
 export FAKE_CLUSTER="$WORK/cluster"
 
+# sopssecret <tenant> <name>: a plaintext SopsSecret of the tenant.
+sopssecret() {
+  cat <<EOF
+apiVersion: sops.stakater.com/v1alpha1
+kind: SopsSecret
+metadata:
+  name: $2
+  namespace: $1-stage
+spec:
+  tenantRef:
+    name: $1
+    namespace: $1-system
+  stringData:
+    password: "throwaway"
+EOF
+}
+# Files the script must leave alone: another tenant's, a plaintext SopsSecret and another kind.
+mkdir -p "$ROT/team-b" "$WORK/untouched"
+sopssecret team-b db >"$ROT/team-b/db.sops.yaml"
+"$SCRIPTS/encrypt.sh" "$ROT/team-b/db.sops.yaml" >/dev/null
+sopssecret team-a plain >"$ROT/team-a/plain.yaml"
+printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: settings\n' >"$ROT/team-a/settings.yaml"
+cp "$ROT/team-b/db.sops.yaml" "$ROT/team-a/plain.yaml" "$ROT/team-a/settings.yaml" "$WORK/untouched/"
+# untouched: the files the script must leave alone are as they were.
+untouched() {
+  cmp "$WORK/untouched/db.sops.yaml" "$ROT/team-b/db.sops.yaml" &&
+    cmp "$WORK/untouched/plain.yaml" "$ROT/team-a/plain.yaml" &&
+    cmp "$WORK/untouched/settings.yaml" "$ROT/team-a/settings.yaml"
+}
+
 cp "$ROT/team-a/db.sops.yaml" "$WORK/db.unrotated"
 mv "$WORK/cluster/sopssecret-team-a-stage-db.json" "$WORK/db.cluster.json"
 check "stops when a file has no SopsSecret in the cluster" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
@@ -192,6 +232,26 @@ stale '.status.observedGeneration = 1'
 check "stops when the operator has not seen the SopsSecret's generation" fails "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "changes no file when the operator has not seen the generation" diff -r "$WORK/rot.before" "$ROT"
 restore_cluster
+stale '.sops.mac = "ENC[other]"'
+check "stops when a file differs from its SopsSecret in the cluster" \
+  fails_with "differs from SopsSecret team-a-stage/db" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "changes no file when a file differs from the cluster" diff -r "$WORK/rot.before" "$ROT"
+restore_cluster
+stale '.status.rotation.nextRecipient.recipient = "age1pq1other"'
+check "stops when the cluster's entry is for another key" \
+  fails_with "has not prepared the next key" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "changes no file when the cluster's entry is for another key" diff -r "$WORK/rot.before" "$ROT"
+restore_cluster
+
+# Two files, the second (in sort order) without a SopsSecret in the cluster: neither is changed.
+mkdir -p "$ROT/team-a/zz/deep"
+sopssecret team-a cache >"$ROT/team-a/zz/deep/cache.sops.yaml"
+"$SCRIPTS/encrypt.sh" "$ROT/team-a/zz/deep/cache.sops.yaml" >/dev/null
+cp -R "$ROT" "$WORK/rot.two"
+check "stops when one of two files has no SopsSecret in the cluster" \
+  fails_with "team-a-stage/cache is not in the cluster" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
+check "changes no file when one of two files fails" diff -r "$WORK/rot.two" "$ROT"
+rm -r "$ROT/team-a/zz"
 
 check "adds the next key to the tenant's files" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "the file decrypts with the next key" \
@@ -207,6 +267,7 @@ check "adds the next key to folded keys in their style" \
   yq -e ".creation_rules[0].age == \"$BREAKGLASS, $CURRENT, $NEXT\"" "$ROT/folded/.sops.yaml"
 check "leaves a rule without an age key unchanged" \
   kms_rule_unchanged
+check "leaves other tenants' files, plaintext files and other kinds unchanged" untouched
 cp "$ROT/team-a/db.sops.yaml" "$WORK/db.rotated"
 check "runs again without errors" "$SCRIPTS/rotate.sh" "$ROT/tenant.yaml" "$ROT"
 check "leaves rotated files unchanged" cmp "$WORK/db.rotated" "$ROT/team-a/db.sops.yaml"
@@ -227,6 +288,7 @@ check "removes the old key from folded keys and keeps the others in their style"
   yq -e ".creation_rules[0].age == \"$BREAKGLASS, $NEXT\"" "$ROT/folded/.sops.yaml"
 check "leaves a rule without an age key unchanged after cleanup" \
   kms_rule_unchanged
+check "leaves other tenants' files, plaintext files and other kinds unchanged after cleanup" untouched
 
 # A tenant status without a current key must not make the script touch every rule of .sops.yaml.
 cp "$ROT/.sops.yaml" "$WORK/sops.before"

@@ -711,6 +711,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Replay of an older, validly encrypted `SopsSecret`. | Equivalent to a Git revert; controlled by GitOps and RBAC on manual applies. |
 | Drift on output Secrets is corrected only at the next resync. | Configurable interval. |
 | `sops-key-owner` grants `get`, `create`, `update` and `delete` on all Secrets in the tenant namespace, so tenants sharing a namespace can read each other's keys and also replace or delete them, which destroys or substitutes a key. | Tenant namespace is dedicated to keys; per-tenant key access is planned for tenants sharing a namespace. |
+| A `<tenant>-sops-keys` Secret that exists before its `SopsTenant` is loaded as the tenant key, whoever wrote it, including a `SopsSecret` whose output Secret has that name. | Deliberate, for stability: without a key store this Secret is the only way to keep or restore a tenant's key, for example after recreating the `SopsTenant` or restoring a backup. Once the tenant exists, a `SopsSecret` writing to that name is refused. The tenant admin checks `status.publicKey` against the team's `.sops.yaml` before relying on a new tenant. |
 | A removed key still exists in backups of the cluster (etcd, Velero) taken before its removal. | Backups of tenant namespaces are protected like the keys themselves; their retention bounds how long a removed key exists. |
 | Plaintext in output Secrets. | Outside the operator: enable etcd encryption at rest; restrict `get secrets` in consumer namespaces. |
 
