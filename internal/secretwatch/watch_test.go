@@ -200,3 +200,69 @@ func TestWatchesFollowTenantGrants(t *testing.T) {
 		}
 	})
 }
+
+func TestKeyWatches(t *testing.T) {
+	ctx := context.Background()
+	tenantNS := env.Namespace(t, "tenant")
+	env.Onboard(t, tenantNS, "my-team")
+	tenant := types.NamespacedName{Namespace: tenantNS, Name: "my-team"}
+
+	w := secretwatch.NewForKeys(identity.NewFactory(env.OperatorConfig, env.Scheme).ConfigFor)
+	events := w.Events()
+	t.Cleanup(w.Stop)
+	key := secret(tenantNS, "my-team-sops-keys", enabled(), nil)
+	if err := env.Admin.Create(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Watch(ctx, tenant, tenant); err != nil {
+		t.Fatalf("watch the tenant namespace as the tenant identity: %v", err)
+	}
+
+	t.Run("shall report a changed key Secret as its SopsTenant", func(t *testing.T) {
+		key.Data["age.agekey"] = []byte("edited")
+		if err := env.Admin.Update(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if got := nextEvent(t, events); got != tenant {
+			t.Fatalf("event for %v, want the tenant %v", got, tenant)
+		}
+	})
+
+	t.Run("shall report a key Secret that lost the enabled label", func(t *testing.T) {
+		key.Labels = map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue}
+		if err := env.Admin.Update(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if got := nextEvent(t, events); got != tenant {
+			t.Fatalf("event for %v, want the tenant %v", got, tenant)
+		}
+	})
+
+	t.Run("shall report a deleted key Secret and ignore backups, output Secrets and other Secrets", func(t *testing.T) {
+		key.Labels = enabled()
+		if err := env.Admin.Update(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		backupLabels := enabled()
+		backupLabels[sopsv1alpha1.LabelKeyBackup] = "true"
+		ignored := []*corev1.Secret{
+			secret(tenantNS, "my-team-sops-keys-20261109-120000", backupLabels, nil),
+			secret(tenantNS, "other-sops-keys", enabled(), map[string]string{sopsv1alpha1.AnnotationSopsSecret: "other-sops-keys"}),
+			secret(tenantNS, "db", enabled(), nil),
+		}
+		for _, s := range ignored {
+			if err := env.Admin.Create(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+			if err := env.Admin.Delete(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := env.Admin.Delete(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if got := nextEvent(t, events); got != tenant {
+			t.Fatalf("event for %v, want the tenant %v: a backup, output Secret or other Secret was reported", got, tenant)
+		}
+	})
+}
