@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,75 @@ func TestSecretDecryption(t *testing.T) {
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+}
+
+func TestSecretMetadata(t *testing.T) {
+	t.Run("shall replace labels and annotations set directly on the output Secret with the SopsSecret's", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"example.com/team": "a"}
+		s.Spec.Template.Metadata.Annotations = map[string]string{"example.com/note": "n"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		tagged := outputSecret(t, prod)
+		tagged.Labels["example.com/team"] = "b"
+		tagged.Labels["example.com/set-on-secret"] = "x"
+		tagged.Annotations["example.com/set-on-secret"] = "x"
+		if err := env.Admin.Update(ctx, tagged); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			out := outputSecret(t, prod)
+			g.Expect(out.Labels).To(Equal(map[string]string{
+				"example.com/team":          "a",
+				sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+				sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
+			}))
+			g.Expect(out.Annotations).To(Equal(map[string]string{
+				"example.com/note":                "n",
+				sopsv1alpha1.AnnotationSopsSecret: "db",
+			}))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall mark the output Secret enabled whatever the template says", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{sopsv1alpha1.LabelEnabled: "false"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		if labels := outputSecret(t, prod).Labels; labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue {
+			t.Fatalf("labels %v, want %s=%s", labels, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)
+		}
+	})
+
+	t.Run("shall drop sops.stakater.com/ labels and annotations of the template", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"app": "billing", "sops.stakater.com/custom": "x"}
+		s.Spec.Template.Metadata.Annotations = map[string]string{
+			"example.com/note":                "n",
+			sopsv1alpha1.AnnotationSopsSecret: "other",
+			sopsv1alpha1.AnnotationSuspend:    "true",
+		}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		out := outputSecret(t, prod)
+		if want := map[string]string{
+			"app":                       "billing",
+			sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+			sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
+		}; !maps.Equal(out.Labels, want) {
+			t.Fatalf("labels %v, want %v", out.Labels, want)
+		}
+		if want := map[string]string{"example.com/note": "n", sopsv1alpha1.AnnotationSopsSecret: "db"}; !maps.Equal(out.Annotations, want) {
+			t.Fatalf("annotations %v, want %v", out.Annotations, want)
+		}
 	})
 }
 
