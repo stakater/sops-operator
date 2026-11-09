@@ -42,7 +42,8 @@ delivery pipeline**, and the operator needs no Git access or Git credentials.
 
 Each `SopsSecret` produces exactly one Secret with the same name in the same namespace. The operator restores
 the Secret when it is changed or deleted, removes it with the `SopsSecret` (or keeps it with
-`deletionPolicy: Retain`), and never adopts or overwrites a Secret it did not create. GitOps tracking labels are
+`deletionPolicy: Retain`), and never adopts or overwrites a Secret it did not create. An admission webhook refuses
+direct edits and deletions of the Secret, so a change goes through the `SopsSecret`. GitOps tracking labels are
 not copied to the Secret, so GitOps tools do not prune it.
 
 ### 🩺 Status your tooling understands
@@ -64,8 +65,8 @@ and every access appears in the Kubernetes audit log under both identities.
 
 A tenant's identity may create, update, list and watch Secrets only in the namespaces granted to it; listing
 includes reading them, so grant only namespaces the tenant may see. The operator
-watches **metadata only** of the Secrets it wrote, so a deleted or changed Secret is restored at once, and it
-holds no Secret contents. It tracks ownership through the UID of the Secret it created, never through a read.
+watches **metadata only** of the Secrets of its tenant (those carrying the tenant's labels), so a deleted or
+changed Secret is restored at once, and it holds no Secret contents. It tracks ownership through the UID of the Secret it created, never through a read.
 
 ### 🧩 Explicit grants, self-service tenants
 
@@ -90,7 +91,8 @@ Bring-your-own X25519 keys, rotation with several keys and break-glass recipient
 ## Built for OpenShift
 
 Installed and upgraded through OLM, with console-ready samples and form descriptors, `AllNamespaces` install
-mode, no admission webhooks, no dependencies on other operators, and schema validation with CEL in the CRDs.
+mode, one validating admission webhook that protects the Secrets the operator manages, no dependencies on other
+operators, and schema validation with CEL in the CRDs.
 
 ## At a glance
 
@@ -146,9 +148,13 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 4. Decrypts **only the scope** first and verifies that it matches the `SopsSecret`'s namespace and name.
 5. Decrypts the values and writes the Secret **as the tenant identity**. The API server authorizes the write
    again.
-6. Watches the Secret's metadata as the tenant identity, so a deleted or changed Secret is restored at once
-   rather than at the next resync. Its labels and annotations come only from the `SopsSecret`'s
-   `spec.template.metadata`; changes made directly on the Secret are reverted.
+6. Watches the metadata of the tenant's Secrets as the tenant identity, so a deleted or changed Secret is restored
+   at once rather than at the next resync. The Secret carries the labels `sops.stakater.com/tenant` and
+   `sops.stakater.com/tenant-namespace`, plus `app.kubernetes.io/managed-by: sops-operator` and the annotation
+   `sops.stakater.com/sopssecret`. Its other labels and annotations come only from the `SopsSecret`'s
+   `spec.template.metadata`, and labels and annotations starting with `sops.stakater.com/` there are dropped.
+   Direct changes to the Secret are refused by the admission webhook (see [Operations](#operations)) and
+   reverted if they happen anyway.
 
 Revoking a grant takes effect at the next reconcile. Grants and keys are re-checked every time, never cached as
 decisions.
@@ -312,8 +318,27 @@ NAME     READY   REASON         USED BY   LAST ROTATED   AGE
 team-a   True    KeyGenerated   0                        5s
 ```
 
-The private key is in the Secret `team-a-sops-keys`. To use an existing key, create the Secret
-`team-a-system/team-a-sops-keys` with your identity in `age.agekey` first, and set `generateKey: false`.
+The private key is in the Secret `team-a-sops-keys`.
+
+To bring your own key, set `generateKey: false` in the `SopsTenant` and create the Secret
+`team-a-system/team-a-sops-keys` with your identity in `age.agekey` and the two labels below. The operator uses
+the Secret only when it carries both labels; without them the tenant reports `KeyMissing` and the message names
+the labels.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: team-a-sops-keys
+  namespace: team-a-system
+  labels:
+    sops.stakater.com/tenant: team-a
+    sops.stakater.com/tenant-namespace: team-a-system
+type: Opaque
+stringData:
+  age.agekey: |
+    AGE-SECRET-KEY-PQ-1...
+```
 
 ### 3b. Share the public key (tenant admin)
 
@@ -387,7 +412,7 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 | `spec.scope` | required | Encrypted `<namespace>/<name>` this file may be decrypted into. |
 | `spec.stringData` / `spec.data` | one required | Encrypted text / base64 values, as on a Secret. |
 | `spec.type` | `Opaque` | `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. |
-| `spec.template.metadata` | — | Labels and annotations for the Secret, for example for Reloader. |
+| `spec.template.metadata` | — | The only source of the Secret's own labels and annotations, for example for Reloader. Labels and annotations starting with `sops.stakater.com/` are dropped. |
 | `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
 | `status.rotation` | — | During a key rotation: the `sops.age` entry that `scripts/rotate.sh` adds to the file. |
 | `sops.stakater.com/suspend: "true"` | — | Annotation that pauses reconciliation. |
@@ -479,11 +504,32 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
   delete it, and the operator treats it as lost.
 
   During a rotation a new `SopsSecret` must be encrypted for the next key too, otherwise it fails with
-  `NextKeyRequired`. Rotating by prepending an identity to `age.agekey` and running `sops updatekeys` still works.
-- **Replacing a key on purpose**: a key Secret that no longer holds the key in `status.publicKey` makes the
-  tenant report `KeyMismatch`. To bring a different key, set `generateKey: false` in the `SopsTenant`, delete the
-  key Secret, wait until the tenant reports `KeyMissing`, then create the key Secret with the new key. Files
-  encrypted only for the old key no longer decrypt; prefer a key rotation.
+  `NextKeyRequired`.
+- **Replacing a key on purpose**: a key changes through a key rotation. Replacing or deleting the key Secret
+  directly is possible only while no `SopsSecret` uses the tenant. Then a key Secret that no longer holds the key in
+  `status.publicKey` makes the tenant report `KeyMismatch`. To bring a different key, set `generateKey: false` in
+  the `SopsTenant`, delete the key Secret, wait until the tenant reports `KeyMissing`, then create the key Secret
+  with the new key and the two tenant labels (see [step 3](#3-create-the-tenant-key-tenant-admin)). Files
+  encrypted only for the old key no longer decrypt.
+- **Protected Secrets**: a validating admission webhook, served by the operator and installed with it by OLM,
+  refuses direct changes to the Secrets the operator manages. It sees only Secrets that carry the label
+  `sops.stakater.com/tenant`, on update and delete.
+  - Output Secrets: only the operator may change or delete them. Users are refused with the message "written from
+    SopsSecret X; change the SopsSecret instead". Garbage collection and namespace deletion are allowed. A Secret
+    kept after its `SopsSecret` was deleted (`deletionPolicy: Retain`) is the user's again.
+  - Key Secrets (`<tenant>-sops-keys` and `<tenant>-sops-keys-next`): once any `SopsSecret` uses the tenant,
+    only the operator may change or delete them, so only a key rotation changes the key. While no `SopsSecret`
+    uses the tenant, the tenant admin may still replace or delete the key.
+  - A request is judged by the Secret as it was before the change, so removing its labels does not escape the
+    check.
+  - The webhook has `failurePolicy: Fail`. While the operator is down, changes to these Secrets are refused, and
+    so are Kubernetes' own deletions of them (the Secret of a deleted `SopsSecret`, namespace deletion) until the
+    operator is back. A cluster admin can bypass the webhook by deleting its `ValidatingWebhookConfiguration`; the
+    deletion appears in the audit log.
+  - The webhook needs no Secret permission: the API server sends the Secret in the request, and the operator only
+    reads `SopsSecret`s. The operator never logs Secret contents.
+  - The watch of output Secrets stays as a safety net: an output Secret deleted or changed while the webhook was
+    bypassed is restored at once.
 - **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
   `SopsSecret` under a new name and switch workloads. Existing Secrets are never adopted.
 - **Disaster recovery**: restore key Secrets, and `<tenant>-sops-keys-next` during a rotation, before
