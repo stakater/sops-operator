@@ -65,7 +65,7 @@ and every access appears in the Kubernetes audit log under both identities.
 
 A tenant's identity may create, update, list and watch Secrets only in the namespaces granted to it; listing
 includes reading them, so grant only namespaces the tenant may see. The operator
-watches **metadata only** of the Secrets of its tenant (those carrying the tenant's labels), so a deleted or
+watches **metadata only** of the Secrets of its tenant (those carrying the label `sops.stakater.com/enabled: "true"`), so a deleted or
 changed Secret is restored at once, and it holds no Secret contents. It tracks ownership through the UID of the Secret it created, never through a read.
 
 ### 🧩 Explicit grants, self-service tenants
@@ -149,9 +149,8 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 5. Decrypts the values and writes the Secret **as the tenant identity**. The API server authorizes the write
    again.
 6. Watches the metadata of the tenant's Secrets as the tenant identity, so a deleted or changed Secret is restored
-   at once rather than at the next resync. The Secret carries the labels `sops.stakater.com/tenant` and
-   `sops.stakater.com/tenant-namespace`, plus `app.kubernetes.io/managed-by: sops-operator` and the annotation
-   `sops.stakater.com/sopssecret`. Its other labels and annotations come only from the `SopsSecret`'s
+   at once rather than at the next resync. The Secret carries the label `sops.stakater.com/enabled: "true"`, which marks it as the operator's, plus
+   `app.kubernetes.io/managed-by: sops-operator` and the annotation `sops.stakater.com/sopssecret`. Its other labels and annotations come only from the `SopsSecret`'s
    `spec.template.metadata`, and labels and annotations starting with `sops.stakater.com/` there are dropped.
    Direct changes to the Secret are refused by the admission webhook (see [Operations](#operations)) and
    reverted if they happen anyway.
@@ -321,9 +320,9 @@ team-a   True    KeyGenerated   0                        5s
 The private key is in the Secret `team-a-sops-keys`.
 
 To bring your own key, set `generateKey: false` in the `SopsTenant` and create the Secret
-`team-a-system/team-a-sops-keys` with your identity in `age.agekey` and the two labels below. The operator uses
-the Secret only when it carries both labels; without them the tenant reports `KeyMissing` and the message names
-the labels.
+`team-a-system/team-a-sops-keys` with your identity in `age.agekey` and the label below. The operator uses
+the Secret only when it carries the label; without it the tenant reports `KeyMissing` and the message names
+the label. The tenant follows from the name and the namespace of the Secret, so one label is enough.
 
 ```yaml
 apiVersion: v1
@@ -332,8 +331,7 @@ metadata:
   name: team-a-sops-keys
   namespace: team-a-system
   labels:
-    sops.stakater.com/tenant: team-a
-    sops.stakater.com/tenant-namespace: team-a-system
+    sops.stakater.com/enabled: "true"
 type: Opaque
 stringData:
   age.agekey: |
@@ -509,11 +507,12 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
   directly is possible only while no `SopsSecret` uses the tenant. Then a key Secret that no longer holds the key in
   `status.publicKey` makes the tenant report `KeyMismatch`. To bring a different key, set `generateKey: false` in
   the `SopsTenant`, delete the key Secret, wait until the tenant reports `KeyMissing`, then create the key Secret
-  with the new key and the two tenant labels (see [step 3](#3-create-the-tenant-key-tenant-admin)). Files
+  with the new key and the label `sops.stakater.com/enabled: "true"` (see [step 3](#3-create-the-tenant-key-tenant-admin)). Files
   encrypted only for the old key no longer decrypt.
 - **Protected Secrets**: a validating admission webhook, served by the operator and installed with it by OLM,
   refuses direct changes to the Secrets the operator manages. It sees only Secrets that carry the label
-  `sops.stakater.com/tenant`, on update and delete.
+  `sops.stakater.com/enabled: "true"`, on update and delete. Other Secrets, even in the same namespace, never
+  reach the operator.
   - Output Secrets: only the operator may change or delete them. Users are refused with the message "written from
     SopsSecret X; change the SopsSecret instead". Garbage collection and namespace deletion are allowed. A Secret
     kept after its `SopsSecret` was deleted (`deletionPolicy: Retain`) is the user's again.

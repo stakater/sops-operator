@@ -31,8 +31,9 @@ they are marked **Breaking** with the steps to take.
   restored at once instead of at the next resync. Its labels and annotations come only from
   `spec.template.metadata`; labels and annotations starting with `sops.stakater.com/` there are dropped.
 - Every Secret the operator manages (output Secrets, `<tenant>-sops-keys`, `<tenant>-sops-keys-next`) carries the
-  labels `sops.stakater.com/tenant` and `sops.stakater.com/tenant-namespace`. The output Secret watch selects only
-  the Secrets of its tenant by these labels.
+  label `sops.stakater.com/enabled: "true"`. The tenant follows from the Secret's name and namespace. The output
+  Secret watch and the admission webhook select only Secrets with this label, so other Secrets never reach the
+  operator.
 - A validating admission webhook, served by the operator and installed by OLM (`failurePolicy: Fail`), protects the
   Secrets the operator manages. Output Secrets can be changed or deleted only by the operator. Key Secrets can be
   changed or deleted only by the operator once a `SopsSecret` uses the tenant, so only a key rotation changes the
@@ -54,12 +55,10 @@ they are marked **Breaking** with the steps to take.
 - `sops-key-owner` also grants `update` and `delete` on Secrets, used only to complete a key rotation or remove
   an orphaned next key. Existing bindings need no change.
 - `AccessDenied` on a `SopsSecret` names the ClusterRole to bind and the Secret verbs it needs.
-- **Breaking:** a brought key Secret `<tenant>-sops-keys` is adopted only when it carries the labels
-  `sops.stakater.com/tenant` and `sops.stakater.com/tenant-namespace`; otherwise the tenant reports `KeyMissing`
-  naming the labels.
-  **Action:** add both labels (`sops.stakater.com/tenant: <tenant>` and
-  `sops.stakater.com/tenant-namespace: <tenant namespace>`) to every key Secret you created yourself. Key Secrets
-  the operator generated are labelled automatically.
+- **Breaking:** a brought key Secret `<tenant>-sops-keys` is adopted only when it carries the label
+  `sops.stakater.com/enabled: "true"`; otherwise the tenant reports `KeyMissing` naming the label.
+  **Action:** add the label `sops.stakater.com/enabled: "true"` to every key Secret you created yourself. Key
+  Secrets the operator generated are labelled automatically.
 - **Breaking:** output Secrets can no longer be edited or deleted directly, and neither can key Secrets once
   `SopsSecret`s use the tenant. A request is refused with the name of the `SopsSecret` to change instead.
   **Action:** change the `SopsSecret`, or rotate the key with `spec.startRotation`. Until a `SopsSecret` uses the
