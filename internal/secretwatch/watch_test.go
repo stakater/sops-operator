@@ -114,3 +114,34 @@ func TestWatches(t *testing.T) {
 		}
 	})
 }
+
+// The watch runs as the tenant identity, so it reaches only the namespaces granted to the tenant with
+// sops-tenant-secret-reconciler (DESIGN.md D52).
+func TestWatchesFollowTenantGrants(t *testing.T) {
+	ctx := context.Background()
+	tenantNS := env.Namespace(t, "tenant")
+	granted := env.Namespace(t, "granted")
+	ungranted := env.Namespace(t, "ungranted")
+	env.Onboard(t, tenantNS, "my-team", granted)
+	tenant := types.NamespacedName{Namespace: tenantNS, Name: "my-team"}
+	w := secretwatch.New(identity.NewFactory(env.OperatorConfig, env.Scheme).ConfigFor)
+	t.Cleanup(w.Stop)
+
+	t.Run("shall watch a namespace granted to the tenant", func(t *testing.T) {
+		if err := w.Watch(ctx, types.NamespacedName{Namespace: granted, Name: "db"}, tenant); err != nil {
+			t.Fatalf("watch in a granted namespace: %v", err)
+		}
+	})
+
+	t.Run("shall not watch a namespace not granted to the tenant", func(t *testing.T) {
+		// RBAC refuses the initial list; the watch gives up when the context ends.
+		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := w.Watch(wctx, types.NamespacedName{Namespace: ungranted, Name: "db"}, tenant); err == nil {
+			t.Fatal("the tenant identity watched Secrets in a namespace it was not granted")
+		}
+		if got := w.Watching(); got != 1 {
+			t.Fatalf("watching %d namespaces, want only the granted one", got)
+		}
+	})
+}
