@@ -36,11 +36,11 @@ import (
 
 const hunter2 = "hunter2"
 
-// rotatingTenant returns a tenant namespace in rotation with one Decrypted SopsSecret "db", and the old
-// key's public key.
-func rotatingTenant(t *testing.T) (tenantNS string, s *sopsv1alpha1.SopsSecret, recipient string) {
+// rotatingTenant returns a tenant namespace in rotation with one Decrypted SopsSecret "db" in prod, and
+// the old key's public key.
+func rotatingTenant(t *testing.T) (tenantNS, prod string, s *sopsv1alpha1.SopsSecret, recipient string) {
 	t.Helper()
-	prod := env.Namespace(t, "prod")
+	prod = env.Namespace(t, "prod")
 	tenantNS, recipient = onboardedTenant(t, prod)
 	s = encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": hunter2})
 	create(t, s)
@@ -48,17 +48,17 @@ func rotatingTenant(t *testing.T) (tenantNS string, s *sopsv1alpha1.SopsSecret, 
 	tenant := tenantOf(t, tenantNS)
 	setStartRotation(t, tenant, true)
 	eventuallyRotated(t, tenant, sopsv1alpha1.ReasonRotationPending)
-	return tenantNS, s, recipient
+	return tenantNS, prod, s, recipient
 }
 
-// waitingTenant returns a tenant namespace with generateKey false and one Decrypted SopsSecret whose
-// rotation waits for the tenant admin's key, and the old key file and its public key.
-func waitingTenant(t *testing.T) (tenantNS string, oldKey []byte, recipient string) {
+// waitingTenant returns a tenant namespace with generateKey false whose rotation waits for the tenant
+// admin's key, its Decrypted SopsSecret "db", and the old key file and its public key.
+func waitingTenant(t *testing.T) (tenantNS string, s *sopsv1alpha1.SopsSecret, oldKey []byte, recipient string) {
 	t.Helper()
 	prod := env.Namespace(t, "prod")
 	tenantNS, recipient = onboardedTenant(t, prod)
 	oldKey = tenantKey(t, tenantNS).Data[crypto.KeyFileField]
-	s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": hunter2})
+	s = encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": hunter2})
 	create(t, s)
 	eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 	tenant := tenantOf(t, tenantNS)
@@ -67,7 +67,7 @@ func waitingTenant(t *testing.T) (tenantNS string, oldKey []byte, recipient stri
 		tenant.Spec.StartRotation = true
 	})
 	eventuallyRotated(t, tenant, sopsv1alpha1.ReasonWaitingForKey)
-	return tenantNS, oldKey, recipient
+	return tenantNS, s, oldKey, recipient
 }
 
 // replaceKey stands in for the tenant admin deleting the key Secret and creating it with keyFile.
@@ -81,7 +81,7 @@ func replaceKey(t *testing.T, tenantNS string, keyFile []byte) {
 
 func TestRotationStart(t *testing.T) {
 	t.Run("shall generate the new key, back it up and place it in the key Secret", func(t *testing.T) {
-		tenantNS, _, oldRecipient := rotatingTenant(t)
+		tenantNS, _, _, oldRecipient := rotatingTenant(t)
 		tenant := tenantOf(t, tenantNS)
 		rot := tenant.Status.Rotation
 		if rot == nil || rot.Phase != sopsv1alpha1.RotationPhaseInProgress || rot.StartedAt.IsZero() {
@@ -110,7 +110,7 @@ func TestRotationStart(t *testing.T) {
 	})
 
 	t.Run("shall stamp the generation each SopsSecret had at the start as accepted", func(t *testing.T) {
-		tenantNS, s, _ := rotatingTenant(t)
+		tenantNS, _, s, _ := rotatingTenant(t)
 		started := tenantOf(t, tenantNS).Status.Rotation.StartedAt
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
@@ -190,7 +190,7 @@ func TestRotationStart(t *testing.T) {
 	})
 
 	t.Run("shall restore the new key into a deleted key Secret during a rotation", func(t *testing.T) {
-		tenantNS, _, _ := rotatingTenant(t)
+		tenantNS, _, _, _ := rotatingTenant(t)
 		key := tenantKey(t, tenantNS)
 		deleteObject(t, key)
 		eventuallyKeyFile(t, tenantNS, key.Data[crypto.KeyFileField])
@@ -200,7 +200,7 @@ func TestRotationStart(t *testing.T) {
 	})
 
 	t.Run("shall restore the new key into a changed key Secret during a rotation", func(t *testing.T) {
-		tenantNS, _, _ := rotatingTenant(t)
+		tenantNS, _, _, _ := rotatingTenant(t)
 		key := tenantKey(t, tenantNS)
 		newKey := key.Data[crypto.KeyFileField]
 		other, _, err := crypto.GenerateKeyFile()
@@ -214,7 +214,7 @@ func TestRotationStart(t *testing.T) {
 
 func TestRotationWithTenantKey(t *testing.T) {
 	t.Run("shall wait for the tenant admin's key with generateKey false and keep the old key", func(t *testing.T) {
-		tenantNS, oldKey, oldRecipient := waitingTenant(t)
+		tenantNS, _, oldKey, oldRecipient := waitingTenant(t)
 		tenant := tenantOf(t, tenantNS)
 		rot := tenant.Status.Rotation
 		if rot == nil || rot.Phase != sopsv1alpha1.RotationPhaseWaitingForKey || rot.PreviousPublicKey != oldRecipient {
@@ -234,7 +234,7 @@ func TestRotationWithTenantKey(t *testing.T) {
 	})
 
 	t.Run("shall take a recreated key Secret as the new key and back it up", func(t *testing.T) {
-		tenantNS, _, oldRecipient := waitingTenant(t)
+		tenantNS, _, _, oldRecipient := waitingTenant(t)
 		newKey, newRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
@@ -255,7 +255,7 @@ func TestRotationWithTenantKey(t *testing.T) {
 	})
 
 	t.Run("shall take an updated key Secret as the new key", func(t *testing.T) {
-		tenantNS, _, oldRecipient := waitingTenant(t)
+		tenantNS, _, _, oldRecipient := waitingTenant(t)
 		newKey, newRecipient, err := crypto.GenerateKeyFile()
 		if err != nil {
 			t.Fatal(err)
@@ -267,7 +267,7 @@ func TestRotationWithTenantKey(t *testing.T) {
 	})
 
 	t.Run("shall keep waiting while the key Secret is deleted", func(t *testing.T) {
-		tenantNS, _, oldRecipient := waitingTenant(t)
+		tenantNS, _, _, oldRecipient := waitingTenant(t)
 		deleteObject(t, tenantKey(t, tenantNS))
 		tenant := tenantOf(t, tenantNS)
 		NewWithT(t).Consistently(func(g Gomega) {
