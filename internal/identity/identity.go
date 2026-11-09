@@ -53,6 +53,14 @@ func NewFactory(base *rest.Config, scheme *runtime.Scheme) *Factory {
 	return &Factory{base: base, scheme: scheme, clients: map[string]client.Client{}}
 }
 
+// ConfigFor returns a rest config acting as the identity of the tenant named tenant in
+// tenantNamespace.
+func (f *Factory) ConfigFor(tenantNamespace, tenant string) *rest.Config {
+	cfg := rest.CopyConfig(f.base)
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: UserName(tenantNamespace, tenant)}
+	return cfg
+}
+
 // ClientFor returns an uncached client acting as the identity of the tenant named tenant in
 // tenantNamespace.
 func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, error) {
@@ -62,9 +70,7 @@ func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, erro
 	if c, ok := f.clients[user]; ok {
 		return c, nil
 	}
-	cfg := rest.CopyConfig(f.base)
-	cfg.Impersonate = rest.ImpersonationConfig{UserName: user}
-	c, err := client.New(cfg, client.Options{Scheme: f.scheme})
+	c, err := client.New(f.ConfigFor(tenantNamespace, tenant), client.Options{Scheme: f.scheme})
 	if err != nil {
 		return nil, fmt.Errorf("client for %s: %w", user, err)
 	}

@@ -12,12 +12,15 @@ import (
 
 	"github.com/stakater/sops-operator/internal/controller"
 	"github.com/stakater/sops-operator/internal/identity"
+	"github.com/stakater/sops-operator/internal/secretwatch"
 	"github.com/stakater/sops-operator/internal/testenv"
 )
 
 const resync = 2 * time.Second
 
 var env *testenv.Env
+
+var watches *secretwatch.Watches
 
 func TestMain(m *testing.M) {
 	var err error
@@ -57,8 +60,12 @@ func startManager(ctx context.Context) error {
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
+	watches = secretwatch.New(ids.ConfigFor)
+	if err := mgr.Add(watches); err != nil {
+		return err
+	}
 	if err := (&controller.SopsSecretReconciler{
-		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Identities: ids, ResyncInterval: resync,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Identities: ids, Watches: watches, ResyncInterval: resync,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
