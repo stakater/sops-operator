@@ -76,7 +76,7 @@ func TestUpgrade(t *testing.T) {
 				s := createSopsSecret(t, recipient, secret)
 				waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 				before := outputSecret(t, prod)
-				keyBefore := tenantKey(t, tenantNS)
+				keyBefore := tenantKey(t, tenantNS, legacyKeySecret)
 
 				upgradeTo(t, p.to)
 
@@ -92,10 +92,10 @@ func TestUpgrade(t *testing.T) {
 				if after := outputSecret(t, prod); after.UID != before.UID {
 					t.Fatal("the upgrade recreated the output Secret instead of keeping it")
 				}
-				keyAfter := tenantKey(t, tenantNS)
+				keyAfter := tenantKey(t, tenantNS, firstKeySecret)
 				keyFile := func(s *corev1.Secret) string { return string(s.Data[crypto.KeyFileField]) }
-				if keyAfter.UID != keyBefore.UID || keyFile(keyAfter) != keyFile(keyBefore) {
-					t.Fatal("the upgrade replaced the tenant key")
+				if keyFile(keyAfter) != keyFile(keyBefore) {
+					t.Fatal("the upgrade did not keep the tenant key")
 				}
 			})
 	}
@@ -181,11 +181,11 @@ func approveUntilSucceeded(t *testing.T, csv string, approve func(csvs []string)
 
 func csvName(version string) string { return "sops-operator.v" + version }
 
-// tenantKey returns the tenant's key Secret, named after the SopsTenant.
-func tenantKey(t *testing.T, tenantNamespace string) *corev1.Secret {
+// tenantKey returns the tenant's key Secret name in tenantNamespace.
+func tenantKey(t *testing.T, tenantNamespace, name string) *corev1.Secret {
 	t.Helper()
 	var key corev1.Secret
-	key.Namespace, key.Name = tenantNamespace, tenantKeySecret
+	key.Namespace, key.Name = tenantNamespace, name
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(&key), &key); err != nil {
 		t.Fatal(err)
 	}

@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
+	"github.com/stakater/sops-operator/internal/crypto"
 )
 
 // Use case: a SopsSecret owns the Secret with its name and namespace that carries the enabled label,
@@ -80,21 +81,21 @@ func TestSecretOwnership(t *testing.T) {
 		}
 	})
 
-	t.Run("shall not write a Secret named like the tenant's key Secret", func(t *testing.T) {
+	t.Run("shall not change a tenant key Secret with a SopsSecret of the same name", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-		tenantNS, recipient := onboardedTenant(t, "e2e-own-keyname-tenant")
-		key := tenantKey(t, tenantNS)
+		tenantNS, recipient := onboardedTenant(t, "e2e-own-keyname-tenant", "e2e-own-keyname-tenant")
+		key := tenantKey(t, tenantNS, firstKeySecret)
 		s := createSopsSecret(t, recipient, sopsSecret{
-			Name: tenantKeySecret, Namespace: tenantNS, Scope: tenantNS + "/" + tenantKeySecret, TenantNamespace: tenantNS,
+			Name: firstKeySecret, Namespace: tenantNS, Scope: tenantNS + "/" + firstKeySecret, TenantNamespace: tenantNS,
 			StringData: map[string]string{"age.agekey": "not a key"},
 		})
-		waitForReason(t, s, sopsv1alpha1.ReasonConflict)
+		waitForReason(t, s, sopsv1alpha1.ReasonApplyFailed)
 		var after corev1.Secret
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
 			t.Fatal(err)
 		}
-		if after.ResourceVersion != key.ResourceVersion {
+		if string(after.Data[crypto.KeyFileField]) != string(key.Data[crypto.KeyFileField]) {
 			t.Fatal("the key Secret was changed")
 		}
 	})

@@ -41,7 +41,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
-	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/crypto/cryptotest"
 	"github.com/stakater/sops-operator/test/snapshot"
 )
@@ -51,8 +50,10 @@ const (
 	tenantName  = "my-team"
 	// tenantSA is the tenant's ServiceAccount, which the operator creates.
 	tenantSA = tenantName + "-sops-tenant"
-	// tenantKeySecret holds the tenant key, which the operator generates.
-	tenantKeySecret = tenantName + "-sops-keys"
+	// firstKeySecret holds the tenant's first key, which the operator generates.
+	firstKeySecret = tenantName + "-sops-keys-0"
+	// legacyKeySecret held the tenant key up to v0.0.4.
+	legacyKeySecret = tenantName + "-sops-keys"
 	// secretRole grants the tenant's ServiceAccount Secret write and watch in a namespace.
 	secretRole = "sops-tenant-secret-reconciler"
 	// password is the plaintext value the use cases encrypt.
@@ -152,17 +153,7 @@ func onboardedTenant(t *testing.T, tenantNamespace string, writeNamespaces ...st
 	apply(t, render(t, "sopstenant.yaml", map[string]any{"Name": tenantName, "Namespace": tenantNamespace}))
 	tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNamespace}}
 	waitForReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ReasonKeyLoaded)
-
-	var key corev1.Secret
-	keyName := client.ObjectKey{Namespace: tenantNamespace, Name: tenantKeySecret}
-	if err := k8s.Get(context.Background(), keyName, &key); err != nil {
-		t.Fatal(err)
-	}
-	ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tenantNamespace, ks.Recipients[0]
+	return tenantNamespace, tenant.Status.PublicKey
 }
 
 // sopsSecret encrypts the sopssecret.yaml fixture for recipient and creates it.
