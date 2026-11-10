@@ -176,6 +176,12 @@ test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the ima
 		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update) \
 		$(if $(E2E_RUN),-run '$(E2E_RUN)')
 
+.PHONY: test-release
+test-release: setup-test-e2e sops yq ## Run the e2e tests against the published release TAG: OLM installs ghcr.io/stakater/sops-operator-catalog:v$(TAG) as customers do.
+	@test -n "$(TAG)" || { echo "set TAG to a published version, e.g. make test-release TAG=0.0.5" >&2; exit 1; }
+	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(IMAGE_TAG_BASE)-catalog:v$(TAG) \
+		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(E2E_RUN),-run '$(E2E_RUN)')
+
 .PHONY: test-upgrade
 test-upgrade: setup-test-e2e e2e-images ## Run the upgrade paths of test/e2e/upgrade_test.go through the catalog of TAG (published bundles + this build).
 	KIND_CLUSTER=$(KIND_CLUSTER) E2E_CATALOG_IMG=$(CATALOG_IMG) E2E_UPGRADE=true \

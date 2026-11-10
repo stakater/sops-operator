@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Versions before 1.0.0 may contain breaking changes;
 they are marked **Breaking** with the steps to take.
 
+## [Unreleased]
+
+### Added
+
+- `make test-release TAG=<version>` runs the e2e tests against a published release, installed by OLM from
+  `ghcr.io/stakater/sops-operator-catalog:v<version>`. The release workflow runs it after publishing, and creates
+  the GitHub release only when the install works.
+
 ## [0.0.5] - 2026-11-10
 
 ### Added
@@ -169,6 +177,7 @@ they are marked **Breaking** with the steps to take.
 - Ciphertext bound to its destination: the encrypted scope must match the `SopsSecret`'s namespace and name.
 - Write-only output Secrets, tracked by the UID of the Secret the operator created.
 
+[Unreleased]: https://github.com/stakater/sops-operator/compare/v0.0.5...HEAD
 [0.0.5]: https://github.com/stakater/sops-operator/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/stakater/sops-operator/compare/1612367...v0.0.4
 [0.0.3]: https://github.com/stakater/sops-operator/compare/v0.0.2...1612367

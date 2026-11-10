@@ -607,6 +607,7 @@ make next-version       # the version a merge would release; nothing when there 
 make images             # operator, bundle and catalog images of TAG and PR_TAG, saved to bin/images/v<version>
 make test-e2e           # end-to-end tests: OLM installs those images on kind; results compared with golden files
 make test-upgrade       # upgrade paths through the same catalog: published bundles, then this build
+make test-release TAG=0.0.5  # end-to-end tests against a published release, installed from its GHCR catalog
 make scorecard          # operator-sdk scorecard against the bundle
 make cleanup-test-e2e   # remove the e2e kind cluster
 ```

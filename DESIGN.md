@@ -808,7 +808,8 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   given buildx flags in `DOCKER_BUILD_ARGS`), the operator image for `linux/amd64` and `linux/arm64`, the bundle
   referencing the operator by digest, and the catalog (tagged `vX.Y.Z` and `latest`), attaches SBOM and provenance,
   signs them with cosign (keyless, GitHub OIDC), verifies the signatures and that the images can be pulled
-  anonymously, then creates the git tag and GitHub release. Every other listed bundle must be published already:
+  anonymously, installs the release on kind from its published catalog and runs the e2e tests against it
+  (`make test-release`), then creates the git tag and GitHub release. Every other listed bundle must be published already:
   rendering the catalog pulls them and `opm` validates the graph, so a missing one fails the release. A registry that
   cannot be read fails the release.
 - **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:

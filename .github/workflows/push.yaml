@@ -164,10 +164,38 @@ jobs:
               --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
           done
 
-  # Tags and releases a newly published version; catalog-only changes are not releases.
+  # Installs the published release as customers do: OLM on kind installs the catalog image from GHCR, and the e2e
+  # tests run against it. Runs only code from main.
+  verify:
+    name: Install the release
+    needs: [plan, publish]
+    if: needs.plan.outputs.version != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: bin
+          key: e2e-tools-${{ runner.os }}-${{ hashFiles('Makefile', 'hack/bootstrap-tools.sh') }}
+
+      - name: Run the e2e tests against the release
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: make test-release TAG="${VERSION}"
+
+  # Tags and releases a newly published version once its install is verified.
   release:
     name: Release
-    needs: [plan, publish]
+    needs: [plan, publish, verify]
     if: needs.plan.outputs.version != ''
     runs-on: ubuntu-24.04
     permissions:
