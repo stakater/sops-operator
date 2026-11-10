@@ -68,8 +68,7 @@ jobs:
           fi
           make yq
           CHANGED_FILES="${changed}" BEFORE_UNKNOWN="${unknown}" CHANNELS=catalog/channels.yaml \
-            OPERATOR_REPO="${REGISTRY}/sops-operator" BUNDLE_REPO="${REGISTRY}/sops-operator-bundle" \
-            CATALOG_REPO="${REGISTRY}/sops-operator-catalog" SHA="${GITHUB_SHA}" YQ=bin/yq \
+            BUNDLE_REPO="${REGISTRY}/sops-operator-bundle" SHA="${GITHUB_SHA}" YQ=bin/yq \
             hack/release-plan.sh | tee -a "${GITHUB_OUTPUT}"
           docker logout ghcr.io
 
