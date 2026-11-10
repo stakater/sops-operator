@@ -29,7 +29,7 @@ import (
 // on the next resync.
 func TestAccessRevocation(t *testing.T) {
 	t.Parallel()
-	t.Run("shall report AccessDenied after the namespace grant is removed", func(t *testing.T) {
+	t.Run("shall report AccessDenied without the namespace grant and resume once it is restored", func(t *testing.T) {
 		t.Parallel()
 		prod := namespace(t, "e2e-revoke-ns-prod")
 		tenantNS, recipient := onboardedTenant(t, "e2e-revoke-ns-tenant", prod)
@@ -48,6 +48,11 @@ func TestAccessRevocation(t *testing.T) {
 		if after.UID != before.UID || string(after.Data["password"]) != password {
 			t.Fatal("the Secret changed after the grant was removed")
 		}
+		grantSecrets(t, secretRole, tenantNS, prod)
+		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		if restored := outputSecret(t, prod); restored.UID != before.UID {
+			t.Fatal("the Secret was recreated after the grant was restored instead of kept")
+		}
 	})
 
 	t.Run("shall report TenantNotReady after the key grant is removed", func(t *testing.T) {
@@ -63,7 +68,7 @@ func TestAccessRevocation(t *testing.T) {
 		deleteObject(t, &rbacv1.RoleBinding{ObjectMeta: keyGrant})
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNS}}
 		waitForReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
-		waitForMessage(t, s, sopsv1alpha1.ReasonTenantNotReady, "is not ready")
+		waitForMessage(t, s, sopsv1alpha1.ReasonTenantNotReady, "is not readable")
 		assertGolden(t, s, "key grant removed")
 	})
 }

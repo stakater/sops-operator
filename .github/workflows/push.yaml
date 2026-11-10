@@ -1,8 +1,8 @@
 name: Push
 
-# Publishes what catalog/channels.yaml lists when a push to main changes catalog/ (hack/release-plan.sh):
-# a newly listed version gets operator and bundle images, the catalog is rebuilt, and a new version is
-# tagged and released. Any other push publishes nothing. Pull requests run the tests (pull_request.yaml).
+# Releases the next version (make next-version): the highest version catalog/channels.yaml lists, when it is
+# not published yet. It gets operator, bundle and catalog images and is tagged and released. When there is no
+# next version, nothing is published. Pull requests run the tests (pull_request.yaml).
 on:
   push:
     branches:
@@ -32,16 +32,11 @@ jobs:
       contents: read
       packages: read
     outputs:
-      publish: ${{ steps.plan.outputs.publish }}
-      build: ${{ steps.plan.outputs.build }}
       version: ${{ steps.plan.outputs.version }}
-      catalog_tags: ${{ steps.plan.outputs.catalog_tags }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-          fetch-tags: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -52,32 +47,26 @@ jobs:
           path: bin
           key: release-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
 
-      - name: Decide what to publish
+      # The next version is the highest version catalog/channels.yaml lists, when it is not published yet;
+      # nothing means nothing to release.
+      - name: Find the next version
         id: plan
         env:
-          BEFORE: ${{ github.event.before }}
           DOCKER_CONFIG: ${{ runner.temp }}/docker-config
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ] \
-            || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            unknown=true changed=""
-          else
-            unknown=false changed=$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}")
-          fi
           make yq
-          CHANGED_FILES="${changed}" BEFORE_UNKNOWN="${unknown}" CHANNELS=catalog/channels.yaml \
-            OPERATOR_REPO="${REGISTRY}/sops-operator" BUNDLE_REPO="${REGISTRY}/sops-operator-bundle" \
-            CATALOG_REPO="${REGISTRY}/sops-operator-catalog" SHA="${GITHUB_SHA}" YQ=bin/yq \
-            hack/release-plan.sh | tee -a "${GITHUB_OUTPUT}"
+          version=$(make -s next-version)
           docker logout ghcr.io
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "next version: ${version:-none, nothing to release}"
 
   # Runs only code from main, which passed review and the pull request checks.
   publish:
     name: Publish
     needs: plan
-    if: needs.plan.outputs.publish == 'true'
+    if: needs.plan.outputs.version != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -85,9 +74,14 @@ jobs:
       id-token: write   # keyless signing with cosign
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      BUILD: ${{ needs.plan.outputs.build }}
-      CATALOG_TAGS: ${{ needs.plan.outputs.catalog_tags }}
-      PLATFORMS: linux/amd64,linux/arm64
+      # The release of VERSION: make builds and names its images v<VERSION>.
+      TAG: ${{ needs.plan.outputs.version }}
+      PR_TAG: ""
+      # docker buildx flags every published image gets, passed to make's build targets.
+      RELEASE_BUILD_ARGS: >-
+        --platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max --push
+        --label org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        --label org.opencontainers.image.revision=${{ github.sha }}
     steps:
       # Registry credentials live in a per-run directory, used by docker and by opm (catalog-render).
       - name: Isolate registry credentials
@@ -121,17 +115,13 @@ jobs:
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
       - name: Publish operator image
-        if: env.BUILD == 'true'
         run: |
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build -trimpath -o "dist/manager-${arch}" cmd/main.go
+            GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 make build MANAGER_BIN="dist/manager-${arch}"
           done
-          docker buildx build --target prebuilt --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.version=v${VERSION}" \
-            --metadata-file "${RUNNER_TEMP}/operator.json" --push \
-            -t "${REGISTRY}/sops-operator:v${VERSION}" .
+          make docker-build CONTAINER_TOOL="docker buildx" \
+            DOCKER_BUILD_ARGS="--target prebuilt ${RELEASE_BUILD_ARGS} --label org.opencontainers.image.version=v${VERSION} \
+            --metadata-file ${RUNNER_TEMP}/operator.json"
           ref="${REGISTRY}/sops-operator@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/operator.json")"
           cosign sign --yes "${ref}"
           echo "OPERATOR_REF=${ref}" >> "${GITHUB_ENV}"
@@ -139,26 +129,21 @@ jobs:
       # The bundle references the operator image by digest. OLM's unpack Job pulls the bundle on a
       # cluster node, so it is published for every platform the operator runs on.
       - name: Publish bundle image
-        if: env.BUILD == 'true'
         run: |
-          make bundle VERSION="${VERSION}" IMG="${OPERATOR_REF}"
-          docker buildx build -f bundle.Dockerfile --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --metadata-file "${RUNNER_TEMP}/bundle.json" --push \
-            -t "${REGISTRY}/sops-operator-bundle:v${VERSION}" .
+          make bundle IMG="${OPERATOR_REF}"
+          make bundle-build CONTAINER_TOOL="docker buildx" \
+            DOCKER_BUILD_ARGS="${RELEASE_BUILD_ARGS} --metadata-file ${RUNNER_TEMP}/bundle.json"
           cosign sign --yes \
             "${REGISTRY}/sops-operator-bundle@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/bundle.json")"
 
-      # Renders every bundle catalog/channels.yaml lists; any bundle that cannot be pulled fails here.
+      # Renders the bundle catalog/channels.yaml lists from the image just pushed; a bundle
+      # that cannot be pulled, or a broken graph, fails here.
       - name: Publish catalog image
         run: |
-          make catalog-render VERSION="${VERSION}"
-          docker buildx build -f catalog.Dockerfile --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --metadata-file "${RUNNER_TEMP}/catalog.json" --push \
-            $(for tag in ${CATALOG_TAGS}; do printf -- '-t %s ' "${REGISTRY}/sops-operator-catalog:${tag}"; done) .
+          make catalog-render
+          make catalog-build CONTAINER_TOOL="docker buildx" \
+            DOCKER_BUILD_ARGS="${RELEASE_BUILD_ARGS} --metadata-file ${RUNNER_TEMP}/catalog.json \
+            -t ${REGISTRY}/sops-operator-catalog:latest"
           cosign sign --yes \
             "${REGISTRY}/sops-operator-catalog@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/catalog.json")"
 
@@ -170,12 +155,8 @@ jobs:
       # are accepted as releases.
       - name: Verify the published images are public and signed
         run: |
-          refs=""
-          for tag in ${CATALOG_TAGS}; do refs="${refs} ${REGISTRY}/sops-operator-catalog:${tag}"; done
-          if [ "${BUILD}" = true ]; then
-            refs="${refs} ${REGISTRY}/sops-operator:v${VERSION} ${REGISTRY}/sops-operator-bundle:v${VERSION}"
-          fi
-          for ref in ${refs}; do
+          for ref in "${REGISTRY}/sops-operator:v${VERSION}" "${REGISTRY}/sops-operator-bundle:v${VERSION}" \
+            "${REGISTRY}/sops-operator-catalog:v${VERSION}" "${REGISTRY}/sops-operator-catalog:latest"; do
             DOCKER_CONFIG="$(mktemp -d)" docker manifest inspect "${ref}" > /dev/null \
               || { echo "::error::${ref} cannot be pulled anonymously; make the package public"; exit 1; }
             cosign verify "${ref}" \
@@ -187,7 +168,7 @@ jobs:
   release:
     name: Release
     needs: [plan, publish]
-    if: needs.plan.outputs.build == 'true'
+    if: needs.plan.outputs.version != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write

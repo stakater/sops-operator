@@ -34,15 +34,10 @@ import (
 	"github.com/stakater/sops-operator/internal/crypto"
 )
 
-// upgradePaths are the upgrade tests derived from catalog/channels.yaml: for every version a
-// customer can run, the path OLM takes to the channel head, reduced to the smallest set that
-// traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
-// each channel head is `make test-e2e`.
-var upgradePaths = []struct{ channel, from, to string }{
-	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 (head). Not tested:
-	// v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps the key in a Secret
-	// named after the tenant (D48); none was deployed beyond trials. Paths start from v0.0.4.
-}
+// upgradePaths are upgrade tests through the catalog of this build: every older version upgrades directly to
+// the newest version (skipRange in catalog/channels.yaml). The fresh install of the newest version is
+// `make test-e2e`.
+var upgradePaths = []struct{ channel, from, to string }{}
 
 const (
 	// installTimeout bounds one InstallPlan: catalog pod, bundle unpack, CSV and Deployment rollout.
@@ -76,7 +71,7 @@ func TestUpgrade(t *testing.T) {
 				s := createSopsSecret(t, recipient, secret)
 				waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 				before := outputSecret(t, prod)
-				keyBefore := tenantKey(t, tenantNS)
+				keyBefore := tenantKey(t, tenantNS, legacyKeySecret)
 
 				upgradeTo(t, p.to)
 
@@ -92,10 +87,10 @@ func TestUpgrade(t *testing.T) {
 				if after := outputSecret(t, prod); after.UID != before.UID {
 					t.Fatal("the upgrade recreated the output Secret instead of keeping it")
 				}
-				keyAfter := tenantKey(t, tenantNS)
+				keyAfter := tenantKey(t, tenantNS, firstKeySecret)
 				keyFile := func(s *corev1.Secret) string { return string(s.Data[crypto.KeyFileField]) }
-				if keyAfter.UID != keyBefore.UID || keyFile(keyAfter) != keyFile(keyBefore) {
-					t.Fatal("the upgrade replaced the tenant key")
+				if keyFile(keyAfter) != keyFile(keyBefore) {
+					t.Fatal("the upgrade did not keep the tenant key")
 				}
 			})
 	}
@@ -181,11 +176,11 @@ func approveUntilSucceeded(t *testing.T, csv string, approve func(csvs []string)
 
 func csvName(version string) string { return "sops-operator.v" + version }
 
-// tenantKey returns the tenant's key Secret, named after the SopsTenant.
-func tenantKey(t *testing.T, tenantNamespace string) *corev1.Secret {
+// tenantKey returns the tenant's key Secret name in tenantNamespace.
+func tenantKey(t *testing.T, tenantNamespace, name string) *corev1.Secret {
 	t.Helper()
 	var key corev1.Secret
-	key.Namespace, key.Name = tenantNamespace, tenantKeySecret
+	key.Namespace, key.Name = tenantNamespace, name
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(&key), &key); err != nil {
 		t.Fatal(err)
 	}

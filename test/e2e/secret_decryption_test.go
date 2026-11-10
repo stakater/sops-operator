@@ -43,9 +43,6 @@ func TestSecretDecryption(t *testing.T) {
 		if string(out.Data["password"]) != password || string(out.Data["username"]) != "app" {
 			t.Fatal("output Secret does not hold the decrypted values")
 		}
-		if s.Status.SecretUID != out.UID {
-			t.Fatal("status.secretUID does not name the output Secret")
-		}
 		assertGolden(t, s, "decrypted", out)
 		assertGolden(t, out, "output", s)
 	})

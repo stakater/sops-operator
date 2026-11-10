@@ -51,8 +51,8 @@ spec:
             type: object
           spec:
             description: |-
-              SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
-              tenant's namespace.
+              SopsTenantSpec defines a tenant key. Each key is an immutable Secret `<tenant>-sops-keys-<index>`
+              in the tenant's namespace; the highest index is the current key.
             properties:
               generateKey:
                 default: true
@@ -123,12 +123,16 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               keySecretName:
-                description: KeySecretName is the Secret in the tenant namespace that
-                  holds the tenant key and its public key.
+                description: |-
+                  KeySecretName is the Secret in the tenant namespace that holds the current key: the highest
+                  `<tenant>-sops-keys-<index>`.
                 type: string
               observedGeneration:
                 format: int64
                 type: integer
+              publicKey:
+                description: PublicKey is the public key of the current key, for .sops.yaml.
+                type: string
               serviceAccountName:
                 description: |-
                   ServiceAccountName is the tenant identity the operator acts as: the ServiceAccount the cluster

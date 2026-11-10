@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,37 +32,45 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
-	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/identity"
+	"github.com/stakater/sops-operator/internal/secretwatch"
 )
 
 // SopsTenantReconciler loads or generates a tenant key and reports its state. It accesses the
 // key Secret only as the tenant identity.
 type SopsTenantReconciler struct {
 	client.Client
-	Identities     *identity.Factory
+	// APIReader reads SopsSecrets uncached before a key is generated.
+	APIReader  client.Reader
+	Identities *identity.Factory
+	// Watches, when set, watches the key Secret as the tenant identity, so a deleted or changed key is
+	// restored from its backup at once; otherwise it is restored at the next resync.
+	Watches        *secretwatch.Watches
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
-	Now            func() time.Time
-}
-
-func (r *SopsTenantReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
 }
 
 // Reconcile implements reconcile.Reconciler.
 func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var tenant sopsv1alpha1.SopsTenant
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.release(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	if !tenant.DeletionTimestamp.IsZero() {
+		r.release(req.NamespacedName)
+		return ctrl.Result{}, nil
+	}
+	// The current key is reported only when this reconcile finds it; no earlier value survives.
+	tenant.Status.PublicKey, tenant.Status.KeySecretName = "", ""
 	reason, message, err := r.ensureServiceAccount(ctx, &tenant)
 	if err == nil && reason == "" {
 		reason, message, err = r.reconcileKey(ctx, &tenant)
@@ -88,12 +95,35 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	tenant.Status.ObservedGeneration = tenant.Generation
 	tenant.Status.ServiceAccountName = sopsv1alpha1.TenantServiceAccountName(tenant.Name)
-	tenant.Status.KeySecretName = sopsv1alpha1.TenantKeySecretName(tenant.Name)
 	tenant.Status.UsedBy = int32(len(users.Items))
 	if err := r.Status().Update(ctx, &tenant); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.watchKey(ctx, &tenant, reason)
 	return ctrl.Result{RequeueAfter: r.ResyncInterval}, nil
+}
+
+// watchKey holds the watch of the key Secret while the tenant identity may read it, and releases it
+// while access is denied: the watch would only wait for a list it is refused.
+func (r *SopsTenantReconciler) watchKey(ctx context.Context, t *sopsv1alpha1.SopsTenant, reason string) {
+	if r.Watches == nil {
+		return
+	}
+	owner := client.ObjectKeyFromObject(t)
+	if reason == sopsv1alpha1.ReasonAccessDenied {
+		r.Watches.Release(owner)
+		return
+	}
+	if err := r.Watches.Watch(ctx, owner, owner); err != nil {
+		// The resync still restores the key; the next reconcile tries the watch again.
+		log.FromContext(ctx).Error(err, "watch the key Secret", "tenant", owner)
+	}
+}
+
+func (r *SopsTenantReconciler) release(owner types.NamespacedName) {
+	if r.Watches != nil {
+		r.Watches.Release(owner)
+	}
 }
 
 // ensureServiceAccount creates the tenant identity if it does not exist. It grants nothing: only
@@ -124,61 +154,41 @@ func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, t *sops
 	return "", "", fmt.Errorf("create ServiceAccount %s/%s: %w", sa.Namespace, sa.Name, err)
 }
 
-// reconcileKey returns the Ready reason and message for the tenant key. Only a 404 on the key
-// Secret leads to generation; the tenant identity cannot modify or delete an existing key.
-func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
-	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
-	if err != nil {
-		return "", "", err
-	}
-	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
-	var key corev1.Secret
-	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, &key)
-	switch {
-	case err == nil:
-		keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-		if err != nil {
-			return sopsv1alpha1.ReasonKeyInvalid, err.Error(), nil
-		}
-		// A public key that does not match would make developers encrypt for a key nobody holds.
-		if pub, ok := key.Data[crypto.PublicKeyField]; ok && strings.TrimSpace(string(pub)) != keys.Recipients[0] {
-			return sopsv1alpha1.ReasonKeyInvalid, fmt.Sprintf("%s does not match the primary key in %s",
-				crypto.PublicKeyField, crypto.KeyFileField), nil
-		}
-		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
-	case apierrors.IsForbidden(err):
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
-	case !apierrors.IsNotFound(err):
-		return "", "", err
-	}
+// adopted reports whether the key Secret s is enabled for the operator and is no output Secret of a
+// SopsSecret, which is enabled too but carries an annotation and usually an owner. The tenant and the
+// key's index follow from the Secret's name and namespace.
+func adopted(s *corev1.Secret) bool {
+	return s.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue && !fromSopsSecret(s)
+}
 
-	if !t.ShouldGenerateKey() {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
+// fromSopsSecret reports whether s may be an output Secret: it names a SopsSecret or has an owner.
+func fromSopsSecret(s *corev1.Secret) bool {
+	_, annotated := s.Annotations[sopsv1alpha1.AnnotationSopsSecret]
+	return annotated || len(s.OwnerReferences) != 0
+}
+
+// keyLabels are the labels of a key Secret the operator creates.
+func keyLabels() map[string]string {
+	return map[string]string{
+		sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+		sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
 	}
-	keyFile, recipient, err := crypto.GenerateKeyFile(r.now())
-	if err != nil {
-		return "", "", err
+}
+
+// liveUsers counts the SopsSecrets of tenant t, read uncached. Field indexes do not exist on the
+// uncached reader, so it lists all SopsSecrets and filters by spec.tenantRef.
+func (r *SopsTenantReconciler) liveUsers(ctx context.Context, t *sopsv1alpha1.SopsTenant) (int, error) {
+	var all sopsv1alpha1.SopsSecretList
+	if err := r.APIReader.List(ctx, &all); err != nil {
+		return 0, err
 	}
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      keyName,
-			Namespace: t.Namespace,
-			Labels:    map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{crypto.KeyFileField: keyFile, crypto.PublicKeyField: []byte(recipient)},
-	}
-	if err := tc.Create(ctx, secret); err != nil {
-		if apierrors.IsForbidden(err) {
-			return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot create its key Secret; " +
-				onboardHint(t), nil
+	n := 0
+	for _, s := range all.Items {
+		if ref := s.Spec.TenantRef; ref.Namespace == t.Namespace && ref.Name == t.Name {
+			n++
 		}
-		// AlreadyExists: a key appeared since the read; the retry loads it.
-		return "", "", err
 	}
-	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
-		"generated a post-quantum key in Secret %s", keyName)
-	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil
+	return n, nil
 }
 
 // onboardHint names the RoleBinding the cluster admin creates to onboard a tenant.
@@ -189,14 +199,16 @@ func onboardHint(t *sopsv1alpha1.SopsTenant) string {
 
 // SetupWithManager registers the controller.
 func (r *SopsTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&sopsv1alpha1.SopsTenant{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&sopsv1alpha1.SopsSecret{},
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
 				ref := o.(*sopsv1alpha1.SopsSecret).Spec.TenantRef
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}}}
 			}),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Named("sopstenant").
-		Complete(r)
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	if r.Watches != nil {
+		b = b.WatchesRawSource(source.Channel(r.Watches.Events(), &handler.EnqueueRequestForObject{}))
+	}
+	return b.Named("sopstenant").Complete(r)
 }

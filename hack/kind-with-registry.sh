@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Creates Kind cluster CLUSTER (node image NODE_IMAGE) whose nodes pull localhost:REGISTRY_PORT/*
-# from the registry container REGISTRY_NAME (image REGISTRY_IMAGE) over HTTP. Idempotent. The
-# registry has a project-specific name and port so other projects' kind registries are left alone.
+# from the registry container REGISTRY_NAME (image REGISTRY_IMAGE) over HTTP, and use it as a mirror
+# of ghcr.io: an image of this build, loaded under its GHCR name, is pulled from the registry, and
+# any other GHCR image (e.g. published bundles) from ghcr.io. Idempotent. The registry has a
+# project-specific name and port so other projects' kind registries are left alone.
 # Usage: kind-with-registry.sh KIND CLUSTER NODE_IMAGE REGISTRY_IMAGE REGISTRY_NAME REGISTRY_PORT
 set -euo pipefail
 KIND=$1 CLUSTER=$2 NODE_IMAGE=$3 REGISTRY_IMAGE=$4 reg_name=$5 reg_port=$6
@@ -22,9 +24,12 @@ EOF
 fi
 
 dir="/etc/containerd/certs.d/localhost:${reg_port}"
+ghcr="/etc/containerd/certs.d/ghcr.io"
 for node in $("${KIND}" get nodes --name "${CLUSTER}"); do
-  docker exec "${node}" mkdir -p "${dir}"
+  docker exec "${node}" mkdir -p "${dir}" "${ghcr}"
   printf '[host."http://%s:5000"]\n' "${reg_name}" | docker exec -i "${node}" cp /dev/stdin "${dir}/hosts.toml"
+  printf 'server = "https://ghcr.io"\n\n[host."http://%s:5000"]\n  capabilities = ["pull", "resolve"]\n' \
+    "${reg_name}" | docker exec -i "${node}" cp /dev/stdin "${ghcr}/hosts.toml"
 done
 
 if [ "$(docker inspect -f '{{json .NetworkSettings.Networks.kind}}' "${reg_name}")" = null ]; then

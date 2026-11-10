@@ -19,12 +19,11 @@ package controller
 import (
 	"context"
 
-	"k8s.io/apimachinery/pkg/types"
-
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 )
 
-// RecordDecryptedForTest records a successful write, as Reconcile does after Write succeeds.
-func (r *SopsSecretReconciler) RecordDecryptedForTest(ctx context.Context, s *sopsv1alpha1.SopsSecret, uid types.UID) error {
-	return r.updateStatus(ctx, s, outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid})
+// SyncForTest runs the checks and the write of one reconcile and returns the Ready reason.
+func (r *SopsSecretReconciler) SyncForTest(ctx context.Context, s *sopsv1alpha1.SopsSecret) (string, error) {
+	o, err := r.sync(ctx, s)
+	return o.reason, err
 }

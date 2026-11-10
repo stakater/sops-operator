@@ -36,11 +36,14 @@ creation_rules:
       - age1pq1...   # public key of tenant team-a
 ```
 
-Ask your tenant admin for the public key of the tenant, or read it from the cluster:
+Ask your tenant admin for the public key of the tenant, or read it from the `SopsTenant`'s status:
 
 ```bash
-oc extract secret/team-a-sops-keys -n team-a-system --keys=age.pub --to=-
+oc get sopstenant team-a -n team-a-system -o jsonpath='{.status.publicKey}'
 ```
+
+The tenant admin finds the same public key in `age.pub` of the current key Secret, `team-a-sops-keys-<index>`
+with the highest index, which stays readable when the status or the `SopsTenant` is gone.
 
 ## Encrypt a secret
 
@@ -72,8 +75,8 @@ scripts/encrypt.sh environments/stage/team-a/db-credentials.sops.yaml
 Encrypted environments/stage/team-a/db-credentials.sops.yaml
 ```
 
-The script sets `spec.scope` to `<namespace>/<name>`, sorts the keys and runs `sops encrypt`. Each step is
-explained in the script.
+The script sets `spec.scope` to `<namespace>/<name>` unless the file already has a scope, sorts the keys and
+runs `sops encrypt`. Each step is explained in the script.
 
 **Step 3.** Check that the values are encrypted. Every value starts with `ENC[`:
 

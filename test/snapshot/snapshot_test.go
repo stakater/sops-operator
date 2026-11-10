@@ -120,11 +120,19 @@ func TestSnapshotNormalization(t *testing.T) {
 				Age: []sopsv1alpha1.SopsAgeRecipient{{Recipient: "age1pq1abc", Enc: "-----BEGIN AGE ENCRYPTED FILE-----"}},
 				MAC: enc, LastModified: "2026-10-09T10:00:00Z", Version: "3.13.3",
 			},
-			Status: sopsv1alpha1.SopsSecretStatus{SecretUID: "77aa"},
 		})
 		mustContain(t, out, "scope: <encrypted>", "sops: <encrypted>", "password: <redacted>", "cert: <redacted>",
-			"secretUID: <uid>", "name: my-team")
+			"name: my-team")
 		mustNotContain(t, out, "ENC[", "age1pq1abc", "BEGIN AGE", "77aa")
+	})
+
+	t.Run("shall replace the tenant's public key", func(t *testing.T) {
+		out := render(t, &sopsv1alpha1.SopsTenant{
+			ObjectMeta: meta("my-team"),
+			Status:     sopsv1alpha1.SopsTenantStatus{PublicKey: "age1pqcurrent"},
+		})
+		mustContain(t, out, "publicKey: <publicKey>")
+		mustNotContain(t, out, "age1pq")
 	})
 
 	t.Run("shall replace valid condition timestamps", func(t *testing.T) {

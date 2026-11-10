@@ -19,7 +19,6 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // TenantReference names a SopsTenant.
@@ -123,10 +122,6 @@ type SopsSecretStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Last sync"
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
-	// SecretUID is the UID of the Secret this SopsSecret created.
-	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Secret UID"
-	// +optional
-	SecretUID types.UID `json:"secretUID,omitempty"`
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions",xDescriptors={"urn:alm:descriptor:io.kubernetes.conditions"}
 	// +listType=map
 	// +listMapKey=type

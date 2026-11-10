@@ -73,10 +73,12 @@ func Start() (*Env, error) {
 		ErrorIfCRDPathMissing: true,
 	}
 	te.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
+	stopOrphanedControlPlane()
 	cfg, err := te.Start()
 	if err != nil {
 		return nil, fmt.Errorf("start envtest: %w", err)
 	}
+	stopOnSignal(te)
 	e := &Env{env: te, Scheme: scheme}
 	if err := e.setup(root, cfg); err != nil {
 		_ = te.Stop()
@@ -163,7 +165,7 @@ func (e *Env) AllowOperator(t testing.TB, tenantNamespace string) {
 
 // Onboard does what the cluster admin's onboarding template does (DESIGN.md §5.2): it lets the
 // operator act in tenantNamespace and lets the ServiceAccount of the tenant named tenant, which
-// the operator creates, own keys in the tenant namespace and write Secrets in each of
+// the operator creates, own keys in the tenant namespace and sync Secrets in each of
 // writeNamespaces.
 func (e *Env) Onboard(t testing.TB, tenantNamespace, tenant string, writeNamespaces ...string) {
 	t.Helper()
@@ -181,7 +183,7 @@ func (e *Env) Onboard(t testing.TB, tenantNamespace, tenant string, writeNamespa
 	for _, ns := range writeNamespaces {
 		objs = append(objs, &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "sops-" + tenantNamespace, Namespace: ns},
-			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-secret-writer"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "sops-tenant-secret-reconciler"},
 			Subjects:   subjects,
 		})
 	}

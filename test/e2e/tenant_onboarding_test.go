@@ -26,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
-	"github.com/stakater/sops-operator/internal/crypto"
 )
 
 // Use case: a tenant admin creates a SopsTenant after the cluster admin onboarded the tenant (DESIGN.md §8.1).
@@ -39,12 +38,16 @@ func TestTenantOnboarding(t *testing.T) {
 			t.Fatal("generated key is not post-quantum")
 		}
 		var key corev1.Secret
-		keyName := client.ObjectKey{Namespace: tenantNS, Name: tenantKeySecret}
+		keyName := client.ObjectKey{Namespace: tenantNS, Name: firstKeySecret}
 		if err := k8s.Get(context.Background(), keyName, &key); err != nil {
 			t.Fatal(err)
 		}
-		if strings.TrimSpace(string(key.Data[crypto.PublicKeyField])) != recipient {
-			t.Fatal("the key Secret does not hold the matching public key")
+		tenant := &sopsv1alpha1.SopsTenant{}
+		if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: tenantName}, tenant); err != nil {
+			t.Fatal(err)
+		}
+		if tenant.Status.PublicKey != recipient {
+			t.Fatal("status.publicKey does not match the generated key")
 		}
 		if key.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue || len(key.OwnerReferences) != 0 {
 			t.Fatalf("key Secret metadata: labels=%v ownerReferences=%v", key.Labels, key.OwnerReferences)

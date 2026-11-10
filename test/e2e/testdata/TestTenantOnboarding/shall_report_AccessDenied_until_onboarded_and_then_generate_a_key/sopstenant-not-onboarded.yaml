@@ -19,6 +19,5 @@ status:
     reason: AccessDenied
     status: "False"
     type: Ready
-  keySecretName: my-team-sops-keys
   observedGeneration: 1
   serviceAccountName: my-team-sops-tenant

@@ -68,9 +68,6 @@ func TestOperatorRestart(t *testing.T) {
 		if after := outputSecret(t, prod); after.UID != before.UID {
 			t.Fatal("the Secret was recreated instead of updated")
 		}
-		if s.Status.SecretUID != before.UID {
-			t.Fatal("status.secretUID changed across the restart")
-		}
 		if c := readyCondition(s); !c.LastTransitionTime.Equal(&ready.LastTransitionTime) {
 			t.Fatalf("Ready changed across the restart: before %+v, after %+v", ready, *c)
 		}

@@ -28,31 +28,31 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/document"
 	"github.com/stakater/sops-operator/internal/identity"
+	"github.com/stakater/sops-operator/internal/secretwatch"
 	"github.com/stakater/sops-operator/internal/secretwriter"
 )
-
-// trackingPrefixes are GitOps tracking label/annotation prefixes never copied to output Secrets.
-var trackingPrefixes = []string{"argocd.argoproj.io/", "kustomize.toolkit.fluxcd.io/", "helm.toolkit.fluxcd.io/"}
 
 // SopsSecretReconciler decrypts SopsSecrets into Secrets, acting as the referenced tenant identity.
 type SopsSecretReconciler struct {
 	client.Client
-	// APIReader reads SopsSecrets uncached, so status.secretUID written by the previous reconcile
-	// is always seen; a stale cache would otherwise report Conflict for the operator's own Secret.
-	APIReader      client.Reader
-	Identities     *identity.Factory
+	Identities *identity.Factory
+	// Watches, when set, watches output Secrets as the tenant identity, so a deleted or changed one
+	// is restored at once; otherwise it is restored at the next resync.
+	Watches        *secretwatch.Watches
 	ResyncInterval time.Duration
 	Now            func() time.Time
 }
@@ -60,7 +60,6 @@ type SopsSecretReconciler struct {
 type outcome struct {
 	reason  string
 	message string
-	uid     types.UID
 }
 
 func (r *SopsSecretReconciler) now() time.Time {
@@ -72,16 +71,19 @@ func (r *SopsSecretReconciler) now() time.Time {
 
 // Reconcile implements reconcile.Reconciler.
 func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	reader := client.Reader(r.Client)
-	if r.APIReader != nil {
-		reader = r.APIReader
-	}
 	var s sopsv1alpha1.SopsSecret
-	if err := reader.Get(ctx, req.NamespacedName, &s); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, &s); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.release(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !s.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		r.release(req.NamespacedName)
+		return ctrl.Result{}, r.finalize(ctx, &s)
+	}
+	if err := r.setFinalizer(ctx, &s); err != nil {
+		return ctrl.Result{}, err
 	}
 	o := outcome{reason: sopsv1alpha1.ReasonSuspended, message: "reconciliation is suspended"}
 	if s.Annotations[sopsv1alpha1.AnnotationSuspend] != "true" {
@@ -93,7 +95,32 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.updateStatus(ctx, &s, o); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.watchOutput(ctx, &s, o)
 	return ctrl.Result{RequeueAfter: r.ResyncInterval}, nil
+}
+
+// watchOutput holds the watch of the output Secret while it is up to date, and releases it
+// otherwise: a suspended or failing SopsSecret leaves its Secret alone.
+func (r *SopsSecretReconciler) watchOutput(ctx context.Context, s *sopsv1alpha1.SopsSecret, o outcome) {
+	if r.Watches == nil {
+		return
+	}
+	owner := client.ObjectKeyFromObject(s)
+	if o.reason != sopsv1alpha1.ReasonDecrypted {
+		r.Watches.Release(owner)
+		return
+	}
+	tenant := types.NamespacedName{Namespace: s.Spec.TenantRef.Namespace, Name: s.Spec.TenantRef.Name}
+	if err := r.Watches.Watch(ctx, owner, tenant); err != nil {
+		// The resync still restores the Secret; the next reconcile tries the watch again.
+		log.FromContext(ctx).Error(err, "watch output Secrets", "tenant", tenant)
+	}
+}
+
+func (r *SopsSecretReconciler) release(owner types.NamespacedName) {
+	if r.Watches != nil {
+		r.Watches.Release(owner)
+	}
 }
 
 // sync runs the checks of DESIGN.md §6.2 in order. Policy failures are returned as outcomes;
@@ -109,33 +136,30 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		}
 		return outcome{}, err
 	}
-	if !meta.IsStatusConditionTrue(tenant.Status.Conditions, sopsv1alpha1.ConditionReady) {
-		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("SopsTenant %s is not ready", tenantName)}, nil
-	}
 
-	allowed, err := identity.CanWriteSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
+	allowed, err := identity.CanReconcileSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
 	if err != nil {
 		return outcome{}, err
 	}
 	if !allowed {
-		return outcome{reason: sopsv1alpha1.ReasonAccessDenied,
-			message: fmt.Sprintf("tenant %s is not granted Secret write in namespace %s", tenantName, s.Namespace)}, nil
+		return reconcileDenied(tenantName, s.Namespace), nil
 	}
 
 	tc, err := r.Identities.ClientFor(ref.Namespace, ref.Name)
 	if err != nil {
 		return outcome{}, err
 	}
-	var key corev1.Secret
-	if err := tc.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: sopsv1alpha1.TenantKeySecretName(ref.Name)}, &key); err != nil {
-		if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
-			return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is not readable", tenantName)}, nil
-		}
+	keySecrets, err := listKeys(ctx, tc, &tenant)
+	if apierrors.IsForbidden(err) {
+		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is not readable", tenantName)}, nil
+	}
+	if err != nil {
 		return outcome{}, err
 	}
-	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-	if err != nil {
-		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is invalid", tenantName)}, nil
+	keys := usableKeys(keySecrets)
+	if keys == nil {
+		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("tenant %s has no key Secret "+
+			"labelled %s=%s that holds a valid key", tenantName, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)}, nil
 	}
 
 	doc, err := document.Canonical(s)
@@ -162,26 +186,34 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 			message: fmt.Sprintf("the document is scoped to a different namespace or name than %q", want)}, nil
 	}
 
-	uid, err := secretwriter.Write(ctx, tc, desiredSecret(s, payload), s.Status.SecretUID)
+	err = secretwriter.Write(ctx, tc, desiredSecret(s, payload), managed)
 	switch {
 	case errors.Is(err, secretwriter.ErrConflict):
-		return outcome{reason: sopsv1alpha1.ReasonConflict,
-			message: fmt.Sprintf("Secret %s/%s exists and is not managed by this SopsSecret", s.Namespace, s.Name)}, nil
+		return outcome{reason: sopsv1alpha1.ReasonConflict, message: fmt.Sprintf("Secret %s/%s exists without the label "+
+			"%s=%s; add the label to let this SopsSecret manage it", s.Namespace, s.Name,
+			sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)}, nil
 	case apierrors.IsForbidden(err):
-		return outcome{reason: sopsv1alpha1.ReasonAccessDenied,
-			message: fmt.Sprintf("tenant %s is not granted Secret write in namespace %s", tenantName, s.Namespace)}, nil
+		return reconcileDenied(tenantName, s.Namespace), nil
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err), apierrors.IsRequestEntityTooLargeError(err):
 		return outcome{reason: sopsv1alpha1.ReasonApplyFailed, message: err.Error()}, nil
 	case err != nil:
 		return outcome{}, err
 	}
-	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid}, nil
+	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date"}, nil
+}
+
+// managed reports whether the Secret described by m, which has the SopsSecret's name and namespace,
+// is the SopsSecret's output Secret: it carries the enabled label. Nothing else counts; a Secret
+// without the label is managed only once someone adds it.
+func managed(m *metav1.PartialObjectMetadata) bool {
+	return m.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue
 }
 
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
-	labels := withoutTracking(s.Spec.Template.Metadata.Labels)
+	labels := withoutReserved(s.Spec.Template.Metadata.Labels)
 	labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
-	annotations := withoutTracking(s.Spec.Template.Metadata.Annotations)
+	labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue
+	annotations := withoutReserved(s.Spec.Template.Metadata.Annotations)
 	annotations[sopsv1alpha1.AnnotationSopsSecret] = s.Name
 	secretType := s.Spec.Type
 	if secretType == "" {
@@ -197,39 +229,22 @@ func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secr
 		Type: secretType,
 		Data: p.Data,
 	}
-	if s.Spec.DeletionPolicy != sopsv1alpha1.DeletionPolicyRetain {
-		out.OwnerReferences = []metav1.OwnerReference{{
-			APIVersion:         sopsv1alpha1.GroupVersion.String(),
-			Kind:               "SopsSecret",
-			Name:               s.Name,
-			UID:                s.UID,
-			Controller:         ptr.To(true),
-			BlockOwnerDeletion: ptr.To(false),
-		}}
-	}
 	return out
 }
 
-func withoutTracking(in map[string]string) map[string]string {
+// withoutReserved copies the template's labels or annotations as written, without the operator's
+// own (sops.stakater.com/), which a template must not set.
+func withoutReserved(in map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range in {
-		tracked := false
-		for _, p := range trackingPrefixes {
-			if strings.HasPrefix(k, p) {
-				tracked = true
-				break
-			}
-		}
-		if !tracked {
+		if !strings.HasPrefix(k, sopsv1alpha1.ReservedPrefix) {
 			out[k] = v
 		}
 	}
 	return out
 }
 
-// updateStatus writes the outcome with a merge patch without optimistic locking, so a stale
-// resourceVersion cannot lose status.secretUID: without it the operator could no longer update
-// the Secret it created (D28).
+// updateStatus reports the outcome in the status with a merge patch.
 func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1.SopsSecret, o outcome) error {
 	base := s.DeepCopy()
 	status := metav1.ConditionFalse
@@ -238,7 +253,6 @@ func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1
 		status = metav1.ConditionTrue
 		now := metav1.NewTime(r.now())
 		s.Status.LastSyncTime = &now
-		s.Status.SecretUID = o.uid
 	case sopsv1alpha1.ReasonSuspended:
 		status = metav1.ConditionUnknown
 	}
@@ -253,15 +267,24 @@ func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1
 	return r.Status().Patch(ctx, s, client.MergeFrom(base))
 }
 
+// reconcileDenied is the outcome for a tenant that may not sync Secrets in namespace.
+func reconcileDenied(tenantName, namespace string) outcome {
+	return outcome{reason: sopsv1alpha1.ReasonAccessDenied, message: fmt.Sprintf(
+		"tenant %s is not granted sops-tenant-secret-reconciler in namespace %s (Secrets: %s)",
+		tenantName, namespace, strings.Join(identity.ReconcileVerbs, ", "))}
+}
+
 // SetupWithManager registers the controller. Status updates do not retrigger reconciliation;
 // tenant changes reconcile every SopsSecret that references the tenant.
 func (r *SopsSecretReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&sopsv1alpha1.SopsSecret{}, builder.WithPredicates(
 			predicate.Or(predicate.GenerationChangedPredicate{}, predicate.AnnotationChangedPredicate{}))).
-		Watches(&sopsv1alpha1.SopsTenant{}, handler.EnqueueRequestsFromMapFunc(r.sopsSecretsOfTenant)).
-		Named("sopssecret").
-		Complete(r)
+		Watches(&sopsv1alpha1.SopsTenant{}, handler.EnqueueRequestsFromMapFunc(r.sopsSecretsOfTenant))
+	if r.Watches != nil {
+		b = b.WatchesRawSource(source.Channel(r.Watches.Events(), &handler.EnqueueRequestForObject{}))
+	}
+	return b.Named("sopssecret").Complete(r)
 }
 
 func (r *SopsSecretReconciler) sopsSecretsOfTenant(ctx context.Context, o client.Object) []reconcile.Request {
@@ -274,4 +297,42 @@ func (r *SopsSecretReconciler) sopsSecretsOfTenant(ctx context.Context, o client
 		reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&s)})
 	}
 	return reqs
+}
+
+// setFinalizer keeps the output Secret finalizer on a SopsSecret with deletionPolicy Delete, and
+// removes it from one with Retain.
+func (r *SopsSecretReconciler) setFinalizer(ctx context.Context, s *sopsv1alpha1.SopsSecret) error {
+	want := s.Spec.DeletionPolicy != sopsv1alpha1.DeletionPolicyRetain
+	if want == controllerutil.ContainsFinalizer(s, sopsv1alpha1.FinalizerOutputSecret) {
+		return nil
+	}
+	base := s.DeepCopy()
+	if want {
+		controllerutil.AddFinalizer(s, sopsv1alpha1.FinalizerOutputSecret)
+	} else {
+		controllerutil.RemoveFinalizer(s, sopsv1alpha1.FinalizerOutputSecret)
+	}
+	return r.Patch(ctx, s, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// finalize deletes the output Secret of a SopsSecret being deleted with deletionPolicy Delete, as
+// the tenant identity and only when it carries the enabled label, then removes the finalizer. A
+// deletion the tenant may no longer make, for example in a namespace being deleted with its grant,
+// does not block: the finalizer is removed and the Secret is left to the namespace or to the admin.
+func (r *SopsSecretReconciler) finalize(ctx context.Context, s *sopsv1alpha1.SopsSecret) error {
+	if !controllerutil.ContainsFinalizer(s, sopsv1alpha1.FinalizerOutputSecret) {
+		return nil
+	}
+	ref := s.Spec.TenantRef
+	tc, err := r.Identities.ClientFor(ref.Namespace, ref.Name)
+	if err != nil {
+		return err
+	}
+	err = secretwriter.Delete(ctx, tc, s.Namespace, s.Name, managed)
+	if err != nil && !apierrors.IsForbidden(err) && !apierrors.IsNotFound(err) {
+		return err
+	}
+	base := s.DeepCopy()
+	controllerutil.RemoveFinalizer(s, sopsv1alpha1.FinalizerOutputSecret)
+	return client.IgnoreNotFound(r.Patch(ctx, s, client.MergeFrom(base)))
 }
