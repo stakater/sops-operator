@@ -800,16 +800,16 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   `ghcr.io/stakater/sops-operator-bundle:vX.Y.Z`) into `catalog/release/index.yaml` and validates it; a version
   listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
 - **Publishing** (`.github/workflows/push.yaml`): `catalog/channels.yaml` is the only source of truth, and one pull
-  request releases one version, the highest version it lists. A push to `main` that does not change `catalog/`
-  publishes nothing. When it does and that version's bundle is not published yet (`hack/release-plan.sh`), the
-  workflow builds, with the same make targets developers use (`build`, `docker-build`, `bundle`, `bundle-build`,
-  `catalog-render`, `catalog-build`, given buildx flags in `DOCKER_BUILD_ARGS`), the operator image for
-  `linux/amd64` and `linux/arm64`, the bundle referencing the operator by digest, and the catalog, tags them
-  `vX.Y.Z`, attaches SBOM and provenance, signs them with cosign (keyless, GitHub OIDC), verifies the signatures and
-  that the images can be pulled anonymously, then creates the git tag and GitHub release. Every other listed bundle
-  must be published already: rendering the catalog pulls them, so a missing one fails the release. When the
-  highest version is published (e.g. promoting a version to another channel), only the catalog is republished,
-  tagged `v<version>-<sha7>` and `latest`. A registry that cannot be read fails the release.
+  request releases one version. `make next-version` prints the next version: the highest version `channels.yaml`
+  lists, when its bundle is not published yet, and nothing otherwise. A push to `main` with no next version
+  publishes nothing, so a published version is never overwritten. With one, the workflow builds, with the same make
+  targets developers use (`build`, `docker-build`, `bundle`, `bundle-build`, `catalog-render`, `catalog-build`,
+  given buildx flags in `DOCKER_BUILD_ARGS`), the operator image for `linux/amd64` and `linux/arm64`, the bundle
+  referencing the operator by digest, and the catalog (tagged `vX.Y.Z` and `latest`), attaches SBOM and provenance,
+  signs them with cosign (keyless, GitHub OIDC), verifies the signatures and that the images can be pulled
+  anonymously, then creates the git tag and GitHub release. Every other listed bundle must be published already:
+  rendering the catalog pulls them and `opm` validates the graph, so a missing one fails the release. A registry that
+  cannot be read fails the release.
 - **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
   `RESYNC_INTERVAL` (Go duration, default `10m`). An invalid value stops the operator at startup.
 - **Testing**: unit tests; envtest with the RBAC authorizer and a non-admin operator user; e2e on **kind** with the

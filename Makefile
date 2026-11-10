@@ -380,6 +380,10 @@ BUNDLE_REPO ?= $(IMAGE_TAG_BASE)-bundle
 # Channels file catalog-render renders (the upgrade graph); the OLM e2e run passes its own.
 CATALOG_CHANNELS ?= $(CATALOG_DIR_PATH)/channels.yaml
 
+.PHONY: next-version
+next-version: yq ## Print the next version to release: the highest version in catalog/channels.yaml if its bundle is not published, else nothing.
+	@CHANNELS=$(CATALOG_DIR_PATH)/channels.yaml BUNDLE_REPO=$(BUNDLE_REPO) YQ=$(YQ) hack/next-version.sh
+
 .PHONY: catalog-render
 catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
 	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) BUNDLE_DIR=$(BUNDLE_DIR) \

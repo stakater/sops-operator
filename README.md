@@ -604,6 +604,7 @@ make lint
 make test-scripts       # scripts/encrypt.sh with a throwaway key, no cluster
 make lint-scripts       # shellcheck on scripts/
 make images             # operator, bundle and catalog images of TAG (default dev-<time>), saved to bin/images/<tag>
+make next-version       # the version a merge would release; nothing when there is none
 make test-e2e           # end-to-end tests: OLM installs the images of TAG on kind; results compared with golden files
 make test-upgrade       # upgrade paths through the catalog of TAG: published bundles, then this build
 make scorecard          # operator-sdk scorecard against the bundle
