@@ -105,7 +105,6 @@ func normalize(u map[string]any, known map[string]string) error {
 	setIfPresent(u, "sops", Encrypted)
 
 	if status, ok := u["status"].(map[string]any); ok {
-		uid(status, "secretUID")
 		if err := timestamp(status, "lastSyncTime", "status.lastSyncTime", false); err != nil {
 			return err
 		}

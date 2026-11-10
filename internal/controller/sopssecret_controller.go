@@ -49,9 +49,6 @@ import (
 // SopsSecretReconciler decrypts SopsSecrets into Secrets, acting as the referenced tenant identity.
 type SopsSecretReconciler struct {
 	client.Client
-	// APIReader reads SopsSecrets uncached, so status.secretUID written by the previous reconcile
-	// is always seen; a stale cache would otherwise report Conflict for the operator's own Secret.
-	APIReader  client.Reader
 	Identities *identity.Factory
 	// Watches, when set, watches output Secrets as the tenant identity, so a deleted or changed one
 	// is restored at once; otherwise it is restored at the next resync.
@@ -63,7 +60,6 @@ type SopsSecretReconciler struct {
 type outcome struct {
 	reason  string
 	message string
-	uid     types.UID
 }
 
 func (r *SopsSecretReconciler) now() time.Time {
@@ -75,12 +71,8 @@ func (r *SopsSecretReconciler) now() time.Time {
 
 // Reconcile implements reconcile.Reconciler.
 func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	reader := client.Reader(r.Client)
-	if r.APIReader != nil {
-		reader = r.APIReader
-	}
 	var s sopsv1alpha1.SopsSecret
-	if err := reader.Get(ctx, req.NamespacedName, &s); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, &s); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.release(req.NamespacedName)
 		}
@@ -141,8 +133,8 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		}
 		return outcome{}, err
 	}
-	if !meta.IsStatusConditionTrue(tenant.Status.Conditions, sopsv1alpha1.ConditionReady) {
-		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("SopsTenant %s is not ready", tenantName)}, nil
+	if clash, err := r.keySecretName(ctx, s); err != nil || clash != "" {
+		return outcome{reason: sopsv1alpha1.ReasonConflict, message: clash}, err
 	}
 
 	allowed, err := identity.CanReconcileSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
@@ -163,6 +155,10 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 			return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is not readable", tenantName)}, nil
 		}
 		return outcome{}, err
+	}
+	if !adopted(&key) {
+		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key Secret of tenant %s is not "+
+			"labelled %s=%s", tenantName, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)}, nil
 	}
 	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
 	if err != nil {
@@ -193,7 +189,9 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 			message: fmt.Sprintf("the document is scoped to a different namespace or name than %q", want)}, nil
 	}
 
-	uid, err := secretwriter.Write(ctx, tc, desiredSecret(s, payload), s.Status.SecretUID)
+	err = secretwriter.Write(ctx, tc, desiredSecret(s, payload), func(m *metav1.PartialObjectMetadata) bool {
+		return ownsSecret(s, m)
+	})
 	switch {
 	case errors.Is(err, secretwriter.ErrConflict):
 		return outcome{reason: sopsv1alpha1.ReasonConflict,
@@ -205,7 +203,32 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	case err != nil:
 		return outcome{}, err
 	}
-	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date", uid: uid}, nil
+	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date"}, nil
+}
+
+// ownsSecret reports whether the Secret with the SopsSecret's name and namespace, described by m,
+// is the SopsSecret's output Secret: it carries the enabled label, or it was written by v0.0.4,
+// which marked it with managed-by and the sopssecret annotation naming the SopsSecret.
+func ownsSecret(s *sopsv1alpha1.SopsSecret, m *metav1.PartialObjectMetadata) bool {
+	return m.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue ||
+		m.Labels[sopsv1alpha1.LabelManagedBy] == sopsv1alpha1.ManagedByValue &&
+			m.Annotations[sopsv1alpha1.AnnotationSopsSecret] == s.Name
+}
+
+// keySecretName returns a Conflict message when the SopsSecret's name is that of the key Secret, or
+// of a key backup, of a SopsTenant in its namespace: its output Secret would be the tenant's key.
+func (r *SopsSecretReconciler) keySecretName(ctx context.Context, s *sopsv1alpha1.SopsSecret) (string, error) {
+	var tenants sopsv1alpha1.SopsTenantList
+	if err := r.List(ctx, &tenants, client.InNamespace(s.Namespace)); err != nil {
+		return "", err
+	}
+	for _, t := range tenants.Items {
+		key := sopsv1alpha1.TenantKeySecretName(t.Name)
+		if s.Name == key || strings.HasPrefix(s.Name, key+"-") {
+			return fmt.Sprintf("the name %s is reserved for the key of SopsTenant %s/%s", s.Name, t.Namespace, t.Name), nil
+		}
+	}
+	return "", nil
 }
 
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
@@ -253,9 +276,7 @@ func withoutReserved(in map[string]string) map[string]string {
 	return out
 }
 
-// updateStatus writes the outcome with a merge patch without optimistic locking, so a stale
-// resourceVersion cannot lose status.secretUID: without it the operator could no longer update
-// the Secret it created (D28).
+// updateStatus reports the outcome in the status with a merge patch.
 func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1.SopsSecret, o outcome) error {
 	base := s.DeepCopy()
 	status := metav1.ConditionFalse
@@ -264,7 +285,6 @@ func (r *SopsSecretReconciler) updateStatus(ctx context.Context, s *sopsv1alpha1
 		status = metav1.ConditionTrue
 		now := metav1.NewTime(r.now())
 		s.Status.LastSyncTime = &now
-		s.Status.SecretUID = o.uid
 	case sopsv1alpha1.ReasonSuspended:
 		status = metav1.ConditionUnknown
 	}

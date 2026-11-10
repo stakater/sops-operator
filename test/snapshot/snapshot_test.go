@@ -120,10 +120,9 @@ func TestSnapshotNormalization(t *testing.T) {
 				Age: []sopsv1alpha1.SopsAgeRecipient{{Recipient: "age1pq1abc", Enc: "-----BEGIN AGE ENCRYPTED FILE-----"}},
 				MAC: enc, LastModified: "2026-10-09T10:00:00Z", Version: "3.13.3",
 			},
-			Status: sopsv1alpha1.SopsSecretStatus{SecretUID: "77aa"},
 		})
 		mustContain(t, out, "scope: <encrypted>", "sops: <encrypted>", "password: <redacted>", "cert: <redacted>",
-			"secretUID: <uid>", "name: my-team")
+			"name: my-team")
 		mustNotContain(t, out, "ENC[", "age1pq1abc", "BEGIN AGE", "77aa")
 	})
 

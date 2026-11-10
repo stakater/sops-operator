@@ -46,9 +46,6 @@ func TestSelfHealing(t *testing.T) {
 			return after != nil && after.UID != before.UID && string(after.Data["password"]) == password, nil
 		})
 		waitForNewSync(t, s, since)
-		if s.Status.SecretUID != after.UID {
-			t.Fatal("status.secretUID does not name the recreated Secret")
-		}
 	})
 
 	t.Run("shall restore a modified Secret", func(t *testing.T) {

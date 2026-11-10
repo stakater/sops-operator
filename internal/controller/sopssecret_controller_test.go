@@ -12,7 +12,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -126,9 +125,48 @@ func TestSecretDecryption(t *testing.T) {
 			out.OwnerReferences[0].BlockOwnerDeletion == nil || *out.OwnerReferences[0].BlockOwnerDeletion {
 			t.Fatalf("ownerReferences = %+v", out.OwnerReferences)
 		}
-		if s.Status.SecretUID != out.UID {
-			t.Fatal("status.secretUID does not match the output Secret")
+	})
+
+	t.Run("shall decrypt while the tenant's status is lost", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		operator, err := client.NewWithWatch(env.OperatorConfig, client.Options{Scheme: env.Scheme})
+		if err != nil {
+			t.Fatal(err)
 		}
+		statusLost := interceptor.NewClient(operator, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				err := c.Get(ctx, key, obj, opts...)
+				if tenant, ok := obj.(*sopsv1alpha1.SopsTenant); ok {
+					tenant.Status = sopsv1alpha1.SopsTenantStatus{}
+				}
+				return err
+			},
+		})
+		r := &controller.SopsSecretReconciler{Client: statusLost, Identities: identity.NewFactory(env.OperatorConfig, env.Scheme)}
+		if reason, err := r.SyncForTest(ctx, s); err != nil || reason != sopsv1alpha1.ReasonDecrypted {
+			t.Fatalf("sync = %q, %v; want Decrypted", reason, err)
+		}
+	})
+
+	t.Run("shall report TenantNotReady for a key Secret without the enabled label", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		var key corev1.Secret
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &key); err != nil {
+			t.Fatal(err)
+		}
+		key.Labels = nil
+		if err := env.Admin.Update(ctx, &key); err != nil {
+			t.Fatal(err)
+		}
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonTenantNotReady)
 	})
 
 	t.Run("shall decrypt a SopsSecret whose name is longer than 63 characters", func(t *testing.T) {
@@ -376,7 +414,7 @@ func TestSecretOwnership(t *testing.T) {
 		}
 	})
 
-	t.Run("shall not reclaim a retained Secret", func(t *testing.T) {
+	t.Run("shall take over a retained Secret with a SopsSecret of the same name", func(t *testing.T) {
 		ctx := context.Background()
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
@@ -399,78 +437,83 @@ func TestSecretOwnership(t *testing.T) {
 			return apierrors.IsNotFound(env.Admin.Get(ctx, client.ObjectKeyFromObject(first), &sopsv1alpha1.SopsSecret{}))
 		}).WithTimeout(20 * time.Second).Should(BeTrue())
 
+		retained := outputSecret(t, prod)
 		second := build()
 		create(t, second)
-		eventuallyReason(t, second, sopsv1alpha1.ReasonConflict)
-	})
-
-	t.Run("shall record secretUID from a stale copy", func(t *testing.T) {
-		ctx := context.Background()
-		prod := env.Namespace(t, "prod")
-		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
-		s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"}
-		create(t, s)
-		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
-
-		stale := s.DeepCopy()
-		// A concurrent metadata change (e.g. from GitOps) makes the copy's resourceVersion stale.
-		s.Labels = map[string]string{"touched": "true"}
-		if err := env.Admin.Update(ctx, s); err != nil {
-			t.Fatal(err)
-		}
-
-		r := &controller.SopsSecretReconciler{Client: env.Operator}
-		if err := r.RecordDecryptedForTest(ctx, stale, "uid-from-write"); err != nil {
-			t.Fatalf("recording the Secret UID from a stale copy: %v", err)
-		}
-		var got sopsv1alpha1.SopsSecret
-		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(s), &got); err != nil {
-			t.Fatal(err)
-		}
-		if got.Status.SecretUID != "uid-from-write" {
-			t.Fatalf("status.secretUID = %q, want uid-from-write", got.Status.SecretUID)
+		eventuallyReason(t, second, sopsv1alpha1.ReasonDecrypted)
+		if got := outputSecret(t, prod); got.UID != retained.UID {
+			t.Fatalf("Secret %s replaced the retained Secret %s", got.UID, retained.UID)
 		}
 	})
 
-	t.Run("shall not report Conflict from a stale cache", func(t *testing.T) {
+	t.Run("shall keep updating its Secret after the SopsSecret's status is lost", func(t *testing.T) {
 		ctx := context.Background()
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
-		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "x"})
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
 		create(t, s)
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		before := outputSecret(t, prod)
 
-		// A cache that has not yet seen the status write that recorded secretUID.
-		stale := s.DeepCopy()
-		stale.Status = sopsv1alpha1.SopsSecretStatus{}
-		cached, err := client.NewWithWatch(env.OperatorConfig, client.Options{Scheme: env.Scheme})
-		if err != nil {
+		s.Status = sopsv1alpha1.SopsSecretStatus{}
+		if err := env.Admin.Status().Update(ctx, s); err != nil {
 			t.Fatal(err)
 		}
-		staleClient := interceptor.NewClient(cached, interceptor.Funcs{
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if out, ok := obj.(*sopsv1alpha1.SopsSecret); ok && key == client.ObjectKeyFromObject(s) {
-					stale.DeepCopyInto(out)
-					return nil
-				}
-				return c.Get(ctx, key, obj, opts...)
+		next := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
+		update(t, s, func() { s.Spec, s.Sops = next.Spec, next.Sops })
+		NewWithT(t).Eventually(func(g Gomega) {
+			out := outputSecret(t, prod)
+			g.Expect(string(out.Data["password"])).To(Equal("v2"))
+			g.Expect(out.UID).To(Equal(before.UID))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+	})
+
+	t.Run("shall label and update a Secret written by v0.0.4", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		old := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "db", Namespace: prod,
+				Labels:      map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue},
+				Annotations: map[string]string{sopsv1alpha1.AnnotationSopsSecret: "db"},
 			},
-		})
-		r := &controller.SopsSecretReconciler{
-			Client:     staleClient,
-			APIReader:  env.Operator,
-			Identities: identity.NewFactory(env.OperatorConfig, env.Scheme),
+			Data: map[string][]byte{"password": []byte("v1")},
 		}
-		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(s)}); err != nil {
+		if err := env.Admin.Create(ctx, old); err != nil {
 			t.Fatal(err)
 		}
-		var got sopsv1alpha1.SopsSecret
-		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(s), &got); err != nil {
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		out := outputSecret(t, prod)
+		if out.UID != old.UID || string(out.Data["password"]) != "v2" ||
+			out.Labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue {
+			t.Fatalf("Secret %s labels %v, want %s updated to v2 and labelled enabled", out.UID, out.Labels, old.UID)
+		}
+	})
+
+	t.Run("shall not write a Secret named like a tenant's key Secret or backups", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		before := &corev1.Secret{}
+		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: keyName}, before); err != nil {
 			t.Fatal(err)
 		}
-		if c := readyCondition(&got); c == nil || c.Reason != sopsv1alpha1.ReasonDecrypted {
-			t.Fatalf("Ready = %+v, want Decrypted", c)
+		for _, name := range []string{keyName, keyName + "-20260101-000000"} {
+			s := encryptedSopsSecret(t, recipient, tenantNS, tenantNS, name, tenantNS+"/"+name, map[string]any{"age.agekey": "x"})
+			create(t, s)
+			eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
+		}
+		after := &corev1.Secret{}
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: keyName}, after); err != nil {
+			t.Fatal(err)
+		}
+		if after.ResourceVersion != before.ResourceVersion {
+			t.Fatal("the key Secret was changed")
 		}
 	})
 }

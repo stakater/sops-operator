@@ -59,8 +59,5 @@ func TestExistingSecretMigration(t *testing.T) {
 		if out.UID == foreign.UID || string(out.Data["password"]) != "mine" {
 			t.Fatal("the operator did not write its own Secret")
 		}
-		if s.Status.SecretUID != out.UID {
-			t.Fatal("status.secretUID does not name the new Secret")
-		}
 	})
 }
