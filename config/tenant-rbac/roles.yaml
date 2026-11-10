@@ -12,8 +12,8 @@ rules:
     verbs: [create, impersonate]
 ---
 # Bound to a tenant's ServiceAccount (<tenant>-sops-tenant) in the tenant namespace. list and watch let
-# the operator find the key backups and restore a deleted or changed key Secret at once; update restores
-# a changed key Secret and adds the sops.stakater.com/enabled label to a key an earlier version generated.
+# the operator find the key Secrets <tenant>-sops-keys-<index>; create writes a generated key; update adds
+# age.pub to a key Secret the tenant admin brings and makes it immutable.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

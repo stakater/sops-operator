@@ -61,8 +61,8 @@ const (
 	ComponentTenantIdentity = "tenant-identity"
 	// LabelEnabled set to EnabledValue marks a Secret as the operator's: an output Secret it writes, or a
 	// tenant key Secret. A tenant admin sets it on a key Secret they bring, for the operator to adopt it.
-	// The tenant follows from where the Secret is: a key Secret is <tenant>-sops-keys in the tenant's
-	// namespace, an output Secret has the name of its SopsSecret in the same namespace.
+	// The tenant follows from where the Secret is: a key Secret is <tenant>-sops-keys-<index> in the
+	// tenant's namespace, an output Secret has the name of its SopsSecret in the same namespace.
 	LabelEnabled = "sops.stakater.com/enabled"
 	EnabledValue = "true"
 	// ReservedPrefix is the prefix of the operator's own labels and annotations; a SopsSecret's template
