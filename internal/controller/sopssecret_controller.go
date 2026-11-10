@@ -28,10 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -80,7 +80,10 @@ func (r *SopsSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	if !s.DeletionTimestamp.IsZero() {
 		r.release(req.NamespacedName)
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.finalize(ctx, &s)
+	}
+	if err := r.setFinalizer(ctx, &s); err != nil {
+		return ctrl.Result{}, err
 	}
 	o := outcome{reason: sopsv1alpha1.ReasonSuspended, message: "reconciliation is suspended"}
 	if s.Annotations[sopsv1alpha1.AnnotationSuspend] != "true" {
@@ -183,13 +186,12 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 			message: fmt.Sprintf("the document is scoped to a different namespace or name than %q", want)}, nil
 	}
 
-	err = secretwriter.Write(ctx, tc, desiredSecret(s, payload), func(m *metav1.PartialObjectMetadata) bool {
-		return ownsSecret(s, m)
-	})
+	err = secretwriter.Write(ctx, tc, desiredSecret(s, payload), managed)
 	switch {
 	case errors.Is(err, secretwriter.ErrConflict):
-		return outcome{reason: sopsv1alpha1.ReasonConflict,
-			message: fmt.Sprintf("Secret %s/%s exists and is not managed by this SopsSecret", s.Namespace, s.Name)}, nil
+		return outcome{reason: sopsv1alpha1.ReasonConflict, message: fmt.Sprintf("Secret %s/%s exists without the label "+
+			"%s=%s; add the label to let this SopsSecret manage it", s.Namespace, s.Name,
+			sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)}, nil
 	case apierrors.IsForbidden(err):
 		return reconcileDenied(tenantName, s.Namespace), nil
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err), apierrors.IsRequestEntityTooLargeError(err):
@@ -200,13 +202,11 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	return outcome{reason: sopsv1alpha1.ReasonDecrypted, message: "Secret is up to date"}, nil
 }
 
-// ownsSecret reports whether the Secret with the SopsSecret's name and namespace, described by m,
-// is the SopsSecret's output Secret: it carries the enabled label, or it was written by v0.0.4,
-// which marked it with managed-by and the sopssecret annotation naming the SopsSecret.
-func ownsSecret(s *sopsv1alpha1.SopsSecret, m *metav1.PartialObjectMetadata) bool {
-	return m.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue ||
-		m.Labels[sopsv1alpha1.LabelManagedBy] == sopsv1alpha1.ManagedByValue &&
-			m.Annotations[sopsv1alpha1.AnnotationSopsSecret] == s.Name
+// managed reports whether the Secret described by m, which has the SopsSecret's name and namespace,
+// is the SopsSecret's output Secret: it carries the enabled label. Nothing else counts; a Secret
+// without the label is managed only once someone adds it.
+func managed(m *metav1.PartialObjectMetadata) bool {
+	return m.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue
 }
 
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
@@ -228,16 +228,6 @@ func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secr
 		},
 		Type: secretType,
 		Data: p.Data,
-	}
-	if s.Spec.DeletionPolicy != sopsv1alpha1.DeletionPolicyRetain {
-		out.OwnerReferences = []metav1.OwnerReference{{
-			APIVersion:         sopsv1alpha1.GroupVersion.String(),
-			Kind:               "SopsSecret",
-			Name:               s.Name,
-			UID:                s.UID,
-			Controller:         ptr.To(true),
-			BlockOwnerDeletion: ptr.To(false),
-		}}
 	}
 	return out
 }
@@ -307,4 +297,42 @@ func (r *SopsSecretReconciler) sopsSecretsOfTenant(ctx context.Context, o client
 		reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&s)})
 	}
 	return reqs
+}
+
+// setFinalizer keeps the output Secret finalizer on a SopsSecret with deletionPolicy Delete, and
+// removes it from one with Retain.
+func (r *SopsSecretReconciler) setFinalizer(ctx context.Context, s *sopsv1alpha1.SopsSecret) error {
+	want := s.Spec.DeletionPolicy != sopsv1alpha1.DeletionPolicyRetain
+	if want == controllerutil.ContainsFinalizer(s, sopsv1alpha1.FinalizerOutputSecret) {
+		return nil
+	}
+	base := s.DeepCopy()
+	if want {
+		controllerutil.AddFinalizer(s, sopsv1alpha1.FinalizerOutputSecret)
+	} else {
+		controllerutil.RemoveFinalizer(s, sopsv1alpha1.FinalizerOutputSecret)
+	}
+	return r.Patch(ctx, s, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// finalize deletes the output Secret of a SopsSecret being deleted with deletionPolicy Delete, as
+// the tenant identity and only when it carries the enabled label, then removes the finalizer. A
+// deletion the tenant may no longer make, for example in a namespace being deleted with its grant,
+// does not block: the finalizer is removed and the Secret is left to the namespace or to the admin.
+func (r *SopsSecretReconciler) finalize(ctx context.Context, s *sopsv1alpha1.SopsSecret) error {
+	if !controllerutil.ContainsFinalizer(s, sopsv1alpha1.FinalizerOutputSecret) {
+		return nil
+	}
+	ref := s.Spec.TenantRef
+	tc, err := r.Identities.ClientFor(ref.Namespace, ref.Name)
+	if err != nil {
+		return err
+	}
+	err = secretwriter.Delete(ctx, tc, s.Namespace, s.Name, managed)
+	if err != nil && !apierrors.IsForbidden(err) && !apierrors.IsNotFound(err) {
+		return err
+	}
+	base := s.DeepCopy()
+	controllerutil.RemoveFinalizer(s, sopsv1alpha1.FinalizerOutputSecret)
+	return client.IgnoreNotFound(r.Patch(ctx, s, client.MergeFrom(base)))
 }

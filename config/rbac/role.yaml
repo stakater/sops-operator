@@ -22,11 +22,18 @@ rules:
   - sops.stakater.com
   resources:
   - sopssecrets
-  - sopstenants
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
+- apiGroups:
+  - sops.stakater.com
+  resources:
+  - sopssecrets/finalizers
+  verbs:
+  - update
 - apiGroups:
   - sops.stakater.com
   resources:
@@ -36,3 +43,11 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - sops.stakater.com
+  resources:
+  - sopstenants
+  verbs:
+  - get
+  - list
+  - watch

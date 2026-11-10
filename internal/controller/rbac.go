@@ -21,7 +21,9 @@ package controller
 // permission on ServiceAccounts: the cluster admin grants it create and impersonate in each
 // tenant namespace (ClusterRole sops-operator-tenant).
 //
-// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopstenants;sopssecrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopstenants,verbs=get;list;watch
+// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopssecrets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=sops.stakater.com,resources=sopssecrets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=sops.stakater.com,resources=sopstenants/status;sopssecrets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 // +kubebuilder:rbac:groups="";events.k8s.io,resources=events,verbs=create;patch

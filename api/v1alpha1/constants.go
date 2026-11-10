@@ -68,6 +68,9 @@ const (
 	// ReservedPrefix is the prefix of the operator's own labels and annotations; a SopsSecret's template
 	// cannot set them.
 	ReservedPrefix = "sops.stakater.com/"
+	// FinalizerOutputSecret on a SopsSecret with deletionPolicy Delete lets the operator delete its output
+	// Secret before the SopsSecret is gone.
+	FinalizerOutputSecret = "sops.stakater.com/output-secret"
 	// AnnotationSopsSecret names the SopsSecret an output Secret was created from. It is an
 	// annotation because object names can be longer than label values allow (63 characters).
 	AnnotationSopsSecret = "sops.stakater.com/sopssecret"

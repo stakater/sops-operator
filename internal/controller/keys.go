@@ -156,7 +156,7 @@ func (r *SopsTenantReconciler) firstKey(ctx context.Context, tc client.Client, t
 	case apierrors.IsForbidden(err):
 		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secrets; " + onboardHint(t), nil
 	case err == nil && !fromSopsSecret(legacy):
-		if !adopted(legacy) && !createdByOperator(legacy) {
+		if !adopted(legacy) {
 			return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("Secret %s/%s is not adopted as the key of this tenant; "+
 				"to use it, add the label %s=%s", legacy.Namespace, legacy.Name, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue), nil
 		}
