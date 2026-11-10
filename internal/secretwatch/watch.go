@@ -76,9 +76,8 @@ func New(configFor func(tenantNamespace, tenant string) *rest.Config) *Watches {
 }
 
 // NewForKeys returns Watches of tenant key Secrets that act as the identity configFor returns. Owners
-// are SopsTenants, watching their own namespace; a changed key Secret <tenant>-sops-keys is reported
-// as the SopsTenant <tenant>, which restores it from its backup. Key backups and output Secrets are
-// ignored.
+// are SopsTenants, watching their own namespace; a changed key Secret <tenant>-sops-keys-<index> is
+// reported as the SopsTenant <tenant>. Output Secrets are ignored.
 func NewForKeys(configFor func(tenantNamespace, tenant string) *rest.Config) *Watches {
 	return newWatches(configFor, sopsTenantOf)
 }
@@ -101,15 +100,21 @@ func sopsSecretOf(m *metav1.PartialObjectMetadata) client.Object {
 	return &sopsv1alpha1.SopsSecret{ObjectMeta: metav1.ObjectMeta{Namespace: m.Namespace, Name: name}}
 }
 
-// sopsTenantOf returns the SopsTenant whose key Secret m is, or nil for a key backup, an output Secret
-// or any other Secret.
+// sopsTenantOf returns the SopsTenant whose key Secret m is, <tenant>-sops-keys-<index> or the v0.0.4
+// <tenant>-sops-keys, or nil for an output Secret or any other Secret.
 func sopsTenantOf(m *metav1.PartialObjectMetadata) client.Object {
-	if _, output := m.Annotations[sopsv1alpha1.AnnotationSopsSecret]; output ||
-		m.Labels[sopsv1alpha1.LabelKeyBackup] == "true" {
+	if _, output := m.Annotations[sopsv1alpha1.AnnotationSopsSecret]; output {
 		return nil
 	}
 	tenant, ok := strings.CutSuffix(m.Name, sopsv1alpha1.KeySecretSuffix)
-	if !ok || tenant == "" {
+	if !ok {
+		i := strings.LastIndex(m.Name, sopsv1alpha1.KeySecretSuffix+"-")
+		if i < 0 || sopsv1alpha1.TenantKeyIndex(m.Name[:i], m.Name) < 0 {
+			return nil
+		}
+		tenant = m.Name[:i]
+	}
+	if tenant == "" {
 		return nil
 	}
 	return &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Namespace: m.Namespace, Name: tenant}}

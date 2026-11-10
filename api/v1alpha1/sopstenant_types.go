@@ -17,13 +17,14 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"time"
+	"strconv"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SopsTenantSpec defines a tenant key. The key is the Secret `<tenant>-sops-keys` in the
-// tenant's namespace.
+// SopsTenantSpec defines a tenant key. Each key is an immutable Secret `<tenant>-sops-keys-<index>`
+// in the tenant's namespace; the highest index is the current key.
 type SopsTenantSpec struct {
 	// GenerateKey generates a post-quantum age key when the key Secret does not exist.
 	// +kubebuilder:default=true
@@ -42,7 +43,8 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
-	// KeySecretName is the Secret in the tenant namespace that holds the tenant's private key, `<tenant>-sops-keys`.
+	// KeySecretName is the Secret in the tenant namespace that holds the current key: the highest
+	// `<tenant>-sops-keys-<index>`.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
 	// +optional
 	KeySecretName string `json:"keySecretName,omitempty"`
@@ -89,24 +91,36 @@ func TenantServiceAccountName(tenant string) string {
 	return tenant + ServiceAccountSuffix
 }
 
-// KeySecretSuffix is appended to a tenant's name to form the name of its key Secret.
+// KeySecretSuffix is appended to a tenant's name to form the name of its key Secrets.
 const KeySecretSuffix = "-sops-keys"
 
-// TenantKeySecretName returns the name of the key Secret of the tenant named tenant.
-func TenantKeySecretName(tenant string) string {
+// TenantKeySecretName returns the name of the key Secret with index of the tenant named tenant:
+// <tenant>-sops-keys-<index>.
+func TenantKeySecretName(tenant string, index int) string {
+	return tenant + KeySecretSuffix + "-" + strconv.Itoa(index)
+}
+
+// LegacyKeySecretName returns the name of the single key Secret of the tenant named tenant up to
+// v0.0.4, <tenant>-sops-keys, which the operator moves into <tenant>-sops-keys-0.
+func LegacyKeySecretName(tenant string) string {
 	return tenant + KeySecretSuffix
 }
 
-// KeyBackupTimeFormat is the UTC timestamp format in the name of a key backup.
-const KeyBackupTimeFormat = "20060102-150405"
-
-// TenantKeyBackupName returns the name of the key backup of the tenant named tenant written at at:
-// <tenant>-sops-keys-<YYYYMMDD-HHMMSS> in UTC.
-func TenantKeyBackupName(tenant string, at time.Time) string {
-	return TenantKeySecretName(tenant) + "-" + at.UTC().Format(KeyBackupTimeFormat)
+// TenantKeyIndex returns the index of the key Secret name of the tenant named tenant, or -1 when name
+// is not <tenant>-sops-keys-<index> with a decimal index without leading zeros.
+func TenantKeyIndex(tenant, name string) int {
+	digits, ok := strings.CutPrefix(name, tenant+KeySecretSuffix+"-")
+	if !ok || digits == "" || len(digits) > 1 && digits[0] == '0' {
+		return -1
+	}
+	index, err := strconv.Atoi(digits)
+	if err != nil || index < 0 || strconv.Itoa(index) != digits {
+		return -1
+	}
+	return index
 }
 
-// ShouldGenerateKey reports whether a missing key Secret should be generated.
+// ShouldGenerateKey reports whether the operator generates the tenant's first key.
 func (t *SopsTenant) ShouldGenerateKey() bool {
 	return t.Spec.GenerateKey == nil || *t.Spec.GenerateKey
 }

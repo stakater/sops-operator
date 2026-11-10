@@ -38,7 +38,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
-	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/identity"
 	"github.com/stakater/sops-operator/internal/secretwatch"
 )
@@ -55,8 +54,6 @@ type SopsTenantReconciler struct {
 	Watches        *secretwatch.Watches
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
-	// Now is the clock of key backup names; time.Now when nil.
-	Now func() time.Time
 }
 
 // Reconcile implements reconcile.Reconciler.
@@ -72,6 +69,8 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.release(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
+	// The current key is reported only when this reconcile finds it; no earlier value survives.
+	tenant.Status.PublicKey, tenant.Status.KeySecretName = "", ""
 	reason, message, err := r.ensureServiceAccount(ctx, &tenant)
 	if err == nil && reason == "" {
 		reason, message, err = r.reconcileKey(ctx, &tenant)
@@ -96,20 +95,12 @@ func (r *SopsTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	tenant.Status.ObservedGeneration = tenant.Generation
 	tenant.Status.ServiceAccountName = sopsv1alpha1.TenantServiceAccountName(tenant.Name)
-	tenant.Status.KeySecretName = sopsv1alpha1.TenantKeySecretName(tenant.Name)
 	tenant.Status.UsedBy = int32(len(users.Items))
 	if err := r.Status().Update(ctx, &tenant); err != nil {
 		return ctrl.Result{}, err
 	}
 	r.watchKey(ctx, &tenant, reason)
 	return ctrl.Result{RequeueAfter: r.ResyncInterval}, nil
-}
-
-func (r *SopsTenantReconciler) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
 }
 
 // watchKey holds the watch of the key Secret while the tenant identity may read it, and releases it
@@ -163,30 +154,9 @@ func (r *SopsTenantReconciler) ensureServiceAccount(ctx context.Context, t *sops
 	return "", "", fmt.Errorf("create ServiceAccount %s/%s: %w", sa.Namespace, sa.Name, err)
 }
 
-// adoptKey checks that the key Secret key is enabled for the operator. A key Secret the operator
-// generated before key Secrets carried the label is marked; any other unmarked Secret is refused with
-// KeyMissing naming the label a tenant admin adds to adopt it.
-func adoptKey(ctx context.Context, tc client.Client, key *corev1.Secret) (string, string, error) {
-	if adopted(key) {
-		return "", "", nil
-	}
-	if !createdByOperator(key) {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("Secret %s/%s is not adopted as the key of this tenant; "+
-			"to use it, add the label %s=%s", key.Namespace, key.Name, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue), nil
-	}
-	if key.Labels == nil {
-		key.Labels = map[string]string{}
-	}
-	key.Labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue
-	if err := tc.Update(ctx, key); err != nil {
-		return "", "", fmt.Errorf("label key Secret %s/%s: %w", key.Namespace, key.Name, err)
-	}
-	return "", "", nil
-}
-
 // adopted reports whether the key Secret s is enabled for the operator and is no output Secret of a
-// SopsSecret, which is enabled too but carries an annotation and usually an owner. The tenant follows
-// from the Secret's name and namespace.
+// SopsSecret, which is enabled too but carries an annotation and usually an owner. The tenant and the
+// key's index follow from the Secret's name and namespace.
 func adopted(s *corev1.Secret) bool {
 	return s.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue && !fromSopsSecret(s)
 }
@@ -203,136 +173,12 @@ func fromSopsSecret(s *corev1.Secret) bool {
 	return annotated || len(s.OwnerReferences) != 0
 }
 
-// backupLabels are the labels of a key backup: those of a key Secret and the backup label.
-func backupLabels() map[string]string {
-	labels := keyLabels()
-	labels[sopsv1alpha1.LabelKeyBackup] = "true"
-	return labels
-}
-
 // keyLabels are the labels of a key Secret the operator creates.
 func keyLabels() map[string]string {
 	return map[string]string{
 		sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
 		sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
 	}
-}
-
-// reconcileKey returns the Ready reason and message for the tenant key. It decides from objects only,
-// never from the tenant's status: the key Secret, its backups and the SopsSecrets of the tenant. With a
-// backup, the key Secret holds the newest backup's key: a deleted or changed key Secret, or one that
-// lost the enabled label, is restored from it. Without a backup, a valid key Secret is backed up. A key
-// is generated only when there is no key Secret, no backup and no SopsSecret of the tenant.
-func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
-	// The public key is reported only for a key this reconcile loaded; no earlier value survives.
-	t.Status.PublicKey = ""
-	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
-	if err != nil {
-		return "", "", err
-	}
-	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
-	key := &corev1.Secret{}
-	err = tc.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: keyName}, key)
-	switch {
-	case apierrors.IsNotFound(err):
-		key = nil
-	case apierrors.IsForbidden(err):
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot read its key Secret; " + onboardHint(t), nil
-	case err != nil:
-		return "", "", err
-	}
-	backups, err := listBackups(ctx, tc, t)
-	if apierrors.IsForbidden(err) {
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot list its key backups; " + onboardHint(t), nil
-	}
-	if err != nil {
-		return "", "", err
-	}
-	if key != nil && fromSopsSecret(key) {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("Secret %s/%s is the output Secret of a SopsSecret, not a key",
-			t.Namespace, keyName), nil
-	}
-	if len(backups) > 0 {
-		newest := &backups[len(backups)-1]
-		if key == nil || needsRestore(key, newest) {
-			return r.restoreKey(ctx, tc, t, key, newest)
-		}
-		t.Status.PublicKey = newest.Annotations[sopsv1alpha1.AnnotationPublicKey]
-		return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
-	}
-	if key == nil {
-		return r.generateKey(ctx, tc, t)
-	}
-	if reason, message, err := adoptKey(ctx, tc, key); reason != "" || err != nil {
-		return reason, message, err
-	}
-	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-	if err != nil {
-		return sopsv1alpha1.ReasonKeyInvalid, err.Error(), nil
-	}
-	if _, err := r.ensureBackup(ctx, tc, t, backups, key.Data[crypto.KeyFileField], keys.Recipients[0]); err != nil {
-		return "", "", err
-	}
-	t.Status.PublicKey = keys.Recipients[0]
-	return sopsv1alpha1.ReasonKeyLoaded, "key loaded", nil
-}
-
-// restoreKey writes the key of backup from into the key Secret, which is nil when it is missing.
-func (r *SopsTenantReconciler) restoreKey(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant,
-	key, from *corev1.Secret) (string, string, error) {
-	recipient, err := writeKey(ctx, tc, t, key, from)
-	if apierrors.IsForbidden(err) {
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot restore its key Secret; " + onboardHint(t), nil
-	}
-	if err != nil {
-		return "", "", err
-	}
-	t.Status.PublicKey = recipient
-	r.Recorder.Eventf(t, nil, corev1.EventTypeWarning, sopsv1alpha1.ReasonKeyRestored, sopsv1alpha1.ActionRestoreKey,
-		"restored the key in Secret %s from backup %s", sopsv1alpha1.TenantKeySecretName(t.Name), from.Name)
-	return sopsv1alpha1.ReasonKeyLoaded, "key restored from backup " + from.Name, nil
-}
-
-// generateKey generates the key of a tenant that has neither a key Secret nor a backup. It writes the
-// backup first and then the key Secret, so a key that exists anywhere is never generated again. While
-// SopsSecrets of the tenant exist, a key existed and their files need it: no key is generated. They are
-// read uncached, so a cache that has not synced yet cannot hide them.
-func (r *SopsTenantReconciler) generateKey(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant) (string, string, error) {
-	keyName := sopsv1alpha1.TenantKeySecretName(t.Name)
-	if !t.ShouldGenerateKey() {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s not found and generateKey is false", t.Namespace, keyName), nil
-	}
-	users, err := r.liveUsers(ctx, t)
-	if err != nil {
-		return "", "", err
-	}
-	if users > 0 {
-		return sopsv1alpha1.ReasonKeyMissing, fmt.Sprintf("key Secret %s/%s and its backups not found, and %d SopsSecrets "+
-			"use this tenant: a new key would decrypt none of their files; restore the key Secret or a backup",
-			t.Namespace, keyName, users), nil
-	}
-	keyFile, recipient, err := crypto.GenerateKeyFile()
-	if err != nil {
-		return "", "", err
-	}
-	backup, err := r.ensureBackup(ctx, tc, t, nil, keyFile, recipient)
-	if apierrors.IsForbidden(err) {
-		return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot create its key backup; " + onboardHint(t), nil
-	}
-	if err != nil {
-		return "", "", err
-	}
-	if _, err := writeKey(ctx, tc, t, nil, backup); err != nil {
-		if apierrors.IsForbidden(err) {
-			return sopsv1alpha1.ReasonAccessDenied, "the tenant identity cannot create its key Secret; " + onboardHint(t), nil
-		}
-		// AlreadyExists: a key Secret appeared since the read; the next reconcile restores the backup over it.
-		return "", "", err
-	}
-	t.Status.PublicKey = recipient
-	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonKeyGenerated, sopsv1alpha1.ActionGenerateKey,
-		"generated a post-quantum key in Secret %s", keyName)
-	return sopsv1alpha1.ReasonKeyGenerated, "generated a post-quantum key", nil
 }
 
 // liveUsers counts the SopsSecrets of tenant t, read uncached. Field indexes do not exist on the

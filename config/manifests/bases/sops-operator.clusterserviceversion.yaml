@@ -92,7 +92,9 @@ spec:
             path: conditions
             x-descriptors:
               - urn:alm:descriptor:io.kubernetes.conditions
-          - description: KeySecretName is the Secret in the tenant namespace that holds the tenant's private key, `<tenant>-sops-keys`.
+          - description: |-
+              KeySecretName is the Secret in the tenant namespace that holds the current key: the highest
+              `<tenant>-sops-keys-<index>`.
             displayName: Key Secret
             path: keySecretName
             x-descriptors:

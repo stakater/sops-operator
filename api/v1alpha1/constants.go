@@ -28,14 +28,9 @@ const (
 	ReasonAccessDenied = "AccessDenied"
 )
 
-// ReasonKeyRestored is the reason of the Warning event recorded when the operator restores the key
-// Secret from a key backup.
-const ReasonKeyRestored = "KeyRestored"
-
-// Event actions of the tenant key: generation and restore from a backup.
+// Event actions of the tenant key.
 const (
 	ActionGenerateKey = "GenerateKey"
-	ActionRestoreKey  = "RestoreKey"
 )
 
 // SopsSecret Ready reasons. ReasonAccessDenied is shared with SopsTenant.
@@ -76,9 +71,4 @@ const (
 	// AnnotationSopsSecret names the SopsSecret an output Secret was created from. It is an
 	// annotation because object names can be longer than label values allow (63 characters).
 	AnnotationSopsSecret = "sops.stakater.com/sopssecret"
-	// LabelKeyBackup set to "true" marks an immutable backup of a tenant key,
-	// <tenant>-sops-keys-<YYYYMMDD-HHMMSS>.
-	LabelKeyBackup = "sops.stakater.com/key-backup"
-	// AnnotationPublicKey on a key backup holds the public key of the key it holds.
-	AnnotationPublicKey = "sops.stakater.com/public-key"
 )

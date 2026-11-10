@@ -133,9 +133,6 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 		}
 		return outcome{}, err
 	}
-	if clash, err := r.keySecretName(ctx, s); err != nil || clash != "" {
-		return outcome{reason: sopsv1alpha1.ReasonConflict, message: clash}, err
-	}
 
 	allowed, err := identity.CanReconcileSecrets(ctx, r.Client, ref.Namespace, ref.Name, s.Namespace)
 	if err != nil {
@@ -149,20 +146,17 @@ func (r *SopsSecretReconciler) sync(ctx context.Context, s *sopsv1alpha1.SopsSec
 	if err != nil {
 		return outcome{}, err
 	}
-	var key corev1.Secret
-	if err := tc.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: sopsv1alpha1.TenantKeySecretName(ref.Name)}, &key); err != nil {
-		if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
-			return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is not readable", tenantName)}, nil
-		}
+	keySecrets, err := listKeys(ctx, tc, &tenant)
+	if apierrors.IsForbidden(err) {
+		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is not readable", tenantName)}, nil
+	}
+	if err != nil {
 		return outcome{}, err
 	}
-	if !adopted(&key) {
-		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key Secret of tenant %s is not "+
-			"labelled %s=%s", tenantName, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)}, nil
-	}
-	keys, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
-	if err != nil {
-		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("key of tenant %s is invalid", tenantName)}, nil
+	keys := usableKeys(keySecrets)
+	if keys == nil {
+		return outcome{reason: sopsv1alpha1.ReasonTenantNotReady, message: fmt.Sprintf("tenant %s has no key Secret "+
+			"labelled %s=%s that holds a valid key", tenantName, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)}, nil
 	}
 
 	doc, err := document.Canonical(s)
@@ -213,22 +207,6 @@ func ownsSecret(s *sopsv1alpha1.SopsSecret, m *metav1.PartialObjectMetadata) boo
 	return m.Labels[sopsv1alpha1.LabelEnabled] == sopsv1alpha1.EnabledValue ||
 		m.Labels[sopsv1alpha1.LabelManagedBy] == sopsv1alpha1.ManagedByValue &&
 			m.Annotations[sopsv1alpha1.AnnotationSopsSecret] == s.Name
-}
-
-// keySecretName returns a Conflict message when the SopsSecret's name is that of the key Secret, or
-// of a key backup, of a SopsTenant in its namespace: its output Secret would be the tenant's key.
-func (r *SopsSecretReconciler) keySecretName(ctx context.Context, s *sopsv1alpha1.SopsSecret) (string, error) {
-	var tenants sopsv1alpha1.SopsTenantList
-	if err := r.List(ctx, &tenants, client.InNamespace(s.Namespace)); err != nil {
-		return "", err
-	}
-	for _, t := range tenants.Items {
-		key := sopsv1alpha1.TenantKeySecretName(t.Name)
-		if s.Name == key || strings.HasPrefix(s.Name, key+"-") {
-			return fmt.Sprintf("the name %s is reserved for the key of SopsTenant %s/%s", s.Name, t.Namespace, t.Name), nil
-		}
-	}
-	return "", nil
 }
 
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
