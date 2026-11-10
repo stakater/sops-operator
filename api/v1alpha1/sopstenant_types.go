@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+// SopsTenantSpec defines a tenant key. The key is the Secret <tenant>-sops-keys in the
 // tenant's namespace.
 type SopsTenantSpec struct {
 	// GenerateKey generates a post-quantum age key when the key Secret does not exist.

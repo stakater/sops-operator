@@ -72,7 +72,7 @@ scripts/encrypt.sh environments/stage/team-a/db-credentials.sops.yaml
 Encrypted environments/stage/team-a/db-credentials.sops.yaml
 ```
 
-The script sets `spec.scope` to `<namespace>/<name>`, sorts the keys and runs `sops encrypt`. Each step is
+The script sets `spec.scope` to `<namespace>/<name>` (a scope already in the file is kept), sorts the keys and runs `sops encrypt`. Each step is
 explained in the script.
 
 **Step 3.** Check that the values are encrypted. Every value starts with `ENC[`:

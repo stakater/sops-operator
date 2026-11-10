@@ -317,7 +317,7 @@ creation_rules:
       - age1pq1...   # team-a
 ```
 
-To use an existing key, create the Secret `team-a-system/team-a` with your identity in `age.agekey` first, and
+To use an existing key, create the Secret `team-a-system/team-a-sops-keys` with your identity in `age.agekey` first, and
 set `generateKey: false`.
 
 ### 4. Write and encrypt a secret (developer)
@@ -344,6 +344,8 @@ yq -i 'sort_keys(..)' team-a-foo/db-credentials.sops.yaml
 sops encrypt -i team-a-foo/db-credentials.sops.yaml
 git add team-a-foo/db-credentials.sops.yaml && git commit -m "Add database credentials"
 ```
+
+[`scripts/encrypt.sh`](scripts/README.md) runs these steps for you and keeps a scope already in the file.
 
 Once your GitOps tool applies the file:
 
@@ -437,15 +439,18 @@ vulnerability, open a private
 
 ## Development
 
-Requirements: Go 1.25, Docker (or Colima), and `make`. All other tools (operator-sdk, opm, kind, kustomize, sops,
-yq, golangci-lint) are pinned in the Makefile and installed into `bin/`.
+Requirements: Go 1.26, Docker (or Colima), and `make`. All other tools (operator-sdk, opm, kind, kustomize,
+controller-gen, setup-envtest, sops, yq, age-keygen, golangci-lint) are pinned in the Makefile and installed into `bin/`.
 
 ```bash
 make test               # unit and envtest tests with the RBAC authorizer
 make lint
+make test-scripts       # scripts/encrypt.sh with a throwaway key, no cluster
+make lint-scripts       # shellcheck on scripts/ (shellcheck must be installed)
 make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
 make test-upgrade       # upgrade paths through catalog/channels.yaml: published bundles, then this build
 make scorecard          # operator-sdk scorecard against the bundle
+make cleanup-test-e2e   # remove the e2e kind cluster
 ```
 
 Install from source on a cluster of your choice:

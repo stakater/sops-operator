@@ -51,7 +51,7 @@ spec:
             type: object
           spec:
             description: |-
-              SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+              SopsTenantSpec defines a tenant key. The key is the Secret <tenant>-sops-keys in the
               tenant's namespace.
             properties:
               generateKey:
