@@ -31,6 +31,19 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 # -catalog, e.g. ghcr.io/stakater/sops-operator-bundle:v$(VERSION).
 IMAGE_TAG_BASE ?= $(DOCKER_REPO_BASE)/$(OPERATOR_NAME)
 
+# TAG names the images of one build: the only difference between a local build, tagged dev-<time> by
+# default, and a pull request build, which CI tags pr-<number>-<sha7>. The version comes from
+# catalog/channels.yaml (CHANNEL_VERSION below).
+ifeq ($(origin TAG),undefined)
+TAG := dev-$(shell date +%s)
+endif
+export TAG
+OPERATOR_REF = $(IMAGE_TAG_BASE):$(TAG)
+BUNDLE_REF = $(IMAGE_TAG_BASE)-bundle:$(TAG)
+CATALOG_REF = $(IMAGE_TAG_BASE)-catalog:$(TAG)
+# Where make images saves the three images.
+IMAGES_DIR ?= $(LOCALBIN)/images/$(TAG)
+
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
@@ -127,13 +140,6 @@ REGISTRY_NAME ?= sops-operator-registry
 REGISTRY_PORT ?= 5011
 E2E_KUBECONFIG = $(LOCALBIN)/kubeconfig-$(KIND_CLUSTER)
 E2E_REGISTRY ?= localhost:$(REGISTRY_PORT)
-# A new tag per run so OLM never reuses a cached catalog or bundle.
-E2E_TAG := e2e-$(shell date +%s)
-# Set to an operator image that already exists locally (e.g. built in CI) to skip the build.
-E2E_OPERATOR_IMG ?=
-# Channels file of the e2e catalog; test-upgrade passes catalog/channels.yaml.
-E2E_CATALOG_CHANNELS ?= $(LOCALBIN)/e2e-channels.yaml
-
 .PHONY: setup-test-e2e
 setup-test-e2e: kind operator-sdk ## Kind cluster with a local registry (localhost:$(REGISTRY_PORT)) and OLM, for e2e tests and scorecard.
 	hack/kind-with-registry.sh $(KIND) $(KIND_CLUSTER) $(KIND_NODE_IMAGE) $(REGISTRY_IMAGE) $(REGISTRY_NAME) $(REGISTRY_PORT)
@@ -141,43 +147,46 @@ setup-test-e2e: kind operator-sdk ## Kind cluster with a local registry (localho
 	KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
 		|| KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
 
-# Directory pr-images saves the operator, bundle and catalog images of a pull request to.
-PR_IMAGES_DIR ?= $(LOCALBIN)/pr-images
+# The version this build stands in for: the highest version catalog/channels.yaml lists, the version a
+# pull request releases. Its bundle is the pre-release BUILD_VERSION, never a release's name or version.
+CHANNEL_VERSION = $(shell $(YQ) ea 'select(.schema == "olm.channel") | .entries[].name' $(CATALOG_DIR_PATH)/channels.yaml \
+	| grep -v '^---$$' | sed 's/^$(OPERATOR_NAME)\.v//' | sort -uV | tail -n1)
+BUILD_VERSION = $(CHANNEL_VERSION)-$(TAG)
+# catalog/channels.yaml with this build in place of CHANNEL_VERSION; the file itself is never changed.
+BUILD_CHANNELS = $(LOCALBIN)/channels-$(TAG).yaml
 
-.PHONY: pr-images
-pr-images: opm yq kustomize operator-sdk ## Build the bundle (version VERSION-PR_SUFFIX) and catalog images of a pull request for OPERATOR_IMG, to be pushed as OPERATOR_REF and BUNDLE_REF; save all three to PR_IMAGES_DIR.
-	OPERATOR_IMG=$(OPERATOR_IMG) OPERATOR_REF=$(OPERATOR_REF) BUNDLE_REF=$(BUNDLE_REF) OUT=$(PR_IMAGES_DIR) \
-		REGISTRY_IMAGE=$(REGISTRY_IMAGE) VERSION=$(VERSION) PR_SUFFIX=$(PR_SUFFIX) OPERATOR_NAME=$(OPERATOR_NAME) \
-		CATALOG_DIR=$(CATALOG_DIR_PATH) MAKE="$(MAKE)" YQ=$(YQ) hack/pr-images.sh
+.PHONY: images
+images: opm yq kustomize operator-sdk ## Build the operator, bundle and catalog images of TAG under their GHCR names and save them to IMAGES_DIR.
+	$(CONTAINER_TOOL) image inspect $(OPERATOR_REF) >/dev/null 2>&1 || $(MAKE) docker-build IMG=$(OPERATOR_REF)
+	$(MAKE) bundle VERSION=$(BUILD_VERSION) IMG=$(OPERATOR_REF)
+	$(MAKE) bundle-build BUNDLE_IMG=$(BUNDLE_REF)
+	RELEASE=$(OPERATOR_NAME).v$(CHANNEL_VERSION) BUILD=$(OPERATOR_NAME).v$(BUILD_VERSION) $(YQ) \
+		'(.. | select(tag == "!!str" and . == strenv(RELEASE))) = strenv(BUILD)' $(CATALOG_DIR_PATH)/channels.yaml \
+		> $(BUILD_CHANNELS)
+	$(MAKE) catalog-render VERSION=$(BUILD_VERSION) CATALOG_CHANNELS=$(BUILD_CHANNELS) BUNDLE_IMG=$(BUNDLE_REF) BUNDLE_DIR=bundle
+	$(MAKE) catalog-build CATALOG_IMG=$(CATALOG_REF)
+	mkdir -p $(IMAGES_DIR)
+	$(CONTAINER_TOOL) save $(OPERATOR_REF) -o $(IMAGES_DIR)/operator.tar
+	$(CONTAINER_TOOL) save $(BUNDLE_REF) -o $(IMAGES_DIR)/bundle.tar
+	$(CONTAINER_TOOL) save $(CATALOG_REF) -o $(IMAGES_DIR)/catalog.tar
 
 .PHONY: e2e-images
-e2e-images: opm yq kustomize operator-sdk ## Build and push the operator, bundle and catalog images for the e2e run to E2E_REGISTRY.
-ifeq ($(E2E_OPERATOR_IMG),)
-	$(CONTAINER_TOOL) build -t $(E2E_REGISTRY)/sops-operator:$(E2E_TAG) .
-else
-	$(CONTAINER_TOOL) tag $(E2E_OPERATOR_IMG) $(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
-endif
-	$(CONTAINER_TOOL) push $(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
-	$(MAKE) bundle IMG=$(E2E_REGISTRY)/sops-operator:$(E2E_TAG)
-	$(MAKE) bundle-build bundle-push BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG)
-	@# By default the catalog lists only this bundle (a fresh install of this build, whatever
-	@# catalog/channels.yaml promotes); test-upgrade renders the real channel graph instead.
-	printf 'schema: olm.channel\npackage: $(OPERATOR_NAME)\nname: alpha\nentries:\n  - name: $(OPERATOR_NAME).v$(VERSION)\n' \
-		> $(LOCALBIN)/e2e-channels.yaml
-	$(MAKE) catalog-render CATALOG_CHANNELS=$(E2E_CATALOG_CHANNELS) \
-		BUNDLE_IMG=$(E2E_REGISTRY)/sops-operator-bundle:$(E2E_TAG) BUNDLE_IMG_RENDER_FLAGS=--use-http
-	$(MAKE) catalog-build catalog-push CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG)
+e2e-images: ## Load the images of TAG from IMAGES_DIR (built first when missing) into the kind registry, which the cluster uses as a mirror of ghcr.io.
+	@test -f $(IMAGES_DIR)/catalog.tar || $(MAKE) images
+	for kind in operator bundle catalog; do $(CONTAINER_TOOL) load -i $(IMAGES_DIR)/$$kind.tar; done
+	for ref in $(OPERATOR_REF) $(BUNDLE_REF) $(CATALOG_REF); do \
+		$(CONTAINER_TOOL) tag $$ref $(E2E_REGISTRY)/$${ref#*/} && $(CONTAINER_TOOL) push $(E2E_REGISTRY)/$${ref#*/}; \
+	done
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the operator installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
-	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) \
+test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the images of TAG installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
+	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(CATALOG_REF) \
 		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update) \
 		$(if $(E2E_RUN),-run '$(E2E_RUN)')
 
 .PHONY: test-upgrade
-test-upgrade: setup-test-e2e ## Run the upgrade paths of test/e2e/upgrade_test.go through the real channel graph (published bundles + this build).
-	$(MAKE) e2e-images E2E_TAG=$(E2E_TAG) E2E_CATALOG_CHANNELS=$(CATALOG_DIR_PATH)/channels.yaml
-	KIND_CLUSTER=$(KIND_CLUSTER) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) E2E_UPGRADE=true \
+test-upgrade: setup-test-e2e e2e-images ## Run the upgrade paths of test/e2e/upgrade_test.go through the catalog of TAG (published bundles + this build).
+	KIND_CLUSTER=$(KIND_CLUSTER) E2E_CATALOG_IMG=$(CATALOG_REF) E2E_UPGRADE=true \
 		go test ./test/e2e/ -v -count=1 -timeout 30m -run '^TestUpgrade$$'
 
 .PHONY: cleanup-test-e2e
@@ -366,7 +375,7 @@ CATALOG_CHANNELS ?= $(CATALOG_DIR_PATH)/channels.yaml
 
 .PHONY: catalog-render
 catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
-	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) \
+	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) BUNDLE_DIR=$(BUNDLE_DIR) \
 		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) BUNDLE_IMG_RENDER_FLAGS="$(BUNDLE_IMG_RENDER_FLAGS)" \
 		hack/generate-catalog-index.sh
 

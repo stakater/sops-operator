@@ -7,7 +7,8 @@
 #
 # Environment: CATALOG_DIR, CHANNELS (channels file; default $CATALOG_DIR/channels.yaml), VERSION, BUNDLE_REPO (published bundles, tagged vX.Y.Z), BUNDLE_IMG
 # (bundle for VERSION; default $BUNDLE_REPO:v$VERSION), ICON, OPM, YQ, BUNDLE_IMG_RENDER_FLAGS (opm render flags for BUNDLE_IMG only,
-# e.g. --use-http for a local test registry; published bundles are always pulled over TLS).
+# e.g. --use-http for a local test registry; published bundles are always pulled over TLS), BUNDLE_DIR (optional:
+# render the bundle for VERSION from this directory instead of pulling BUNDLE_IMG, and reference it as BUNDLE_IMG).
 set -euo pipefail
 
 : "${CATALOG_DIR:?}" "${VERSION:?}" "${BUNDLE_REPO:?}" "${ICON:?}"
@@ -50,6 +51,13 @@ for entry in ${entries}; do
   [ "${version}" = "${VERSION}" ] && ref="${BUNDLE_IMG}" && flags=${BUNDLE_IMG_RENDER_FLAGS:-}
   # One file per bundle: yq joins them as separate documents whether or not opm starts its
   # output with a separator; concatenated output would merge bundles or leave empty documents.
+  if [ "${version}" = "${VERSION}" ] && [ -n "${BUNDLE_DIR:-}" ]; then
+    # A directory renders without an image: reference it as BUNDLE_IMG, as a render of the image does.
+    "${OPM}" render "${BUNDLE_DIR}" --output=yaml | IMG="${BUNDLE_IMG}" "${YQ}" \
+      '.image = strenv(IMG) | .relatedImages += [{"image": strenv(IMG), "name": ""}]' > "${bundles}/${entry}.yaml"
+    echo "rendered ${BUNDLE_DIR} as ${BUNDLE_IMG}"
+    continue
+  fi
   # shellcheck disable=SC2086 # flags holds separate flags
   env ${opm_env[@]+"${opm_env[@]}"} "${OPM}" render "${ref}" --output=yaml ${flags} > "${bundles}/${entry}.yaml"
   echo "rendered ${ref}"

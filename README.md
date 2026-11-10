@@ -628,9 +628,11 @@ bin/kustomize build config/default | sed 's#controller:latest#<registry>/sops-op
 kubectl --context <context> apply --server-side -k config/tenant-rbac
 ```
 
-Every pull request publishes its operator, bundle and catalog images, tagged `pr-<number>-<sha7>`. Its bundle is the
-pre-release `<version>-pr.<number>.<sha7>`, and its catalog is the release catalog with that bundle in place of the
-version the pull request releases. To install a pull request build through OLM, add its catalog:
+Every pull request builds its operator, bundle and catalog images once (`make images TAG=pr-<number>-<sha7>`), tests
+them on kind and publishes them with that tag. A pull request documents the version it releases in
+[`catalog/channels.yaml`](catalog/channels.yaml), with the version it replaces. Its bundle is the pre-release
+`<version>-<tag>`, and its catalog is the release catalog with that bundle in place of the version. To install a pull
+request build through OLM, add its catalog:
 
 ```yaml
 apiVersion: operators.coreos.com/v1alpha1

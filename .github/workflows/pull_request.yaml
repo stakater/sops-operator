@@ -94,46 +94,35 @@ jobs:
 
       # Compile with the Go build cache restored above; inside Docker every dependency would be
       # compiled from scratch. The image only adds the binary to the distroless base.
-      - name: Build
+      - name: Build operator image
         env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager-amd64 cmd/main.go
           docker build --target prebuilt \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${HEAD_SHA}" \
-            -t sops-operator:pr .
-          docker save sops-operator:pr -o "${RUNNER_TEMP}/image.tar"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: image
-          path: ${{ runner.temp }}/image.tar
-          retention-days: 1
-          if-no-files-found: error
+            -t "${IMAGE_REPOSITORY}:pr-${PR_NUMBER}-${HEAD_SHA::7}" .
 
       # kustomize, controller-gen, operator-sdk, opm and yq; all pinned in the Makefile.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: bin
-          key: pr-images-tools-${{ runner.os }}-${{ hashFiles('Makefile', 'hack/bootstrap-tools.sh') }}
+          key: images-tools-${{ runner.os }}-${{ hashFiles('Makefile', 'hack/bootstrap-tools.sh') }}
 
-      # The bundle and catalog are built here, without a write token, for the references the push job
-      # gives the images; the push job only pushes what this job saved.
-      - name: Build bundle and catalog
+      # One operator, bundle and catalog image per pull request commit, built here without a write
+      # token; the e2e job tests them and the push job publishes them unchanged.
+      - name: Build bundle and catalog images
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          tag="pr-${PR_NUMBER}-${HEAD_SHA::7}"
-          make pr-images OPERATOR_IMG=sops-operator:pr OPERATOR_REF="${IMAGE_REPOSITORY}:${tag}" \
-            BUNDLE_REF="${IMAGE_REPOSITORY}-bundle:${tag}" PR_SUFFIX="pr.${PR_NUMBER}.${HEAD_SHA::7}" \
-            PR_IMAGES_DIR="${RUNNER_TEMP}/pr-images"
+        run: make images TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: pr-images
-          path: ${{ runner.temp }}/pr-images
+          name: images
+          path: ${{ runner.temp }}/images
           retention-days: 1
           if-no-files-found: error
 
@@ -160,28 +149,31 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: image
-          path: ${{ runner.temp }}
+          name: images
+          path: ${{ runner.temp }}/images
 
-      # Installs the image built above through OLM, from a catalog with only this build's bundle;
-      # all images go to a registry on the runner only. Resources must match the committed golden
-      # files in test/e2e/testdata (nothing is written without -update).
+      # Installs the build job's images through OLM from their catalog: kind pulls them from a registry
+      # on the runner that mirrors ghcr.io, under the names they are published with. Resources must
+      # match the committed golden files in test/e2e/testdata (nothing is written without -update).
       - name: Run e2e tests
-        run: |
-          docker load -i "${RUNNER_TEMP}/image.tar"
-          make test-e2e E2E_OPERATOR_IMG=sops-operator:pr
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: make test-e2e TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
-      # Upgrades along the real channel graph (catalog/channels.yaml): published bundles from GHCR,
-      # this build as VERSION. Runs on every pull request, since any change ships in the next upgrade.
+      # Upgrades along the channel graph of the same catalog: published bundles from GHCR, this build
+      # in place of VERSION. Runs on every pull request, since any change ships in the next upgrade.
       - name: Run upgrade tests
-        run: make test-upgrade E2E_OPERATOR_IMG=sops-operator:pr
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: make test-upgrade TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
       - name: Scorecard
         run: make scorecard
 
-  # The only job with a write token. It runs no code from the pull request: it re-tags the tested
-  # operator image and the bundle and catalog built for it under a tag computed here, and pushes
-  # only that tag.
+  # The only job with a write token. It runs no code from the pull request: it pushes the three
+  # images the build job saved and the e2e job tested, under the tag computed here.
   push:
     name: Push images
     needs: e2e
@@ -191,8 +183,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: pr-images
-          path: ${{ runner.temp }}/pr-images
+          name: images
+          path: ${{ runner.temp }}/images
 
       - name: Push to GHCR
         env:
@@ -204,14 +196,10 @@ jobs:
           tag="pr-${PR_NUMBER}-${HEAD_SHA::7}"
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           for kind in operator bundle catalog; do
-            docker load -i "${RUNNER_TEMP}/pr-images/${kind}.tar"
+            docker load -i "${RUNNER_TEMP}/images/${kind}.tar"
           done
-          for pair in "sops-operator:pr ${IMAGE_REPOSITORY}:${tag}" \
-            "sops-operator-bundle:pr ${IMAGE_REPOSITORY}-bundle:${tag}" \
-            "sops-operator-catalog:pr ${IMAGE_REPOSITORY}-catalog:${tag}"; do
-            read -r src dst <<<"${pair}"
-            docker tag "${src}" "${dst}"
-            docker push "${dst}"
-            echo "Pushed ${dst}" >> "${GITHUB_STEP_SUMMARY}"
+          for image in "${IMAGE_REPOSITORY}" "${IMAGE_REPOSITORY}-bundle" "${IMAGE_REPOSITORY}-catalog"; do
+            docker push "${image}:${tag}"
+            echo "Pushed ${image}:${tag}" >> "${GITHUB_STEP_SUMMARY}"
           done
           docker logout ghcr.io
