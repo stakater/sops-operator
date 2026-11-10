@@ -104,6 +104,7 @@ jobs:
       - name: Find the next version
         id: version
         run: |
+          make yq
           tag=$(make -s next-version)
           [ -n "${tag}" ] || { echo "::error::catalog/channels.yaml lists no new version: add the version this pull request releases and the version it replaces"; exit 1; }
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"

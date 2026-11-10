@@ -56,6 +56,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          make yq
           version=$(make -s next-version)
           docker logout ghcr.io
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
