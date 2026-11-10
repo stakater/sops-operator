@@ -50,8 +50,7 @@ import (
 // key Secret only as the tenant identity.
 type SopsTenantReconciler struct {
 	client.Client
-	// APIReader reads SopsSecrets uncached for the decision to complete or abandon a rotation; Client
-	// is used when nil.
+	// APIReader reads SopsSecrets uncached for the decision to complete or abandon a rotation.
 	APIReader  client.Reader
 	Identities *identity.Factory
 	// Watches, when set, watches the key Secret as the tenant identity, so a deleted or changed key is
@@ -59,7 +58,7 @@ type SopsTenantReconciler struct {
 	Watches        *secretwatch.Watches
 	Recorder       events.EventRecorder
 	ResyncInterval time.Duration
-	// Now is the clock of the key backup names; time.Now when nil.
+	// Now is the clock of key backup names and rotation timestamps; time.Now when nil.
 	Now func() time.Time
 }
 
@@ -205,6 +204,13 @@ func createdByOperator(s *corev1.Secret) bool {
 func fromSopsSecret(s *corev1.Secret) bool {
 	_, annotated := s.Annotations[sopsv1alpha1.AnnotationSopsSecret]
 	return annotated || len(s.OwnerReferences) != 0
+}
+
+// backupLabels are the labels of a key backup: those of a key Secret and the backup label.
+func backupLabels() map[string]string {
+	labels := keyLabels()
+	labels[sopsv1alpha1.LabelKeyBackup] = "true"
+	return labels
 }
 
 // keyLabels are the labels of a key Secret the operator creates.

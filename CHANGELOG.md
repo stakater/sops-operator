@@ -54,6 +54,9 @@ they are marked **Breaking** with the steps to take.
 - Every Secret the operator manages (output Secrets, key Secrets and key backups) carries the label
   `sops.stakater.com/enabled: "true"`. Labels and annotations starting with `sops.stakater.com/` in a
   `SopsSecret`'s `spec.template.metadata` are dropped.
+- Labels and annotations in `spec.template.metadata` are copied as written. `argocd.argoproj.io/`,
+  `kustomize.toolkit.fluxcd.io/` and `helm.toolkit.fluxcd.io/` keys in the template are no longer dropped; the
+  `SopsSecret`'s own labels and annotations, where GitOps tools put their tracking keys, are still never copied.
 - `sops-key-owner` also grants `list`, `watch`, `update` and `delete` on Secrets in the tenant namespace, for key
   backups, the key watch, restores and rotations. Existing bindings need no change.
 - `AccessDenied` on a `SopsSecret` names the ClusterRole to bind and the Secret verbs it needs.

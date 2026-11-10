@@ -337,7 +337,7 @@ status:
 | `spec.tenantRef` | yes | Tenant whose key decrypts this file. |
 | `spec.scope` | yes | **Encrypted** `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
 | `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
-| `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels and annotations are not copied. Keys starting with `sops.stakater.com/` or a GitOps tracking prefix are dropped. |
+| `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). Copied as written; the `SopsSecret`'s own labels and annotations are not copied. Keys starting with `sops.stakater.com/` are dropped. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
 | `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
 | `status.rotation` | — | During a key rotation of the tenant: the `sops.age` entry for the new key (`newRecipient`, made for `fromGeneration`), and whether the current generation decrypted with the new key (`migrated`, `migratedGeneration`) or was accepted with the old key (`acceptedGeneration`) (§4.5). |
@@ -353,10 +353,10 @@ Behaviour:
 
 - The operator manages only Secrets **it created**. A pre-existing Secret with the same name is a `Conflict`.
 - With `deletionPolicy: Delete`, output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as
-  children; `blockOwnerDeletion` is not set). Output Secrets never carry GitOps tracking labels or annotations
-  (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`, `helm.toolkit.fluxcd.io/*`), not even from the template,
-  so GitOps tools do not claim or prune them. Labels and annotations come only from the template, never from the
-  `SopsSecret` itself: a template is explicit, while inheriting would need a list of every tool's tracking keys.
+  children; `blockOwnerDeletion` is not set). Labels and annotations come only from the template, copied as written,
+  never from the `SopsSecret` itself, so the GitOps tool's tracking labels and annotations on the `SopsSecret` never
+  reach the Secret and the tool does not claim or prune it. A template is explicit; inheriting would need a list of
+  every tool's tracking keys to leave out.
 - `status.secretUID` records the Secret the operator created. Every later write is an update with that UID as a
   precondition. The API server rejects it (`409`) when the Secret is gone or was replaced; the operator then creates
   the Secret, which succeeds if it was deleted and fails with `AlreadyExists` → `Conflict` if someone else's Secret
@@ -766,7 +766,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | User edits or deletes an output Secret or the key Secret | The watch reverts it at once: the output Secret from its `SopsSecret` (D50), the key Secret from its backup (D51). |
 | A `SopsSecret` writes a Secret posing as a key or a key backup | Labels and annotations starting with `sops.stakater.com/` in `spec.template.metadata` are dropped, and an output Secret is never adopted as a key (D49). |
 | Operator compromise reads all Secrets | No Secret RBAC; impersonation only in tenant namespaces that granted it, limited to tenant grants. |
-| GitOps tool prunes output Secrets | Tracking labels never copied; ownerReference to the `SopsSecret`. |
+| GitOps tool prunes output Secrets | Only the template's labels and annotations are copied, not the `SopsSecret`'s own with the tool's tracking keys; ownerReference to the `SopsSecret`. |
 | Plaintext committed to Git | Pre-commit `sops filestatus` / `sops-checker`; documented workflow. |
 
 ### 7.2 Accepted risks
@@ -955,7 +955,7 @@ backup (§4.4). Break-glass recipients allow recovery of every file if a tenant 
 | D19 | No finalizer on `SopsTenant`; no ownerReference on the key | The key must survive tenant deletion; recreating the tenant reuses it. |
 | D20 | Service-account and bootstrap token Secret types are not allowed | They are cluster credentials, not application secrets. |
 | D21 | `suspend` annotation and `status.lastSyncTime`; no data hash in status | Operational control and visibility without leaking low-entropy values. |
-| D22 | GitOps tracking labels are never copied to output Secrets | Prevents GitOps tools from pruning operator-managed Secrets. |
+| D22 | Output Secrets take labels and annotations only from `spec.template.metadata`, copied as written (minus `sops.stakater.com/`), never from the `SopsSecret` itself | The GitOps tool's tracking keys on the `SopsSecret` never reach the Secret, so the tool does not prune it; a template is explicit and needs no list of tracking keys to leave out. |
 | D23 | e2e on kind; CI on pull requests and pushes | Reproducible locally and in CI. |
 | D24 | Authoritative enforcement lives in the API server and in cryptography; operator-side checks exist for early, clear failures (except the scope check) | Keeps the trusted computing base small (§6.3). |
 | D25 | Module `github.com/stakater/sops-operator`; images `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` | Stakater organization. |

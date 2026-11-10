@@ -233,8 +233,8 @@ func (r *SopsTenantReconciler) reconcileRotation(ctx context.Context, t *sopsv1a
 			len(pending), t.Status.PublicKey))
 	case len(pending) > 0:
 		setRotated(t, sopsv1alpha1.ReasonRotationBlocked, fmt.Sprintf(
-			"the rotation completes once %d more SopsSecrets use the new key: %s; it can no longer be abandoned "+
-				"because %d SopsSecrets use the new key", len(pending), strings.Join(rot.PendingSecrets, ", "), rot.Migrated))
+			"the rotation completes once %d more SopsSecrets use the new key: %s; it cannot be abandoned "+
+				"while %d SopsSecrets use the new key", len(pending), strings.Join(rot.PendingSecrets, ", "), rot.Migrated))
 		for i := range pending {
 			r.Recorder.Eventf(&pending[i], t, corev1.EventTypeWarning, sopsv1alpha1.ReasonRotationBlocked,
 				sopsv1alpha1.ActionCompleteRotation, "tenant %s/%s waits for this file to use the new key; "+
@@ -294,8 +294,8 @@ func (r *SopsTenantReconciler) completeRotation(ctx context.Context, tc client.C
 
 // abandonRotation ends a rotation that spec.startRotation no longer asks for while no SopsSecret uses
 // the new key: it writes the old key from its backup back into the key Secret, deletes the new key's
-// backup and clears the rotation. It reports whether the rotation was abandoned; it is not once a
-// SopsSecret was decrypted with the new key, and the rotation then completes instead. A rotation
+// backup and clears the rotation. It reports whether the rotation was abandoned; it is not while a
+// SopsSecret's status records that it was decrypted with the new key, and the rotation then completes instead. A rotation
 // without SopsSecrets whose new key is in place completes too.
 func (r *SopsTenantReconciler) abandonRotation(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant) (
 	bool, string, string, error) {
@@ -342,7 +342,7 @@ func (r *SopsTenantReconciler) abandonRotation(ctx context.Context, tc client.Cl
 	t.Status.PublicKey = rot.PreviousPublicKey
 	t.Status.Rotation = nil
 	setRotated(t, sopsv1alpha1.ReasonRotationAbandoned,
-		"the rotation was abandoned before any SopsSecret used the new key; the old key is back in the key Secret")
+		"the rotation was abandoned while no SopsSecret used the new key; the old key is back in the key Secret")
 	r.Recorder.Eventf(t, nil, corev1.EventTypeNormal, sopsv1alpha1.ReasonRotationAbandoned,
 		sopsv1alpha1.ActionAbandonRotation, "wrote the old key from backup %s back into Secret %s", old.Name,
 		sopsv1alpha1.TenantKeySecretName(t.Name))
@@ -362,12 +362,8 @@ func clearRotation(ctx context.Context, c client.Client, s *sopsv1alpha1.SopsSec
 // liveUsers lists the tenant's SopsSecrets uncached. Field indexes do not exist on the uncached
 // reader, so it lists all SopsSecrets and filters by spec.tenantRef.
 func (r *SopsTenantReconciler) liveUsers(ctx context.Context, t *sopsv1alpha1.SopsTenant) ([]sopsv1alpha1.SopsSecret, error) {
-	var reader client.Reader = r.Client
-	if r.APIReader != nil {
-		reader = r.APIReader
-	}
 	var all sopsv1alpha1.SopsSecretList
-	if err := reader.List(ctx, &all); err != nil {
+	if err := r.APIReader.List(ctx, &all); err != nil {
 		return nil, err
 	}
 	var out []sopsv1alpha1.SopsSecret

@@ -42,8 +42,9 @@ delivery pipeline**, and the operator needs no Git access or Git credentials.
 
 Each `SopsSecret` produces exactly one Secret with the same name in the same namespace. The operator restores
 the Secret at once when it is changed or deleted, removes it with the `SopsSecret` (or keeps it with
-`deletionPolicy: Retain`), and never adopts or overwrites a Secret it did not create. GitOps tracking labels are
-not copied to the Secret, so GitOps tools do not prune it.
+`deletionPolicy: Retain`), and never adopts or overwrites a Secret it did not create. The Secret's labels and
+annotations come only from the `SopsSecret`'s template, so the GitOps tool's tracking labels never reach it and the
+tool does not prune it.
 
 ### 🩺 Status your tooling understands
 
@@ -410,10 +411,9 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 - `spec.stringData` / `spec.data` (one required): encrypted text / base64 values, as on a Secret.
 - `spec.type` (default `Opaque`): `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`,
   `kubernetes.io/basic-auth` or `kubernetes.io/ssh-auth`.
-- `spec.template.metadata`: the labels and annotations of the Secret, for example for Reloader. They are the only
-  ones copied; the `SopsSecret`'s own labels and annotations are not. Keys starting with `sops.stakater.com/`,
-  `argocd.argoproj.io/`, `kustomize.toolkit.fluxcd.io/` or `helm.toolkit.fluxcd.io/` are dropped, so GitOps tools
-  never claim or prune the Secret.
+- `spec.template.metadata`: the labels and annotations of the Secret, for example for Reloader, copied as written.
+  They are the only ones copied; the `SopsSecret`'s own labels and annotations are not, so GitOps tracking labels
+  never reach the Secret unless you put them here. Keys starting with `sops.stakater.com/` are dropped.
 - `spec.deletionPolicy` (default `Delete`): `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it.
 - Annotation `sops.stakater.com/suspend: "true"`: pauses reconciliation.
 - `status.rotation`: during a key rotation, the `sops.age` entry that `scripts/rotate.sh` adds to the file.

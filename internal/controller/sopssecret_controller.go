@@ -46,11 +46,6 @@ import (
 	"github.com/stakater/sops-operator/internal/secretwriter"
 )
 
-// trackingPrefixes are label/annotation prefixes never copied from the template to output Secrets:
-// GitOps tracking, and the operator's own, which a template must not set.
-var trackingPrefixes = []string{"argocd.argoproj.io/", "kustomize.toolkit.fluxcd.io/", "helm.toolkit.fluxcd.io/",
-	sopsv1alpha1.ReservedPrefix}
-
 // SopsSecretReconciler decrypts SopsSecrets into Secrets, acting as the referenced tenant identity.
 type SopsSecretReconciler struct {
 	client.Client
@@ -256,7 +251,7 @@ func (r *SopsSecretReconciler) tenantKeys(ctx context.Context, tc client.Client,
 		oldKeys = current
 	}
 	backups, err := listBackups(ctx, tc, t)
-	if client.IgnoreNotFound(err) != nil && !apierrors.IsForbidden(err) {
+	if err != nil && !apierrors.IsForbidden(err) {
 		return nil, nil, err
 	}
 	if b := backupOf(backups, rot.PreviousPublicKey); b != nil {
@@ -321,10 +316,10 @@ func rotationStatus(s *sopsv1alpha1.SopsSecret, rot *sopsv1alpha1.TenantRotation
 }
 
 func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secret {
-	labels := withoutTracking(s.Spec.Template.Metadata.Labels)
+	labels := withoutReserved(s.Spec.Template.Metadata.Labels)
 	labels[sopsv1alpha1.LabelManagedBy] = sopsv1alpha1.ManagedByValue
 	labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue
-	annotations := withoutTracking(s.Spec.Template.Metadata.Annotations)
+	annotations := withoutReserved(s.Spec.Template.Metadata.Annotations)
 	annotations[sopsv1alpha1.AnnotationSopsSecret] = s.Name
 	secretType := s.Spec.Type
 	if secretType == "" {
@@ -353,17 +348,12 @@ func desiredSecret(s *sopsv1alpha1.SopsSecret, p *document.Payload) *corev1.Secr
 	return out
 }
 
-func withoutTracking(in map[string]string) map[string]string {
+// withoutReserved copies the template's labels or annotations as written, without the operator's
+// own (sops.stakater.com/), which a template must not set.
+func withoutReserved(in map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range in {
-		tracked := false
-		for _, p := range trackingPrefixes {
-			if strings.HasPrefix(k, p) {
-				tracked = true
-				break
-			}
-		}
-		if !tracked {
+		if !strings.HasPrefix(k, sopsv1alpha1.ReservedPrefix) {
 			out[k] = v
 		}
 	}

@@ -132,13 +132,9 @@ func (r *SopsTenantReconciler) ensureBackup(ctx context.Context, tc client.Clien
 	}
 	b := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sopsv1alpha1.TenantKeyBackupName(t.Name, r.now()),
-			Namespace: t.Namespace,
-			Labels: map[string]string{
-				sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
-				sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
-				sopsv1alpha1.LabelKeyBackup: "true",
-			},
+			Name:        sopsv1alpha1.TenantKeyBackupName(t.Name, r.now()),
+			Namespace:   t.Namespace,
+			Labels:      backupLabels(),
 			Annotations: map[string]string{sopsv1alpha1.AnnotationPublicKey: recipient},
 		},
 		Immutable: ptr.To(true),

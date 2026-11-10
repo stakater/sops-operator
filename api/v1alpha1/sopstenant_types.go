@@ -158,7 +158,7 @@ func TenantKeyBackupName(tenant string, at time.Time) string {
 	return TenantKeySecretName(tenant) + "-" + at.UTC().Format(KeyBackupTimeFormat)
 }
 
-// ShouldGenerateKey reports whether a missing key Secret should be generated.
+// ShouldGenerateKey reports whether the operator generates the tenant's first key and the new key of a rotation.
 func (t *SopsTenant) ShouldGenerateKey() bool {
 	return t.Spec.GenerateKey == nil || *t.Spec.GenerateKey
 }

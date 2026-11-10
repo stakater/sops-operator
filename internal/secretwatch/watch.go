@@ -121,18 +121,8 @@ func (w *Watches) Events() <-chan event.GenericEvent { return w.events }
 // Start implements manager.Runnable: it stops every watch when ctx is done.
 func (w *Watches) Start(ctx context.Context) error {
 	<-ctx.Done()
-	w.Stop()
+	w.cancel()
 	return nil
-}
-
-// Stop stops every watch.
-func (w *Watches) Stop() { w.cancel() }
-
-// Watching returns the number of running watches.
-func (w *Watches) Watching() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return len(w.watches)
 }
 
 // Holds reports whether owner holds a watch.
