@@ -224,6 +224,8 @@ func keyLabels() map[string]string {
 // lost the enabled label, is restored from it. Without a backup, a valid key Secret is backed up. A key
 // is generated only when there is no key Secret, no backup and no SopsSecret of the tenant.
 func (r *SopsTenantReconciler) reconcileKey(ctx context.Context, t *sopsv1alpha1.SopsTenant) (string, string, error) {
+	// The public key is reported only for a key this reconcile loaded; no earlier value survives.
+	t.Status.PublicKey = ""
 	tc, err := r.Identities.ClientFor(t.Namespace, t.Name)
 	if err != nil {
 		return "", "", err

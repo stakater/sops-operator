@@ -68,7 +68,7 @@ func TestAccessRevocation(t *testing.T) {
 		deleteObject(t, &rbacv1.RoleBinding{ObjectMeta: keyGrant})
 		tenant := &sopsv1alpha1.SopsTenant{ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: tenantNS}}
 		waitForReason(t, tenant, sopsv1alpha1.ReasonAccessDenied)
-		waitForMessage(t, s, sopsv1alpha1.ReasonTenantNotReady, "is not ready")
+		waitForMessage(t, s, sopsv1alpha1.ReasonTenantNotReady, "is not readable")
 		assertGolden(t, s, "key grant removed")
 	})
 }

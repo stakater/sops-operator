@@ -206,4 +206,26 @@ func TestKeyWithoutStatus(t *testing.T) {
 			t.Fatalf("got %v, want no key Secret: a new key would decrypt none of the files", err)
 		}
 	})
+
+	t.Run("shall report no public key while the key is missing", func(t *testing.T) {
+		t.Parallel()
+		prod := namespace(t, "e2e-keystatus-nokey-prod")
+		tenantNS, recipient := onboardedTenant(t, "e2e-keystatus-nokey-tenant", prod)
+		s := createSopsSecret(t, recipient, sopsSecret{
+			Name: "db-creds", Namespace: prod, Scope: prod + "/db-creds", TenantNamespace: tenantNS,
+			StringData: map[string]string{"password": password},
+		})
+		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		poll(t, "a backup of the tenant key", func() (bool, error) { return len(keyBackups(t, tenantNS)) == 1, nil })
+		for _, b := range keyBackups(t, tenantNS) {
+			deleteObject(t, &b)
+		}
+		deleteObject(t, tenantKey(t, tenantNS))
+		tenant := &sopsv1alpha1.SopsTenant{}
+		tenant.Name, tenant.Namespace = tenantName, tenantNS
+		waitForReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
+		if tenant.Status.PublicKey != "" {
+			t.Fatalf("status.publicKey = %q, want none while the key is missing", tenant.Status.PublicKey)
+		}
+	})
 }
