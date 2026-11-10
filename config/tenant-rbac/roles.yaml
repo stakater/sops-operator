@@ -24,7 +24,8 @@ rules:
     verbs: [get, list, watch, create, update]
 ---
 # Bound by the cluster admin to a tenant's ServiceAccount in each namespace the tenant may write to.
-# list and watch let the operator restore a deleted or changed output Secret at once.
+# list and watch let the operator restore a deleted or changed output Secret at once; delete removes
+# the output Secret of a SopsSecret with deletionPolicy Delete when it is deleted.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

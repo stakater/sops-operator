@@ -41,11 +41,10 @@ delivery pipeline**, and the operator needs no Git access or Git credentials.
 ### 🔁 One-way flow, one owner per Secret
 
 Each `SopsSecret` produces exactly one Secret with the same name in the same namespace. The operator restores
-the Secret at once when it is changed or deleted, removes it with the `SopsSecret` (or keeps it with
-`deletionPolicy: Retain`), and never changes a Secret that does not carry its label
-`sops.stakater.com/enabled: "true"`. The Secret's labels and
-annotations come only from the `SopsSecret`'s template, so the GitOps tool's tracking labels never reach it and the
-tool does not prune it.
+the Secret at once when it is changed or deleted, deletes it with the `SopsSecret` (or keeps it with
+`deletionPolicy: Retain`), and never changes or deletes a Secret that does not carry its label
+`sops.stakater.com/enabled: "true"`. Only the labels and annotations of the `SopsSecret`'s template are copied to
+the Secret, so the GitOps tool's tracking labels never reach it and the tool does not prune it.
 
 ### 🩺 Status your tooling understands
 
@@ -64,7 +63,7 @@ and every access appears in the Kubernetes audit log under both identities.
 
 ### ✍️ Least privilege in application namespaces
 
-A tenant's identity may create, update, list and watch Secrets only in the namespaces the cluster admin granted
+A tenant's identity may create, update, delete, list and watch Secrets only in the namespaces the cluster admin granted
 to it. Listing includes reading, so grant only namespaces the tenant may see. The operator watches **metadata
 only**, and only of the Secrets it owns, which carry the label `sops.stakater.com/enabled: "true"`. A Secret is
 the `SopsSecret`'s when it has its name and namespace and carries that label; the operator never reads its data.
@@ -138,7 +137,7 @@ flowchart TB
     OP -->|create| SA
     OP -->|"tenant impersonation"| SA
     SA -->|reads| KEY
-    SA -->|"writes, watches"| OUT
+    SA -->|"writes, watches, deletes"| OUT
 ```
 
 For every `SopsSecret`, on every change and on a periodic resync, the operator:
@@ -275,7 +274,9 @@ subjects:
     namespace: team-a-system
 ```
 
-**c. Let the tenant write and watch Secrets in an application namespace** (one per namespace, here `team-a-foo`):
+**c. Let the tenant write, watch and delete Secrets in an application namespace** (one per namespace, here
+`team-a-foo`). `sops-tenant-secret-reconciler` grants `create`, `update`, `delete`, `list` and `watch` on Secrets;
+`delete` is used only to delete a Secret with its `SopsSecret` (`deletionPolicy: Delete`):
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -403,7 +404,8 @@ NAME             TENANT    READY   REASON      AGE
 db-credentials   team-a    True    Decrypted   8s
 ```
 
-The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and deleted with it.
+The Secret `team-a-foo/db-credentials` now exists with the label `sops.stakater.com/enabled: "true"`, and is
+deleted with the `SopsSecret`.
 
 > [!TIP]
 > - Sort keys before encrypting (`yq 'sort_keys(..)'`): the SOPS MAC depends on key order.
@@ -423,7 +425,8 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 - `spec.template.metadata`: the labels and annotations of the Secret, for example for Reloader, copied as written.
   They are the only ones copied; the `SopsSecret`'s own labels and annotations are not, so GitOps tracking labels
   never reach the Secret unless you put them here. Keys starting with `sops.stakater.com/` are dropped.
-- `spec.deletionPolicy` (default `Delete`): `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it.
+- `spec.deletionPolicy` (default `Delete`): `Delete` deletes the Secret with the `SopsSecret`; `Retain` keeps it
+  (see [Deletion](#deletion)).
 - Annotation `sops.stakater.com/suspend: "true"`: pauses reconciliation.
 - `status`: the `Ready` condition and `lastSyncTime`. Status only reports; losing it changes nothing.
 
@@ -452,7 +455,8 @@ On a `SopsSecret`:
 - `NotRecipient`: the file is not encrypted for the tenant's key.
 - `ScopeMismatch`: the file was encrypted for another namespace or name.
 - `DecryptFailed`: the file is malformed, tampered with, or has unsorted keys or unquoted values.
-- `Conflict`: a Secret with this name exists without the label `sops.stakater.com/enabled: "true"`.
+- `Conflict`: a Secret with this name exists without the label `sops.stakater.com/enabled: "true"`; the message
+  names the label. Add the label to let the `SopsSecret` manage the Secret, or delete the Secret.
 - `ApplyFailed`: the API server rejected the Secret, for example an invalid TLS Secret, or an immutable key
   Secret of the same name.
 - `Suspended`: reconciliation is paused by annotation.
@@ -494,9 +498,15 @@ On the `SopsTenant`:
   reports `KeyMissing`: restore the key Secret from a cluster backup.
 - Key Secrets have no owner: they stay when the `SopsTenant` is deleted, and a `SopsTenant` created again with
   the same name uses them.
-- Upgrading from v0.0.4: the operator copies the key Secret `<tenant>-sops-keys` into `<tenant>-sops-keys-0` and
-  leaves the old Secret in place; delete it once `<tenant>-sops-keys-0` exists. A key you brought in v0.0.4 is
-  copied only once it carries the `enabled` label.
+- Upgrading from v0.0.4: the operator moves the key of `<tenant>-sops-keys` into `<tenant>-sops-keys-0` only once
+  `<tenant>-sops-keys` carries the label `sops.stakater.com/enabled: "true"`; until then the tenant reports
+  `KeyMissing`, naming the label. The old Secret is left in place; delete it once `<tenant>-sops-keys-0` exists.
+
+Label the v0.0.4 key Secret:
+
+```bash
+kubectl label secret team-a-sops-keys -n team-a-system sops.stakater.com/enabled=true
+```
 
 List a tenant's key Secrets:
 
@@ -514,22 +524,42 @@ encrypted only for it.
 ### Secret ownership
 
 - A Secret belongs to a `SopsSecret` when it has the same name and namespace and carries the label
-  `sops.stakater.com/enabled: "true"`. The operator writes nothing else: any other Secret with that name makes the
-  `SopsSecret` report `Conflict`.
-- A `SopsSecret` whose status is lost, or that is deleted and applied again, keeps managing its Secret.
+  `sops.stakater.com/enabled: "true"`. There are no exceptions: the operator changes and deletes nothing else, and
+  any other Secret with that name, one written by v0.0.4 included, makes the `SopsSecret` report `Conflict` until
+  the label is added.
+- Output Secrets have no owner reference, so no UID ties a Secret to one `SopsSecret` object. A `SopsSecret` whose
+  status is lost, or that is restored or recreated while its Secret exists, keeps managing it. Owner references
+  written by v0.0.4 are removed on the next write.
 - A Secret kept by `deletionPolicy: Retain` is taken over by the next `SopsSecret` with the same name.
+
+### Deletion
+
+- `deletionPolicy: Delete` (default): the operator keeps the finalizer `sops.stakater.com/output-secret` on the
+  `SopsSecret`. When the `SopsSecret` is deleted, the operator deletes the Secret with the same name and namespace,
+  as the tenant identity and only if it carries the `enabled` label, then removes the finalizer. A Secret replaced
+  in the meantime is not deleted.
+- A deletion the tenant may not make does not block: when the namespace is being deleted together with its grant,
+  or the tenant's grant was revoked, the finalizer is removed and the Secret is left to the namespace deletion or
+  to the admin.
+- `deletionPolicy: Retain`: no finalizer. The Secret stays and keeps its label, so a later `SopsSecret` with the
+  same name manages it again.
+- Changing `deletionPolicy` adds or removes the finalizer.
 
 ### Other operations
 
-- **Migrating an existing Secret**: replace it with a `SopsSecret` of the same name in one change, or create the
-  `SopsSecret` under a new name and switch workloads. An existing Secret is not adopted unless you add the label
-  `sops.stakater.com/enabled: "true"` to it; the `SopsSecret` then replaces its values, labels and annotations.
+- **Migrating an existing Secret**: a `SopsSecret` of the same name reports `Conflict` until you either add the
+  label `sops.stakater.com/enabled: "true"` to the Secret, which adopts it (the `SopsSecret` then replaces its
+  values, labels and annotations), or delete the Secret, which lets the `SopsSecret` write a new one. Output Secrets
+  written by v0.0.4 are adopted the same way. Alternatively, create the `SopsSecret` under a new name and switch
+  workloads.
 - **Disaster recovery**: restore the key Secrets before the `SopsTenant`s, or set `generateKey: false`, so no new
   key is generated in place of a lost one. Status need not be restored: a `SopsTenant` without status finds its
-  current key in the key Secrets, and a `SopsSecret` without status keeps its Secret. Break-glass recipients can
+  current key in the key Secrets, and a `SopsSecret` without status keeps its Secret. A restored output Secret is
+  managed again through its label, whatever the UID of the restored `SopsSecret`. Break-glass recipients can
   decrypt every file.
-- **Revocation**: removing a namespace RoleBinding stops all writes there at the next reconcile; removing the
-  key-owner RoleBinding stops all decryption for the tenant.
+- **Revocation**: removing a namespace RoleBinding stops all writes and deletions there at the next reconcile; a
+  `SopsSecret` deleted afterwards leaves its Secret behind for the admin. Removing the key-owner RoleBinding stops
+  all decryption for the tenant.
 
 ## Security
 

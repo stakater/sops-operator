@@ -78,8 +78,10 @@ func (f *Factory) ClientFor(tenantNamespace, tenant string) (client.Client, erro
 	return c, nil
 }
 
-// ReconcileVerbs are the Secret verbs of sops-tenant-secret-reconciler: the identity writes output
-// Secrets and watches them, so a deleted or changed one is restored at once.
+// ReconcileVerbs are the Secret verbs the access check asks for: the identity writes output Secrets and
+// watches them, so a deleted or changed one is restored at once. sops-tenant-secret-reconciler also
+// grants delete, used only when a SopsSecret with deletionPolicy Delete is deleted; a namespace
+// without it still syncs, and such a deletion leaves the Secret.
 var ReconcileVerbs = []string{"create", "update", "list", "watch"}
 
 // CanReconcileSecrets reports whether the identity of the tenant named tenant in tenantNamespace holds
