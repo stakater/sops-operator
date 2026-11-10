@@ -448,6 +448,9 @@ make test-upgrade       # upgrade paths through catalog/channels.yaml: published
 make scorecard          # operator-sdk scorecard against the bundle
 ```
 
+envtest starts `etcd` and `kube-apiserver` for each test package. If a test binary is killed, the next test run
+stops the control plane it left behind, so no manual cleanup is needed.
+
 Install from source on a cluster of your choice:
 
 ```bash

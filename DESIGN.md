@@ -682,6 +682,10 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
   `TestSecretOwnership`, …) with `shall …` subtests.
+  Every envtest package starts its API server through `internal/testenv`, which stops it on SIGINT and SIGTERM
+  and, before starting, stops `etcd` and `kube-apiserver` processes from the envtest assets directory whose
+  parent has exited (a test binary that was killed or timed out leaves them running with PID 1 as parent).
+  Processes of a test that is still running are never touched, so packages can run in parallel.
   There is one e2e flow, the way customers install: `make test-e2e` builds the operator and
   bundle images and a catalog that lists only that bundle (a fresh install; upgrades along the channel graph
   are tested per release), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
