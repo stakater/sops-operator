@@ -603,11 +603,17 @@ make test               # unit and envtest tests with the RBAC authorizer
 make lint
 make test-scripts       # scripts/encrypt.sh with a throwaway key, no cluster
 make lint-scripts       # shellcheck on scripts/
-make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
-make test-upgrade       # upgrade paths through catalog/channels.yaml: published bundles, then this build
+make images             # operator, bundle and catalog images of TAG (default dev-<time>), saved to bin/images/<tag>
+make test-e2e           # end-to-end tests: OLM installs the images of TAG on kind; results compared with golden files
+make test-upgrade       # upgrade paths through the catalog of TAG: published bundles, then this build
 make scorecard          # operator-sdk scorecard against the bundle
 make cleanup-test-e2e   # remove the e2e kind cluster
 ```
+
+The version comes from [`catalog/channels.yaml`](catalog/channels.yaml): a build stands in for the highest version it
+lists, as the pre-release `<version>-<tag>`. `TAG` is the only difference between a local build and a pull request
+build; pass the same `TAG` to reuse images already built. The kind cluster pulls them from its local registry, which
+mirrors `ghcr.io`, under the names they are published with.
 
 Run a subset of the end-to-end tests with a `go test -run` pattern:
 

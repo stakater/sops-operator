@@ -801,8 +801,10 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
 - **Publishing** (`.github/workflows/push.yaml`): `catalog/channels.yaml` is the only source of truth. A push to
   `main` that does not change `catalog/` publishes nothing. When it does, `hack/release-plan.sh` finds the one listed
-  version whose bundle is not published yet; the workflow builds the operator image for `linux/amd64` and
-  `linux/arm64`, the bundle referencing the operator by digest, and the catalog, tags them `vX.Y.Z`, attaches SBOM
+  version whose bundle is not published yet; the workflow builds, with the same make targets developers use
+  (`build`, `docker-build`, `bundle`, `bundle-build`, `catalog-render`, `catalog-build`, given buildx flags in
+  `DOCKER_BUILD_ARGS`), the operator image for `linux/amd64` and `linux/arm64`, the bundle referencing the operator
+  by digest, and the catalog, tags them `vX.Y.Z`, attaches SBOM
   and provenance, signs them with cosign (keyless, GitHub OIDC), verifies the signatures and that the images can
   be pulled anonymously, then creates the git tag and GitHub release. When every listed version is already
   published (e.g. promoting a version to another channel), only the catalog is republished, tagged with the
@@ -829,18 +831,20 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   and, before starting, stops `etcd` and `kube-apiserver` processes from the envtest assets directory whose
   parent has exited (a test binary that was killed or timed out leaves them running with PID 1 as parent).
   Processes of a test that is still running are never touched, so packages can run in parallel.
-  There is one e2e flow, the way customers install: `make test-e2e` builds the operator and
-  bundle images and a catalog that lists only that bundle (a fresh install; upgrades along the channel graph
-  are tested per release), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
-  cluster and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`.
+  There is one e2e flow, the way customers install: `make test-e2e TAG=<tag>` uses the operator, bundle and catalog
+  images of `make images` (built first when missing), loads them under their GHCR names into a local registry
+  (`localhost:5011`) that the kind cluster uses as a mirror of `ghcr.io`, installs OLM v0 on that dedicated cluster
+  and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`. The catalog is
+  the channel graph of `catalog/channels.yaml` with this build in place of its highest version, so the fresh
+  install takes this build.
   `make test-e2e E2E_RUN='<regex>'` runs only the matching e2e tests (`go test -run`); the kind cluster is kept
   for reruns and removed with `make cleanup-test-e2e`.
   Nothing from `config/` is applied, so the tenant ClusterRoles must come from the bundle. Each run uses a
   CatalogSource named after its image tag (OLM caches catalog contents by name) and first removes the cluster
   RBAC of the previous install (OLM keeps it after the CSV is deleted). `make scorecard` runs the operator-sdk
   basic and OLM suites against the bundle.
-  `make test-upgrade` renders the real `catalog/channels.yaml` instead (published bundles from GHCR, this build
-  as `VERSION`) and runs `TestUpgrade`: for each path in its table it subscribes at the starting version with
+  `make test-upgrade` uses the same catalog (published bundles from GHCR, this build in place of the highest version)
+  and runs `TestUpgrade`: for each path in its table it subscribes at the starting version with
   manual approval, creates a tenant and a SopsSecret, approves OLM's InstallPlans up to the target version, and
   checks that the upgraded operator decrypts a change into the same Secret with the same tenant key. The table is
   derived from the channel graph and edited in every change that edits the graph.

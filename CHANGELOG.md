@@ -24,6 +24,10 @@ they are marked **Breaking** with the steps to take.
 - `scripts/encrypt.sh` encrypts a plaintext `SopsSecret` file in a GitOps directory; a scope already in the file is
   kept.
 - `make test-e2e E2E_RUN='<regex>'` runs a subset of the e2e tests.
+- `make images TAG=<tag>` builds the operator, bundle and catalog images of one build; every pull request
+  builds them once, tests them on kind and publishes them as `pr-<number>-<sha7>`, with the bundle as the
+  pre-release `<version>-<tag>`. `build` takes `MANAGER_BIN`, and `docker-build`, `bundle-build` and
+  `catalog-build` take `DOCKER_BUILD_ARGS`; the release workflow uses them instead of its own commands.
 
 ### Changed
 
