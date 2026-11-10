@@ -141,6 +141,15 @@ setup-test-e2e: kind operator-sdk ## Kind cluster with a local registry (localho
 	KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
 		|| KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
 
+# Directory pr-images saves the operator, bundle and catalog images of a pull request to.
+PR_IMAGES_DIR ?= $(LOCALBIN)/pr-images
+
+.PHONY: pr-images
+pr-images: opm yq kustomize operator-sdk ## Build the bundle (version VERSION-PR_SUFFIX) and catalog images of a pull request for OPERATOR_IMG, to be pushed as OPERATOR_REF and BUNDLE_REF; save all three to PR_IMAGES_DIR.
+	OPERATOR_IMG=$(OPERATOR_IMG) OPERATOR_REF=$(OPERATOR_REF) BUNDLE_REF=$(BUNDLE_REF) OUT=$(PR_IMAGES_DIR) \
+		REGISTRY_IMAGE=$(REGISTRY_IMAGE) VERSION=$(VERSION) PR_SUFFIX=$(PR_SUFFIX) OPERATOR_NAME=$(OPERATOR_NAME) \
+		CATALOG_DIR=$(CATALOG_DIR_PATH) MAKE="$(MAKE)" YQ=$(YQ) hack/pr-images.sh
+
 .PHONY: e2e-images
 e2e-images: opm yq kustomize operator-sdk ## Build and push the operator, bundle and catalog images for the e2e run to E2E_REGISTRY.
 ifeq ($(E2E_OPERATOR_IMG),)

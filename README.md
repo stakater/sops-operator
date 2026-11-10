@@ -628,6 +628,24 @@ bin/kustomize build config/default | sed 's#controller:latest#<registry>/sops-op
 kubectl --context <context> apply --server-side -k config/tenant-rbac
 ```
 
+Every pull request publishes its operator, bundle and catalog images, tagged `pr-<number>-<sha7>`. Its bundle is the
+pre-release `<version>-pr.<number>.<sha7>`, and its catalog is the release catalog with that bundle in place of the
+version the pull request releases. To install a pull request build through OLM, add its catalog:
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: sops-operator-pr
+  namespace: openshift-marketplace
+spec:
+  sourceType: grpc
+  image: ghcr.io/stakater/sops-operator-catalog:pr-<number>-<sha7>
+  displayName: SOPS Operator (pull request build)
+```
+
+and point the operator's `Subscription` at `source: sops-operator-pr`.
+
 Releases are made by editing [`catalog/channels.yaml`](catalog/channels.yaml) in a pull request. When it is
 merged, the push workflow publishes the newly listed version (operator, bundle and catalog images for amd64 and
 arm64, signed with cosign, with SBOM and provenance) and creates the GitHub release. Promoting a published

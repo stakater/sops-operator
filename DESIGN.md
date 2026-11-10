@@ -845,10 +845,14 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   checks that the upgraded operator decrypts a change into the same Secret with the same tenant key. The table is
   derived from the channel graph and edited in every change that edits the graph.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs, in order: a check that generated
-  files are current, lint, envtest tests and `make lint-scripts test-scripts`; the image build without any write
-  token; the OLM e2e tests, `make test-upgrade` and `make scorecard` on kind; and only then the push of the image to
-  `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
-  (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request code. Actions are
+  files are current, lint, envtest tests and `make lint-scripts test-scripts`; the build without any write token of
+  the operator image and, with `make pr-images`, of a bundle and a catalog for it; the OLM e2e tests,
+  `make test-upgrade` and `make scorecard` on kind; and only then the push of the three images as
+  `ghcr.io/stakater/sops-operator{,-bundle,-catalog}:pr-<number>-<sha7>` from a separate job that holds the only write
+  token (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request code. The PR
+  bundle is the pre-release `<version>-pr.<number>.<sha7>`, so it never takes the name or version of a release; the
+  PR catalog is `catalog/channels.yaml` with that bundle in place of the version it releases, so it upgrades from the
+  same version. Actions are
   pinned by commit SHA and kept current by Dependabot. A `push` workflow on `main` publishes
   releases (below).
 - **Conventions** (from Stakater operators): project/module name `sops-operator`; images

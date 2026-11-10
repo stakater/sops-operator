@@ -112,6 +112,31 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # kustomize, controller-gen, operator-sdk, opm and yq; all pinned in the Makefile.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: bin
+          key: pr-images-tools-${{ runner.os }}-${{ hashFiles('Makefile', 'hack/bootstrap-tools.sh') }}
+
+      # The bundle and catalog are built here, without a write token, for the references the push job
+      # gives the images; the push job only pushes what this job saved.
+      - name: Build bundle and catalog
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tag="pr-${PR_NUMBER}-${HEAD_SHA::7}"
+          make pr-images OPERATOR_IMG=sops-operator:pr OPERATOR_REF="${IMAGE_REPOSITORY}:${tag}" \
+            BUNDLE_REF="${IMAGE_REPOSITORY}-bundle:${tag}" PR_SUFFIX="pr.${PR_NUMBER}.${HEAD_SHA::7}" \
+            PR_IMAGES_DIR="${RUNNER_TEMP}/pr-images"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: pr-images
+          path: ${{ runner.temp }}/pr-images
+          retention-days: 1
+          if-no-files-found: error
+
   e2e:
     name: E2E on OLM
     needs: build
@@ -155,9 +180,10 @@ jobs:
         run: make scorecard
 
   # The only job with a write token. It runs no code from the pull request: it re-tags the tested
-  # image under a tag computed here and pushes only that tag.
+  # operator image and the bundle and catalog built for it under a tag computed here, and pushes
+  # only that tag.
   push:
-    name: Push image
+    name: Push images
     needs: e2e
     runs-on: ubuntu-24.04
     permissions:
@@ -165,8 +191,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: image
-          path: ${{ runner.temp }}
+          name: pr-images
+          path: ${{ runner.temp }}/pr-images
 
       - name: Push to GHCR
         env:
@@ -175,10 +201,17 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          image="${IMAGE_REPOSITORY}:pr-${PR_NUMBER}-${HEAD_SHA::7}"
-          docker load -i "${RUNNER_TEMP}/image.tar"
-          docker tag sops-operator:pr "${image}"
+          tag="pr-${PR_NUMBER}-${HEAD_SHA::7}"
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          docker push "${image}"
+          for kind in operator bundle catalog; do
+            docker load -i "${RUNNER_TEMP}/pr-images/${kind}.tar"
+          done
+          for pair in "sops-operator:pr ${IMAGE_REPOSITORY}:${tag}" \
+            "sops-operator-bundle:pr ${IMAGE_REPOSITORY}-bundle:${tag}" \
+            "sops-operator-catalog:pr ${IMAGE_REPOSITORY}-catalog:${tag}"; do
+            read -r src dst <<<"${pair}"
+            docker tag "${src}" "${dst}"
+            docker push "${dst}"
+            echo "Pushed ${dst}" >> "${GITHUB_STEP_SUMMARY}"
+          done
           docker logout ghcr.io
-          echo "Pushed ${image}" >> "${GITHUB_STEP_SUMMARY}"
