@@ -72,9 +72,6 @@ spec:
             path: lastSyncTime
           - displayName: Observed generation
             path: observedGeneration
-          - description: SecretUID is the UID of the Secret this SopsSecret created.
-            displayName: Secret UID
-            path: secretUID
         version: v1alpha1
       - description: SopsTenant is a tenant key used to decrypt SopsSecrets.
         displayName: SOPS Tenant
