@@ -134,11 +134,22 @@ func TestSopsTenantValidation(t *testing.T) {
 	}
 }
 
-func TestTenantKeyBackupName(t *testing.T) {
-	t.Run("shall name a key backup after the key Secret and the time in UTC", func(t *testing.T) {
-		at := time.Date(2026, 11, 9, 13, 4, 5, 0, time.FixedZone("CET", 3600))
-		if got, want := sopsv1alpha1.TenantKeyBackupName("my-team", at), "my-team-sops-keys-20261109-120405"; got != want {
-			t.Fatalf("TenantKeyBackupName = %q, want %q", got, want)
+func TestTenantKeySecretName(t *testing.T) {
+	t.Run("shall name a key Secret after the tenant and the key's index", func(t *testing.T) {
+		if got, want := sopsv1alpha1.TenantKeySecretName("my-team", 3), "my-team-sops-keys-3"; got != want {
+			t.Fatalf("TenantKeySecretName = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("shall read the index only from a key Secret name of the tenant", func(t *testing.T) {
+		for name, want := range map[string]int{
+			"my-team-sops-keys-0": 0, "my-team-sops-keys-12": 12,
+			"my-team-sops-keys": -1, "my-team-sops-keys-x": -1, "my-team-sops-keys-01": -1,
+			"my-team-sops-keys--1": -1, "other-sops-keys-1": -1,
+		} {
+			if got := sopsv1alpha1.TenantKeyIndex("my-team", name); got != want {
+				t.Errorf("TenantKeyIndex(%q) = %d, want %d", name, got, want)
+			}
 		}
 	})
 }

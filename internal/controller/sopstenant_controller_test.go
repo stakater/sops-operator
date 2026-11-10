@@ -33,7 +33,7 @@ func newTenant(ns string, generate *bool) *sopsv1alpha1.SopsTenant {
 func keySecret(ns string, keyFile string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: sopsv1alpha1.TenantKeySecretName(tenantName), Namespace: ns,
+			Name: sopsv1alpha1.TenantKeySecretName(tenantName, 0), Namespace: ns,
 			Labels: map[string]string{sopsv1alpha1.LabelEnabled: sopsv1alpha1.EnabledValue},
 		},
 		Data: map[string][]byte{crypto.KeyFileField: []byte(keyFile)},
@@ -115,36 +115,6 @@ func TestTenantKeyAdoption(t *testing.T) {
 		assertUnchanged(t, owned)
 	})
 
-	t.Run("shall mark and use a key Secret it generated before the enabled label existed", func(t *testing.T) {
-		ctx := context.Background()
-		ns := env.Namespace(t, "tenant")
-		env.Onboard(t, ns, tenantName)
-		keyFile, recipient, err := crypto.GenerateKeyFile()
-		if err != nil {
-			t.Fatal(err)
-		}
-		key := keySecret(ns, string(keyFile))
-		key.Labels = map[string]string{sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue}
-		if err := env.Admin.Create(ctx, key); err != nil {
-			t.Fatal(err)
-		}
-		tenant := newTenant(ns, nil)
-		if err := env.Admin.Create(ctx, tenant); err != nil {
-			t.Fatal(err)
-		}
-		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
-		if got := tenantOf(t, ns).Status.PublicKey; got != recipient {
-			t.Fatalf("status.publicKey = %q, want the existing key", got)
-		}
-		var after corev1.Secret
-		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
-			t.Fatal(err)
-		}
-		assertKeyLabels(t, &after)
-		if string(after.Data[crypto.KeyFileField]) != string(keyFile) {
-			t.Fatal("labelling the key changed its content")
-		}
-	})
 }
 
 func TestTenantKey(t *testing.T) {
@@ -163,11 +133,11 @@ func TestTenantKey(t *testing.T) {
 			g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
 
-		if want := tenantName + "-sops-keys"; tenant.Status.KeySecretName != want {
+		if want := tenantName + "-sops-keys-0"; tenant.Status.KeySecretName != want {
 			t.Fatalf("status.keySecretName = %q, want %q", tenant.Status.KeySecretName, want)
 		}
 		var key corev1.Secret
-		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName + "-sops-keys"}, &key); err != nil {
+		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: tenantName + "-sops-keys-0"}, &key); err != nil {
 			t.Fatal(err)
 		}
 		ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
@@ -177,7 +147,7 @@ func TestTenantKey(t *testing.T) {
 		if !strings.HasPrefix(ks.Recipients[0], "age1pq1") {
 			t.Fatal("generated key is not post-quantum")
 		}
-		assertOnlyKeyFile(t, &key)
+		assertSealedKey(t, &key, ks.Recipients[0])
 		assertKeyLabels(t, &key)
 		if tenant.Status.PublicKey != ks.Recipients[0] {
 			t.Fatalf("status.publicKey = %q, want the generated key's public key", tenant.Status.PublicKey)
@@ -192,7 +162,7 @@ func TestTenantKey(t *testing.T) {
 		env.Onboard(t, ns, tenantName)
 		tenant := createSample(t, "sops_v1alpha1_sopstenant.yaml", ns)
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyGenerated)
-		keyName := client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenant.Name)}
+		keyName := client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenant.Name, 0)}
 		if err := env.Admin.Get(context.Background(), keyName, &corev1.Secret{}); err != nil {
 			t.Fatalf("generated key Secret: %v", err)
 		}
@@ -207,7 +177,7 @@ func TestTenantKey(t *testing.T) {
 		}
 		key := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key"), Namespace: ns,
+				Name: sopsv1alpha1.TenantKeySecretName("my-team-existing-key", 0), Namespace: ns,
 				Labels: map[string]string{sopsv1alpha1.LabelEnabled: sopsv1alpha1.EnabledValue},
 			},
 			Data: map[string][]byte{crypto.KeyFileField: keyFile},
@@ -216,11 +186,10 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		tenant := createSample(t, "sops_v1alpha1_sopstenant_existing_key.yaml", ns)
-		if sopsv1alpha1.TenantKeySecretName(tenant.Name) != key.Name {
+		if sopsv1alpha1.TenantKeySecretName(tenant.Name, 0) != key.Name {
 			t.Fatalf("the sample names tenant %q; its key Secret must be %s", tenant.Name, key.Name)
 		}
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyLoaded)
-		assertUnchanged(t, key)
 	})
 
 	t.Run("shall not generate a key for the existing-key sample", func(t *testing.T) {
@@ -230,7 +199,7 @@ func TestTenantKey(t *testing.T) {
 		eventuallyReason(t, tenant, sopsv1alpha1.ReasonKeyMissing)
 	})
 
-	t.Run("shall load an existing key without changing it", func(t *testing.T) {
+	t.Run("shall make a brought key immutable with its public key and keep its private key", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, tenantName)
@@ -248,11 +217,13 @@ func TestTenantKey(t *testing.T) {
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyLoaded)
 
 		var after corev1.Secret
-		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
-			t.Fatal(err)
-		}
-		if after.ResourceVersion != key.ResourceVersion {
-			t.Fatal("existing key Secret was modified")
+		NewWithT(t).Eventually(func(g Gomega) {
+			g.Expect(env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after)).To(Succeed())
+			g.Expect(after.Immutable).To(HaveValue(BeTrue()))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+		assertSealedKey(t, &after, x.Recipient().String())
+		if string(after.Data[crypto.KeyFileField]) != x.String()+"\n" {
+			t.Fatal("the private key was changed")
 		}
 	})
 
@@ -279,7 +250,7 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonKeyMissing)
-		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &corev1.Secret{})
+		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenantName, 0)}, &corev1.Secret{})
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("key Secret must not be created: %v", err)
 		}
@@ -292,7 +263,7 @@ func TestTenantKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		eventuallyReason(t, newTenant(ns, nil), sopsv1alpha1.ReasonAccessDenied)
-		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &corev1.Secret{})
+		err := env.Admin.Get(ctx, client.ObjectKey{Namespace: ns, Name: sopsv1alpha1.TenantKeySecretName(tenantName, 0)}, &corev1.Secret{})
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("key Secret must not be created: %v", err)
 		}
@@ -317,7 +288,7 @@ func TestTenantKey(t *testing.T) {
 }
 
 func TestTenantPublicKey(t *testing.T) {
-	t.Run("shall ignore an age.pub field written by an earlier version", func(t *testing.T) {
+	t.Run("shall replace a wrong public key in a brought key Secret with the key's own", func(t *testing.T) {
 		ctx := context.Background()
 		ns := env.Namespace(t, "tenant")
 		env.Onboard(t, ns, tenantName)
@@ -341,7 +312,11 @@ func TestTenantPublicKey(t *testing.T) {
 		if got := tenantOf(t, ns).Status.PublicKey; got != x.Recipient().String() {
 			t.Fatalf("status.publicKey = %q, want the primary key from age.agekey", got)
 		}
-		assertUnchanged(t, key)
+		var after corev1.Secret
+		if err := env.Admin.Get(ctx, client.ObjectKeyFromObject(key), &after); err != nil {
+			t.Fatal(err)
+		}
+		assertSealedKey(t, &after, x.Recipient().String())
 	})
 }
 

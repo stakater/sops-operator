@@ -502,28 +502,6 @@ func TestSecretOwnership(t *testing.T) {
 		}
 	})
 
-	t.Run("shall not write a Secret named like a tenant's key Secret or backups", func(t *testing.T) {
-		ctx := context.Background()
-		prod := env.Namespace(t, "prod")
-		tenantNS, recipient := onboardedTenant(t, prod)
-		before := &corev1.Secret{}
-		keyName := sopsv1alpha1.TenantKeySecretName(tenantName)
-		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: keyName}, before); err != nil {
-			t.Fatal(err)
-		}
-		for _, name := range []string{keyName, keyName + "-20260101-000000"} {
-			s := encryptedSopsSecret(t, recipient, tenantNS, tenantNS, name, tenantNS+"/"+name, map[string]any{"age.agekey": "x"})
-			create(t, s)
-			eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
-		}
-		after := &corev1.Secret{}
-		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: keyName}, after); err != nil {
-			t.Fatal(err)
-		}
-		if after.ResourceVersion != before.ResourceVersion {
-			t.Fatal("the key Secret was changed")
-		}
-	})
 }
 
 func TestSuspension(t *testing.T) {

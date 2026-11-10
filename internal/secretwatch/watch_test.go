@@ -210,7 +210,7 @@ func TestKeyWatches(t *testing.T) {
 	w := secretwatch.NewForKeys(identity.NewFactory(env.OperatorConfig, env.Scheme).ConfigFor)
 	events := w.Events()
 	t.Cleanup(w.Stop)
-	key := secret(tenantNS, "my-team-sops-keys", enabled(), nil)
+	key := secret(tenantNS, "my-team-sops-keys-0", enabled(), nil)
 	if err := env.Admin.Create(ctx, key); err != nil {
 		t.Fatal(err)
 	}
@@ -238,16 +238,14 @@ func TestKeyWatches(t *testing.T) {
 		}
 	})
 
-	t.Run("shall report a deleted key Secret and ignore backups, output Secrets and other Secrets", func(t *testing.T) {
+	t.Run("shall report a deleted key Secret and ignore output Secrets and other Secrets", func(t *testing.T) {
 		key.Labels = enabled()
 		if err := env.Admin.Update(ctx, key); err != nil {
 			t.Fatal(err)
 		}
-		backupLabels := enabled()
-		backupLabels[sopsv1alpha1.LabelKeyBackup] = "true"
 		ignored := []*corev1.Secret{
-			secret(tenantNS, "my-team-sops-keys-20261109-120000", backupLabels, nil),
-			secret(tenantNS, "other-sops-keys", enabled(), map[string]string{sopsv1alpha1.AnnotationSopsSecret: "other-sops-keys"}),
+			secret(tenantNS, "my-team-sops-keys-1", enabled(), map[string]string{sopsv1alpha1.AnnotationSopsSecret: "my-team-sops-keys-1"}),
+			secret(tenantNS, "my-team-sops-keys-x", enabled(), nil),
 			secret(tenantNS, "db", enabled(), nil),
 		}
 		for _, s := range ignored {
@@ -262,7 +260,7 @@ func TestKeyWatches(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := nextEvent(t, events); got != tenant {
-			t.Fatalf("event for %v, want the tenant %v: a backup, output Secret or other Secret was reported", got, tenant)
+			t.Fatalf("event for %v, want the tenant %v: an output Secret or other Secret was reported", got, tenant)
 		}
 	})
 }

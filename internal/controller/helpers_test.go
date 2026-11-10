@@ -62,7 +62,7 @@ func onboardedTenant(t *testing.T, writeNS ...string) (string, string) {
 	}).WithTimeout(20 * time.Second).Should(Succeed())
 
 	var key corev1.Secret
-	if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &key); err != nil {
+	if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName, 0)}, &key); err != nil {
 		t.Fatal(err)
 	}
 	ks, err := crypto.ParseKeyFile(key.Data[crypto.KeyFileField])
@@ -128,11 +128,17 @@ func assertUnchanged(t *testing.T, obj client.Object) {
 }
 
 // assertOnlyKeyFile checks that a key Secret holds the private key file and nothing else.
-func assertOnlyKeyFile(t *testing.T, key *corev1.Secret) {
+func assertSealedKey(t *testing.T, key *corev1.Secret, recipient string) {
 	t.Helper()
 	fields := slices.Sorted(maps.Keys(key.Data))
-	if !slices.Equal(fields, []string{crypto.KeyFileField}) {
-		t.Fatalf("key Secret %s holds fields %v, want only %s", key.Name, fields, crypto.KeyFileField)
+	if !slices.Equal(fields, []string{crypto.KeyFileField, crypto.PublicKeyField}) {
+		t.Fatalf("key Secret %s holds fields %v, want %s and %s", key.Name, fields, crypto.KeyFileField, crypto.PublicKeyField)
+	}
+	if string(key.Data[crypto.PublicKeyField]) != recipient {
+		t.Fatalf("key Secret %s holds public key %q, want %q", key.Name, key.Data[crypto.PublicKeyField], recipient)
+	}
+	if key.Immutable == nil || !*key.Immutable {
+		t.Fatalf("key Secret %s is not immutable", key.Name)
 	}
 }
 
