@@ -101,7 +101,7 @@ spec:
               both keys decrypt. With generateKey true the operator generates the new key; with false the
               tenant admin replaces the key Secret. Set it to false, or remove it, to complete the rotation:
               the old key's backup is deleted once every SopsSecret was decrypted with the new key. Set to
-              false before any SopsSecret uses the new key, it abandons the rotation and restores the old key.
+              false while no SopsSecret is decrypted with the new key, it abandons the rotation and restores the old key.
             displayName: Start rotation
             path: startRotation
             x-descriptors:

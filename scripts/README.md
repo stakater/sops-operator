@@ -1,7 +1,8 @@
 # Scripts for SopsSecrets
 
 [`encrypt.sh`](encrypt.sh) encrypts a `SopsSecret` file in your GitOps repository, so it can be committed.
-Copy both scripts into your GitOps repository, for example to `scripts/`.
+[`rotate.sh`](rotate.sh) moves a tenant's files to its new key during a key rotation. Copy both scripts into your
+GitOps repository, for example to `scripts/`.
 
 It only changes the file. You commit it and your GitOps tool, for example Argo CD, applies it; nothing is
 changed in the cluster directly.
@@ -10,8 +11,9 @@ changed in the cluster directly.
 
 Install:
 
-- [sops](https://github.com/getsops/sops)
+- [sops](https://github.com/getsops/sops) (for `encrypt.sh`)
 - [yq](https://github.com/mikefarah/yq) (the Go version by mikefarah)
+- `oc`, logged in to the tenant's cluster (for `rotate.sh`)
 
 The scripts follow the `.sops.yaml` of your GitOps repository: sops encrypts each file for the keys of the
 rule whose `path_regex` matches it. The examples use this layout:

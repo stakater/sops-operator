@@ -36,7 +36,7 @@ type SopsTenantSpec struct {
 	// both keys decrypt. With generateKey true the operator generates the new key; with false the
 	// tenant admin replaces the key Secret. Set it to false, or remove it, to complete the rotation:
 	// the old key's backup is deleted once every SopsSecret was decrypted with the new key. Set to
-	// false before any SopsSecret uses the new key, it abandons the rotation and restores the old key.
+	// false while no SopsSecret is decrypted with the new key, it abandons the rotation and restores the old key.
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Start rotation",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
 	// +optional
 	StartRotation bool `json:"startRotation,omitempty"`
@@ -103,7 +103,9 @@ type TenantRotationStatus struct {
 
 // LastRotation records the last completed key rotation.
 type LastRotation struct {
-	StartedAt   metav1.Time `json:"startedAt"`
+	// StartedAt is when the rotation started.
+	StartedAt metav1.Time `json:"startedAt"`
+	// CompletedAt is when the rotation completed.
 	CompletedAt metav1.Time `json:"completedAt"`
 	// PreviousPublicKey is the public key of the key the rotation removed. scripts/rotate.sh removes its
 	// entries from files; it can decrypt nothing any more.

@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Versions before 1.0.0 may contain breaking changes;
 they are marked **Breaking** with the steps to take.
 
-## [0.0.5] - Unreleased
+## [0.0.5] - 2026-11-10
 
 ### Added
 
@@ -19,7 +19,7 @@ they are marked **Breaking** with the steps to take.
   tenant is `Decrypted`. With `generateKey: true` the operator generates the new key; with `false` the tenant admin
   replaces the key Secret with it. The key Secret then holds the new key and the old key stays in its backup.
   Setting the flag back to `false` completes the rotation once every `SopsSecret` decrypts with the new key, and
-  deletes the old key's backup; before any `SopsSecret` does, it abandons the rotation and restores the old key.
+  deletes the old key's backup; while no `SopsSecret` does, it abandons the rotation and restores the old key.
 - `SopsTenant` status: `publicKey`, `rotation` (`phase`, `startedAt`, `previousPublicKey`, `migrated`, `pending`,
   `pendingSecrets`) and `lastRotation` (`startedAt`, `completedAt`, `previousPublicKey`), and the `LAST ROTATED`
   printer column.
@@ -58,6 +58,10 @@ they are marked **Breaking** with the steps to take.
   backups, the key watch, restores and rotations. Existing bindings need no change.
 - `AccessDenied` on a `SopsSecret` names the ClusterRole to bind and the Secret verbs it needs.
 - A tenant whose recorded key is missing and has no backup reports `KeyMissing` instead of generating a new key.
+- On upgrade, each tenant gets `status.publicKey` and the backup of its key at its first reconcile; a generated key
+  Secret keeps its `age.pub` field, which is ignored. Existing output Secrets get the `enabled` label and are
+  watched after their first write by v0.0.5, which needs the `sops-tenant-secret-reconciler` binding.
+- envtest test runs stop the `etcd` and `kube-apiserver` processes a killed test run left behind.
 
 ### Removed
 
@@ -125,7 +129,7 @@ they are marked **Breaking** with the steps to take.
 - Ciphertext bound to its destination: the encrypted scope must match the `SopsSecret`'s namespace and name.
 - Write-only output Secrets, tracked by the UID of the Secret the operator created.
 
-[0.0.5]: https://github.com/stakater/sops-operator/compare/v0.0.4...HEAD
+[0.0.5]: https://github.com/stakater/sops-operator/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/stakater/sops-operator/compare/1612367...v0.0.4
 [0.0.3]: https://github.com/stakater/sops-operator/compare/v0.0.2...1612367
 [0.0.2]: https://github.com/stakater/sops-operator/compare/v0.0.1...v0.0.2

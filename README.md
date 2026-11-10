@@ -84,9 +84,10 @@ values.
 
 Every tenant has its own key; there is no cluster-wide master key. The operator generates it for a new tenant,
 keeps an **immutable backup** of it, and restores the key from that backup when it is deleted or changed. The key
-changes only in a **key rotation** through Git, which needs no private key outside the cluster. Generated keys are hybrid
-**post-quantum age keys** (ML-KEM-768 + X25519), because ciphertext committed to Git stays readable to anyone who
-obtains it later. Bring-your-own X25519 keys and break-glass recipients are supported.
+changes only in a **key rotation** through Git, in which no private key leaves the cluster unless the tenant admin
+brings the new key. Generated keys are hybrid **post-quantum age keys** (ML-KEM-768 + X25519), because ciphertext
+committed to Git stays readable to anyone who obtains it later. Bring-your-own keys (post-quantum or X25519) and
+break-glass recipients are supported.
 
 ## Built for OpenShift
 
@@ -101,7 +102,7 @@ mode, no admission webhooks, no dependencies on other operators, and schema vali
 | Tooling for developers | Custom CLI or plugin | **Standard `sops` CLI** |
 | Existing Secrets with the same name | Overwritten or merged | **Not modified**; reported as `Conflict` |
 | Secret permissions of the controller | Cluster-wide read/write | **None**; impersonates tenant identities |
-| Who grants a team access to a namespace | Labels, selectors or the team itself | **Cluster admin RBAC only**, enforced by the API server |
+| Who grants a team a namespace | Labels, selectors or the team itself | **Cluster admin RBAC only** |
 | Copying ciphertext to another namespace | Usually works | **Rejected** (encrypted scope) |
 | Decryption keys | One per cluster, or shared by everyone | **One per tenant**, post-quantum |
 
@@ -143,9 +144,9 @@ For every `SopsSecret`, on every change and on a periodic resync, the operator:
 1. Checks with a **SubjectAccessReview** that the tenant is granted the target namespace. Otherwise it reports
    `AccessDenied` and decrypts nothing.
 2. Reads the tenant key **as the tenant identity**. The API server authorizes the read.
-3. Verifies that the file is encrypted for this tenant and is untampered (SOPS MAC).
+3. Verifies that the file is encrypted for this tenant.
 4. Decrypts **only the scope** first and verifies that it matches the `SopsSecret`'s namespace and name.
-5. Decrypts the values and writes the Secret **as the tenant identity**. The API server authorizes the write
+5. Decrypts the values, verifies that the file is untampered (SOPS MAC), and writes the Secret **as the tenant identity**. The API server authorizes the write
    again.
 6. Watches the metadata of the tenant's Secrets **as the tenant identity**, so a deleted or changed Secret is
    written back at once rather than at the next resync.
@@ -223,9 +224,9 @@ spec:
   installPlanApproval: Automatic     # Manual: approve each upgrade's InstallPlan yourself
 ```
 
-New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel (for example
-v0.0.4 → v0.0.5) as soon as the CatalogSource has polled the new catalog. To pin the available versions instead,
-use an immutable catalog tag such as `v0.0.5` and change it deliberately.
+New releases reach the cluster through the catalog: OLM upgrades along the `alpha` channel to each new
+version as soon as the CatalogSource has polled the new catalog. To pin the available versions instead, use an
+immutable catalog tag such as `vX.Y.Z` and change it deliberately.
 
 The bundle also installs the three ClusterRoles used in step 2: `sops-operator-tenant`, `sops-key-owner` and
 `sops-tenant-secret-reconciler`.
@@ -316,7 +317,9 @@ team-a   True    KeyGenerated   0                        5s
 The private key is in the Secret `team-a-sops-keys`. The operator keeps an immutable copy of it in the Secret
 `team-a-sops-keys-<YYYYMMDD-HHMMSS>` and restores `team-a-sops-keys` from it when it is deleted or changed.
 
-To bring your own key instead, set `generateKey: false` and create the Secret `team-a-sops-keys` with your identity
+### 3a. Or bring your own key (tenant admin)
+
+To bring your own key instead, set `generateKey: false` in the `SopsTenant` and create the Secret `team-a-sops-keys` with your identity
 in `age.agekey` and the label `sops.stakater.com/enabled: "true"`. Without the label the tenant reports
 `KeyMissing`, and the message names the label.
 
@@ -379,7 +382,8 @@ sops encrypt -i team-a-foo/db-credentials.sops.yaml
 git add team-a-foo/db-credentials.sops.yaml && git commit -m "Add database credentials"
 ```
 
-[`scripts/encrypt.sh`](scripts/encrypt.sh) runs the first three commands; see [scripts/README.md](scripts/README.md).
+[`scripts/encrypt.sh`](scripts/encrypt.sh) runs the first three commands, but keeps a scope already set in the file;
+see [scripts/README.md](scripts/README.md).
 
 Once your GitOps tool applies the file:
 
@@ -401,24 +405,25 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 
 ### `SopsSecret`
 
-| Field | Default | Description |
-|---|---|---|
-| `spec.tenantRef` | required | The `SopsTenant` whose key decrypts this file. |
-| `spec.scope` | required | Encrypted `<namespace>/<name>` this file may be decrypted into. |
-| `spec.stringData` / `spec.data` | one required | Encrypted text / base64 values, as on a Secret. |
-| `spec.type` | `Opaque` | `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. |
-| `spec.template.metadata` | — | Labels and annotations for the Secret, for example for Reloader. `sops.stakater.com/` ones are dropped. |
-| `spec.deletionPolicy` | `Delete` | `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it. |
-| `sops.stakater.com/suspend: "true"` | — | Annotation that pauses reconciliation. |
-| `status.rotation` | — | During a key rotation: the `sops.age` entry that `scripts/rotate.sh` adds to the file. |
+- `spec.tenantRef` (required): the `SopsTenant` whose key decrypts this file.
+- `spec.scope` (required): the encrypted `<namespace>/<name>` this file may be decrypted into.
+- `spec.stringData` / `spec.data` (one required): encrypted text / base64 values, as on a Secret.
+- `spec.type` (default `Opaque`): `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`,
+  `kubernetes.io/basic-auth` or `kubernetes.io/ssh-auth`.
+- `spec.template.metadata`: labels and annotations for the Secret, for example for Reloader. `sops.stakater.com/`
+  ones are dropped.
+- `spec.deletionPolicy` (default `Delete`): `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it.
+- Annotation `sops.stakater.com/suspend: "true"`: pauses reconciliation.
+- `status.rotation`: during a key rotation, the `sops.age` entry that `scripts/rotate.sh` adds to the file.
 
 ### `SopsTenant`
 
 - `spec.generateKey` (default `true`): the operator generates the key of a new tenant and the new key of a
   rotation. Set `false` to bring both yourself.
 - `spec.startRotation` (default `false`): `true` starts a key rotation. `false` or unset completes it, or abandons
-  it before any `SopsSecret` uses the new key (see [Operations](#operations)).
-- `status.publicKey`: the public key for `.sops.yaml`. During a rotation, the new key.
+  it while no `SopsSecret` is decrypted with the new key (see [Operations](#operations)).
+- `status.publicKey`: the public key for `.sops.yaml`. During a rotation, the new key once it is in the key Secret
+  (phase `InProgress`).
 - `status.rotation`: the rotation in progress: `phase`, `startedAt`, the old key's `previousPublicKey`, `migrated`,
   `pending` and `pendingSecrets`.
 - `status.lastRotation`: the start and completion time of the last rotation and the removed `previousPublicKey`,
@@ -443,8 +448,20 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 `AccessDenied` means a RoleBinding is missing, and the message names it. `KeyMismatch` means the key Secret holds
 another key than `status.publicKey` and there is no backup to restore it from.
 
-During a rotation, `SopsTenant` also reports a `Rotated` condition: `RotationRefused`, `WaitingForKey`,
+Once a rotation is asked for, `SopsTenant` also reports a `Rotated` condition: `RotationRefused`, `WaitingForKey`,
 `RotationPending`, `RotationBlocked`, `RotationComplete` or `RotationAbandoned` (see [Operations](#operations)).
+
+### Events
+
+On the `SopsTenant`:
+
+- `KeyGenerated` (Normal): the operator generated the tenant key.
+- `KeyRestored` (Warning): the key Secret was deleted or changed and was restored from its backup.
+- `RotationPending` (Normal): the new key of a rotation is in the key Secret.
+- `RotationComplete` (Normal): every `SopsSecret` uses the new key; the old key's backup was deleted.
+- `RotationAbandoned` (Normal): the old key was put back and the new key's backup was deleted.
+
+On each pending `SopsSecret`, while a rotation cannot complete: `RotationBlocked` (Warning).
 
 ### Configuration
 
@@ -456,8 +473,9 @@ During a rotation, `SopsTenant` also reports a `Rotated` condition: `RotationRef
 
 ### Key rotation
 
-A rotation replaces the tenant key through Git, and no one outside the cluster needs the private key. Each step
-below is one commit. [scripts/README.md](scripts/README.md#rotate-the-tenant-key) shows the script's part in
+A rotation replaces the tenant key through Git. No private key leaves the cluster, unless the tenant admin brings
+the new key (`generateKey: false`). Steps 1 and 3 are commits to the `SopsTenant`; step 2 and step 4 are a commit by
+each team. [scripts/README.md](scripts/README.md#rotate-the-tenant-key) shows the script's part in
 detail.
 
 **Step 1.** The tenant admin starts the rotation in the `SopsTenant`:
@@ -474,7 +492,7 @@ the old key in its backup. Both keys decrypt. `status.publicKey` is now the new 
 
 **Step 1b.** With `generateKey: false`, the tenant admin brings the new key. `Rotated` reports `WaitingForKey`
 until the tenant admin replaces `team-a-sops-keys` with the new key, labelled as in
-[step 3](#3-create-the-tenant-key-tenant-admin):
+[step 3a](#3a-or-bring-your-own-key-tenant-admin):
 
 ```bash
 kubectl delete secret team-a-sops-keys -n team-a-system
@@ -482,7 +500,8 @@ kubectl create secret generic team-a-sops-keys -n team-a-system --from-file=age.
 kubectl label secret team-a-sops-keys -n team-a-system sops.stakater.com/enabled=true
 ```
 
-**Step 2.** Each team runs the script on its GitOps directory and commits the result. It adds the entry the
+**Step 2.** Each team runs the script on its GitOps directory and commits the result. The script needs `yq` and `oc`
+logged in with read access to the `SopsTenant` and the team's `SopsSecret`s. It adds the entry the
 operator prepared to every file of the tenant, and the new public key to the `.sops.yaml` rules that list the old
 one:
 
@@ -514,9 +533,17 @@ kubectl get sopstenant team-a -n team-a-system -o jsonpath='{.status.rotation}'
 scripts/rotate.sh tenant.yaml gitops/team-a
 ```
 
-Setting `startRotation: false` before any `SopsSecret` decrypted with the new key abandons the rotation instead: the
-old key is put back into `team-a-sops-keys`, the new key's backup is deleted, and `Rotated` reports
-`RotationAbandoned`.
+> [!IMPORTANT]
+> A rotation changes which key opens each file, not the values in it. `scripts/rotate.sh` adds the file's
+> existing data key wrapped for the new key, so the values and their ciphertext stay the same. After a key leak,
+> rotating alone is not enough: the leaked key still opens every file in Git history, and so also the current values.
+> Change the secret values themselves and encrypt them again with `sops` for the new key.
+
+Setting `startRotation: false` while no `SopsSecret` is decrypted with the new key abandons the rotation instead:
+the old key is put back into `team-a-sops-keys`, the new key's backup is deleted, and `Rotated` reports
+`RotationAbandoned`. A tenant without `SopsSecret`s whose new key is already in place completes instead. If the old
+key's backup is missing, the rotation cannot be abandoned and `Rotated` reports `RotationBlocked`; set
+`startRotation: true` again and finish it.
 
 ### Key backups
 
@@ -530,6 +557,9 @@ old key is put back into `team-a-sops-keys`, the new key's backup is deleted, an
   kubectl get secret -n team-a-system -l sops.stakater.com/key-backup=true
   ```
 
+- Outside a rotation, a deleted backup is written again from the key Secret at the next reconcile.
+- During a rotation, the old key exists only in its backup. Deleting that backup loses the old key, and files not yet
+  moved to the new key can no longer be decrypted.
 - Do not delete the backups. A tenant admin who deletes both the key Secret and its backup loses the key; only a
   cluster backup can bring it back.
 
@@ -574,17 +604,23 @@ Changes and the steps to take when upgrading are listed per release in [CHANGELO
 
 ## Development
 
-Requirements: Go 1.26, Docker (or Colima), and `make`. All other tools (operator-sdk, opm, kind, kustomize, sops,
-yq, golangci-lint) are pinned in the Makefile and installed into `bin/`.
+Requirements: Go 1.26, Docker (or Colima), and `make`. All other tools (operator-sdk, opm, kind, kustomize,
+controller-gen, setup-envtest, sops, yq, age-keygen, golangci-lint) are pinned in the Makefile and installed into
+`bin/`. `make lint-scripts` needs `shellcheck` installed.
 
 ```bash
 make test               # unit and envtest tests with the RBAC authorizer
 make lint
 make test-scripts       # scripts/encrypt.sh and scripts/rotate.sh with a throwaway key and a fake oc
+make lint-scripts       # shellcheck on scripts/
 make test-e2e           # end-to-end tests: OLM installs this build on kind; results compared with golden files
 make test-upgrade       # upgrade paths through catalog/channels.yaml: published bundles, then this build
 make scorecard          # operator-sdk scorecard against the bundle
+make cleanup-test-e2e   # remove the e2e kind cluster
 ```
+
+envtest starts `etcd` and `kube-apiserver` for each test package. If a test binary is killed, the next test run
+stops the control plane it left behind, so no manual cleanup is needed.
 
 Install from source on a cluster of your choice:
 
