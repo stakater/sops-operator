@@ -16,8 +16,9 @@ limitations under the License.
 
 package controller
 
-// Operator permissions (DESIGN.md §5.3). The operator has no permission on Secrets; it reads
-// tenant keys and writes Secrets only by impersonating tenant identities. It has no cluster-wide
+// Operator permissions (DESIGN.md §5.3). The operator has no permission on Secrets; it reads,
+// watches and writes tenant keys, key backups and output Secrets only by impersonating tenant
+// identities. It has no cluster-wide
 // permission on ServiceAccounts: the cluster admin grants it create and impersonate in each
 // tenant namespace (ClusterRole sops-operator-tenant).
 //

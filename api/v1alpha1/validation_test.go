@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -131,4 +132,37 @@ func TestSopsTenantValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTenantKeyBackupName(t *testing.T) {
+	t.Run("shall name a key backup after the key Secret and the time in UTC", func(t *testing.T) {
+		at := time.Date(2026, 11, 9, 13, 4, 5, 0, time.FixedZone("CET", 3600))
+		if got, want := sopsv1alpha1.TenantKeyBackupName("my-team", at), "my-team-sops-keys-20261109-120405"; got != want {
+			t.Fatalf("TenantKeyBackupName = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestSopsTenantRotationFields(t *testing.T) {
+	ns := env.Namespace(t, "validation")
+	tenant := &sopsv1alpha1.SopsTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-team", Namespace: ns},
+		Spec:       sopsv1alpha1.SopsTenantSpec{StartRotation: true},
+	}
+	t.Run("shall accept startRotation", func(t *testing.T) {
+		if err := env.Admin.Create(context.Background(), tenant); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if !tenant.Spec.StartRotation {
+			t.Fatal("startRotation was not stored")
+		}
+	})
+	t.Run("shall reject an unknown rotation phase", func(t *testing.T) {
+		tenant.Status.Rotation = &sopsv1alpha1.TenantRotationStatus{
+			Phase: "Completing", StartedAt: metav1.Now(), PreviousPublicKey: "age1pqold",
+		}
+		if err := env.Admin.Status().Update(context.Background(), tenant); !apierrors.IsInvalid(err) {
+			t.Fatalf("status update with phase Completing: got %v, want Invalid", err)
+		}
+	})
 }

@@ -2,12 +2,14 @@ package controller_test
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,7 +52,7 @@ func TestSecretRejection(t *testing.T) {
 	dev := env.Namespace(t, "dev")
 	ungranted := env.Namespace(t, "ungranted")
 	tenantNS, recipient := onboardedTenant(t, prod, dev)
-	_, otherRecipient, err := crypto.GenerateKeyFile(time.Now())
+	_, otherRecipient, err := crypto.GenerateKeyFile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +118,9 @@ func TestSecretDecryption(t *testing.T) {
 		if string(out.Data["password"]) != "hunter2" {
 			t.Fatal("output Secret has the wrong value")
 		}
-		if out.Labels["app"] != "billing" || out.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
-			t.Fatalf("labels = %v", out.Labels)
-		}
-		if _, ok := out.Labels["argocd.argoproj.io/instance"]; ok {
-			t.Fatal("GitOps tracking label was copied")
+		if out.Labels["app"] != "billing" || out.Labels["argocd.argoproj.io/instance"] != "x" ||
+			out.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+			t.Fatalf("labels = %v, want the template's labels as written", out.Labels)
 		}
 		if len(out.OwnerReferences) != 1 || out.OwnerReferences[0].UID != s.UID ||
 			out.OwnerReferences[0].BlockOwnerDeletion == nil || *out.OwnerReferences[0].BlockOwnerDeletion {
@@ -162,6 +162,197 @@ func TestSecretDecryption(t *testing.T) {
 		NewWithT(t).Eventually(func(g Gomega) {
 			g.Expect(string(outputSecret(t, prod).Data["password"])).To(Equal("v2"))
 		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+}
+
+func TestSecretSyncAccess(t *testing.T) {
+	t.Run("shall report AccessDenied naming sops-tenant-secret-reconciler where only Secret write is granted", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t)
+		role := &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "write-only-"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "update"}}},
+		}
+		if err := env.Admin.Create(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "write-only", Namespace: prod},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+			Subjects: []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind,
+				Name: sopsv1alpha1.TenantServiceAccountName(tenantName), Namespace: tenantNS}},
+		}
+		if err := env.Admin.Create(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonAccessDenied)
+		if c := readyCondition(s); !strings.Contains(c.Message, "sops-tenant-secret-reconciler") ||
+			!strings.Contains(c.Message, "create, update, list, watch") {
+			t.Fatalf("message %q does not name the role to bind and its verbs", c.Message)
+		}
+		assertNoSecret(t, prod, "db")
+	})
+}
+
+func TestOutputSecretWatch(t *testing.T) {
+	t.Run("shall hold the watch of the output Secret while the SopsSecret is Decrypted", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		eventuallyHeld(t, s, true)
+	})
+
+	t.Run("shall release the watch while the SopsSecret is suspended", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyHeld(t, s, true)
+		update(t, s, func() { s.Annotations = map[string]string{sopsv1alpha1.AnnotationSuspend: "true"} })
+		eventuallyReason(t, s, sopsv1alpha1.ReasonSuspended)
+		eventuallyHeld(t, s, false)
+	})
+
+	t.Run("shall release the watch when the SopsSecret is deleted", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyHeld(t, s, true)
+		if err := env.Admin.Delete(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		eventuallyHeld(t, s, false)
+	})
+
+	t.Run("shall restore a deleted output Secret", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		deleted := outputSecret(t, prod)
+		if err := env.Admin.Delete(ctx, deleted); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			var restored corev1.Secret
+			g.Expect(env.Admin.Get(ctx, client.ObjectKey{Namespace: prod, Name: "db"}, &restored)).To(Succeed())
+			g.Expect(restored.UID).NotTo(Equal(deleted.UID))
+			g.Expect(string(restored.Data["password"])).To(Equal("v1"))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall leave an up-to-date output Secret unchanged", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"app": "billing"}
+		s.Spec.Template.Metadata.Annotations = map[string]string{"example.com/note": "n"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		before := outputSecret(t, prod).ResourceVersion
+		eventuallyResynced(t, s)
+		eventuallyResynced(t, s)
+		if after := outputSecret(t, prod).ResourceVersion; after != before {
+			t.Fatalf("resourceVersion %s became %s: an unchanged Secret was rewritten", before, after)
+		}
+	})
+}
+
+// eventuallyHeld waits until the output Secret watch is held for s, or released when held is false.
+func eventuallyHeld(t *testing.T, s *sopsv1alpha1.SopsSecret, held bool) {
+	t.Helper()
+	NewWithT(t).Eventually(func() bool {
+		return watches.Holds(client.ObjectKeyFromObject(s))
+	}).WithTimeout(20*time.Second).Should(Equal(held), "output Secret watch held for %s", client.ObjectKeyFromObject(s))
+}
+
+// eventuallyResynced waits until s is synced again after its last sync.
+func eventuallyResynced(t *testing.T, s *sopsv1alpha1.SopsSecret) {
+	t.Helper()
+	if err := env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Status.LastSyncTime.DeepCopy()
+	NewWithT(t).Eventually(func(g Gomega) {
+		g.Expect(env.Admin.Get(context.Background(), client.ObjectKeyFromObject(s), s)).To(Succeed())
+		g.Expect(s.Status.LastSyncTime.After(before.Time)).To(BeTrue())
+	}).WithTimeout(20 * time.Second).Should(Succeed())
+}
+
+func TestSecretMetadata(t *testing.T) {
+	t.Run("shall replace labels and annotations set directly on the output Secret with the SopsSecret's", func(t *testing.T) {
+		ctx := context.Background()
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"example.com/team": "a"}
+		s.Spec.Template.Metadata.Annotations = map[string]string{"example.com/note": "n"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		tagged := outputSecret(t, prod)
+		tagged.Labels["example.com/team"] = "b"
+		tagged.Labels["example.com/set-on-secret"] = "x"
+		tagged.Annotations["example.com/set-on-secret"] = "x"
+		if err := env.Admin.Update(ctx, tagged); err != nil {
+			t.Fatal(err)
+		}
+		NewWithT(t).Eventually(func(g Gomega) {
+			out := outputSecret(t, prod)
+			g.Expect(out.Labels).To(Equal(map[string]string{
+				"example.com/team":          "a",
+				sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+				sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
+			}))
+			g.Expect(out.Annotations).To(Equal(map[string]string{
+				"example.com/note":                "n",
+				sopsv1alpha1.AnnotationSopsSecret: "db",
+			}))
+		}).WithTimeout(20 * time.Second).Should(Succeed())
+	})
+
+	t.Run("shall mark the output Secret enabled whatever the template says", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{sopsv1alpha1.LabelEnabled: "false"}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		if labels := outputSecret(t, prod).Labels; labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue {
+			t.Fatalf("labels %v, want %s=%s", labels, sopsv1alpha1.LabelEnabled, sopsv1alpha1.EnabledValue)
+		}
+	})
+
+	t.Run("shall drop sops.stakater.com/ labels and annotations of the template", func(t *testing.T) {
+		prod := env.Namespace(t, "prod")
+		tenantNS, recipient := onboardedTenant(t, prod)
+		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
+		s.Spec.Template.Metadata.Labels = map[string]string{"app": "billing", "sops.stakater.com/custom": "x"}
+		s.Spec.Template.Metadata.Annotations = map[string]string{
+			"example.com/note":                "n",
+			sopsv1alpha1.AnnotationSopsSecret: "other",
+			sopsv1alpha1.AnnotationSuspend:    "true",
+		}
+		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
+		out := outputSecret(t, prod)
+		if want := map[string]string{
+			"app":                       "billing",
+			sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
+			sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
+		}; !maps.Equal(out.Labels, want) {
+			t.Fatalf("labels %v, want %v", out.Labels, want)
+		}
+		if want := map[string]string{"example.com/note": "n", sopsv1alpha1.AnnotationSopsSecret: "db"}; !maps.Equal(out.Annotations, want) {
+			t.Fatalf("annotations %v, want %v", out.Annotations, want)
+		}
 	})
 }
 

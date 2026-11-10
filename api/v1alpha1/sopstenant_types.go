@@ -17,17 +17,29 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SopsTenantSpec defines a tenant key. The key is the Secret with the tenant's name in the
+// SopsTenantSpec defines a tenant key. The key is the Secret `<tenant>-sops-keys` in the
 // tenant's namespace.
 type SopsTenantSpec struct {
-	// GenerateKey generates a post-quantum age key when the key Secret does not exist.
+	// GenerateKey generates a post-quantum age key when the tenant never had a key, and the new key of a
+	// rotation. Set to false, the tenant admin provides both in the key Secret.
 	// +kubebuilder:default=true
 	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Generate key",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
 	// +optional
 	GenerateKey *bool `json:"generateKey,omitempty"`
+	// StartRotation set to true asks for a new tenant key: once every SopsSecret of the tenant is
+	// healthy, the new key replaces the key in the key Secret and the old key is kept in its backup;
+	// both keys decrypt. With generateKey true the operator generates the new key; with false the
+	// tenant admin replaces the key Secret. Set it to false, or remove it, to complete the rotation:
+	// the old key's backup is deleted once every SopsSecret was decrypted with the new key. Set to
+	// false while no SopsSecret is decrypted with the new key, it abandons the rotation and restores the old key.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Start rotation",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
+	// +optional
+	StartRotation bool `json:"startRotation,omitempty"`
 }
 
 // SopsTenantStatus reports the state of the tenant key.
@@ -40,10 +52,22 @@ type SopsTenantStatus struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="ServiceAccount",xDescriptors={"urn:alm:descriptor:io.kubernetes:ServiceAccount"}
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
-	// KeySecretName is the Secret in the tenant namespace that holds the tenant key and its public key.
+	// KeySecretName is the Secret in the tenant namespace that holds the tenant's private key, `<tenant>-sops-keys`.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Key Secret",xDescriptors={"urn:alm:descriptor:io.kubernetes:Secret"}
 	// +optional
 	KeySecretName string `json:"keySecretName,omitempty"`
+	// PublicKey is the public key of the current key, for .sops.yaml.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Public key"
+	// +optional
+	PublicKey string `json:"publicKey,omitempty"`
+	// Rotation is the key rotation in progress.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Rotation"
+	// +optional
+	Rotation *TenantRotationStatus `json:"rotation,omitempty"`
+	// LastRotation is the last completed key rotation.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Last rotation"
+	// +optional
+	LastRotation *LastRotation `json:"lastRotation,omitempty"`
 	// UsedBy is the number of SopsSecrets referencing this tenant.
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Used by"
 	// +optional
@@ -55,12 +79,46 @@ type SopsTenantStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// TenantRotationStatus reports a key rotation in progress. The key Secret holds the new key once it is
+// in place, and status.publicKey is its public key; the old key is kept in its backup.
+type TenantRotationStatus struct {
+	// Phase is WaitingForKey until the key Secret holds a new key, then InProgress.
+	// +kubebuilder:validation:Enum=WaitingForKey;InProgress
+	Phase string `json:"phase"`
+	// StartedAt is when the rotation started.
+	StartedAt metav1.Time `json:"startedAt"`
+	// PreviousPublicKey is the public key of the old key, for .sops.yaml until the rotation completes.
+	PreviousPublicKey string `json:"previousPublicKey"`
+	// Migrated is the number of SopsSecrets decrypted with the new key.
+	// +optional
+	Migrated int32 `json:"migrated,omitempty"`
+	// Pending is the number of SopsSecrets not yet decrypted with the new key.
+	// +optional
+	Pending int32 `json:"pending,omitempty"`
+	// PendingSecrets names up to 50 pending SopsSecrets as <namespace>/<name>, sorted.
+	// +kubebuilder:validation:MaxItems=50
+	// +optional
+	PendingSecrets []string `json:"pendingSecrets,omitempty"`
+}
+
+// LastRotation records the last completed key rotation.
+type LastRotation struct {
+	// StartedAt is when the rotation started.
+	StartedAt metav1.Time `json:"startedAt"`
+	// CompletedAt is when the rotation completed.
+	CompletedAt metav1.Time `json:"completedAt"`
+	// PreviousPublicKey is the public key of the key the rotation removed. scripts/rotate.sh removes its
+	// entries from files; it can decrypt nothing any more.
+	PreviousPublicKey string `json:"previousPublicKey"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="the name must be at most 63 characters; it is a label value on the tenant's ServiceAccount"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Used By",type=integer,JSONPath=`.status.usedBy`
+// +kubebuilder:printcolumn:name="Last Rotated",type=date,JSONPath=`.status.lastRotation.completedAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +operator-sdk:csv:customresourcedefinitions:displayName="SOPS Tenant",resources={{Secret,v1,""}}
 
@@ -91,7 +149,16 @@ func TenantKeySecretName(tenant string) string {
 	return tenant + KeySecretSuffix
 }
 
-// ShouldGenerateKey reports whether a missing key Secret should be generated.
+// KeyBackupTimeFormat is the UTC timestamp format in the name of a key backup.
+const KeyBackupTimeFormat = "20060102-150405"
+
+// TenantKeyBackupName returns the name of the key backup of the tenant named tenant written at at:
+// <tenant>-sops-keys-<YYYYMMDD-HHMMSS> in UTC.
+func TenantKeyBackupName(tenant string, at time.Time) string {
+	return TenantKeySecretName(tenant) + "-" + at.UTC().Format(KeyBackupTimeFormat)
+}
+
+// ShouldGenerateKey reports whether the operator generates the tenant's first key and the new key of a rotation.
 func (t *SopsTenant) ShouldGenerateKey() bool {
 	return t.Spec.GenerateKey == nil || *t.Spec.GenerateKey
 }

@@ -42,6 +42,7 @@ import (
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/controller"
 	"github.com/stakater/sops-operator/internal/identity"
+	"github.com/stakater/sops-operator/internal/secretwatch"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -172,19 +173,32 @@ func main() {
 		os.Exit(1)
 	}
 	identities := identity.NewFactory(mgr.GetConfig(), mgr.GetScheme())
+	keyWatches := secretwatch.NewForKeys(identities.ConfigFor)
+	if err := mgr.Add(keyWatches); err != nil {
+		setupLog.Error(err, "unable to add key Secret watches")
+		os.Exit(1)
+	}
 	if err := (&controller.SopsTenantReconciler{
 		Client:         mgr.GetClient(),
+		APIReader:      mgr.GetAPIReader(),
 		Identities:     identities,
+		Watches:        keyWatches,
 		Recorder:       mgr.GetEventRecorder("sops-operator"),
 		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsTenant")
 		os.Exit(1)
 	}
+	watches := secretwatch.New(identities.ConfigFor)
+	if err := mgr.Add(watches); err != nil {
+		setupLog.Error(err, "unable to add output Secret watches")
+		os.Exit(1)
+	}
 	if err := (&controller.SopsSecretReconciler{
 		Client:         mgr.GetClient(),
 		APIReader:      mgr.GetAPIReader(),
 		Identities:     identities,
+		Watches:        watches,
 		ResyncInterval: resyncInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SopsSecret")
