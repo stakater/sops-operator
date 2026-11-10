@@ -73,10 +73,12 @@ func Start() (*Env, error) {
 		ErrorIfCRDPathMissing: true,
 	}
 	te.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
+	stopOrphanedControlPlane()
 	cfg, err := te.Start()
 	if err != nil {
 		return nil, fmt.Errorf("start envtest: %w", err)
 	}
+	stopOnSignal(te)
 	e := &Env{env: te, Scheme: scheme}
 	if err := e.setup(root, cfg); err != nil {
 		_ = te.Stop()
