@@ -410,8 +410,10 @@ The Secret `team-a-foo/db-credentials` now exists, owned by the `SopsSecret` and
 - `spec.stringData` / `spec.data` (one required): encrypted text / base64 values, as on a Secret.
 - `spec.type` (default `Opaque`): `Opaque`, `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`,
   `kubernetes.io/basic-auth` or `kubernetes.io/ssh-auth`.
-- `spec.template.metadata`: labels and annotations for the Secret, for example for Reloader. `sops.stakater.com/`
-  ones are dropped.
+- `spec.template.metadata`: the labels and annotations of the Secret, for example for Reloader. They are the only
+  ones copied; the `SopsSecret`'s own labels and annotations are not. Keys starting with `sops.stakater.com/`,
+  `argocd.argoproj.io/`, `kustomize.toolkit.fluxcd.io/` or `helm.toolkit.fluxcd.io/` are dropped, so GitOps tools
+  never claim or prune the Secret.
 - `spec.deletionPolicy` (default `Delete`): `Delete` removes the Secret with the `SopsSecret`; `Retain` keeps it.
 - Annotation `sops.stakater.com/suspend: "true"`: pauses reconciliation.
 - `status.rotation`: during a key rotation, the `sops.age` entry that `scripts/rotate.sh` adds to the file.

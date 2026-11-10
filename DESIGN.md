@@ -337,7 +337,7 @@ status:
 | `spec.tenantRef` | yes | Tenant whose key decrypts this file. |
 | `spec.scope` | yes | **Encrypted** `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
 | `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
-| `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels are not copied. Labels and annotations starting with `sops.stakater.com/` are dropped. |
+| `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels and annotations are not copied. Keys starting with `sops.stakater.com/` or a GitOps tracking prefix are dropped. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
 | `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
 | `status.rotation` | — | During a key rotation of the tenant: the `sops.age` entry for the new key (`newRecipient`, made for `fromGeneration`), and whether the current generation decrypted with the new key (`migrated`, `migratedGeneration`) or was accepted with the old key (`acceptedGeneration`) (§4.5). |
@@ -354,7 +354,9 @@ Behaviour:
 - The operator manages only Secrets **it created**. A pre-existing Secret with the same name is a `Conflict`.
 - With `deletionPolicy: Delete`, output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as
   children; `blockOwnerDeletion` is not set). Output Secrets never carry GitOps tracking labels or annotations
-  (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not prune them.
+  (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`, `helm.toolkit.fluxcd.io/*`), not even from the template,
+  so GitOps tools do not claim or prune them. Labels and annotations come only from the template, never from the
+  `SopsSecret` itself: a template is explicit, while inheriting would need a list of every tool's tracking keys.
 - `status.secretUID` records the Secret the operator created. Every later write is an update with that UID as a
   precondition. The API server rejects it (`409`) when the Secret is gone or was replaced; the operator then creates
   the Secret, which succeeds if it was deleted and fails with `AlreadyExists` → `Conflict` if someone else's Secret
