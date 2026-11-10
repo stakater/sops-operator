@@ -1,6 +1,6 @@
 # SOPS Operator — Design
 
-Status: **Draft** · Last updated: 2026-10-09
+Status: **Draft** · Last updated: 2026-11-10
 
 A Kubernetes operator that decrypts [SOPS](https://github.com/getsops/sops)-encrypted resources in-cluster into
 plain Kubernetes Secrets, with self-service for tenants and zero standing privileges for the operator.
@@ -24,9 +24,9 @@ plain Kubernetes Secrets, with self-service for tenants and zero standing privil
 - Fetching secrets from external stores (use External Secrets Operator).
 - Git access from the operator.
 - Templating, generators, dynamic/leased secrets, PushSecret.
-- Adopting, merging into, or seeding pre-existing Secrets.
+- Adopting, merging into, or seeding pre-existing Secrets that are not marked for the operator (D12).
 - Cross-namespace or cluster-wide secrets.
-- Automatic key rotation.
+- Key rotation (not yet supported; §8.3).
 - KMS backends (OpenBao, cloud KMS) — planned later behind the same API.
 
 ---
@@ -94,11 +94,11 @@ Kubernetes API: SopsSecret ──► operator: authorize → load key → decryp
 | Actor | Kind | Owns | Cannot |
 |---|---|---|---|
 | **Cluster admin** | Human (platform team) | Operator installation (OLM). Tenant onboarding: the RoleBindings that let the operator use the tenant ServiceAccount, let it own its key, and let it write Secrets in each namespace the tenant may target (§5.2). Break-glass private keys (offline). | — |
-| **Tenant admin** | Human (team lead / tenant owner) | `SopsTenant` and its key Secret in the tenant namespace; may also create the two tenant-namespace RoleBindings (D47). Distributing the public key. Key rotation. | Grant the tenant access to other namespaces. |
-| **Developer** | Human | `SopsSecret` files in Git and objects in the namespaces they work in. Encrypting with the public key. | Read keys or tenants; decrypt or edit existing files; target a namespace other than the `SopsSecret`'s own. |
+| **Tenant admin** | Human (team lead / tenant owner) | `SopsTenant` and its key Secret in the tenant namespace; may also create the two tenant-namespace RoleBindings (D47). Distributing the public key. | Grant the tenant access to other namespaces. |
+| **Developer** | Human | `SopsSecret` files in Git and objects in the namespaces they work in. Encrypting with the public key. | Read keys; decrypt or edit existing files; target a namespace other than the `SopsSecret`'s own. |
 | **GitOps tool** (Argo CD, Flux, CI) | Machine | Applying the still-encrypted `SopsSecret` from Git to the cluster. | See plaintext or keys. |
 | **Operator** | Machine | Decrypting and writing output Secrets — only by impersonating a tenant identity. | Access any Secret with its own identity. |
-| **Tenant identity** (`team-a-system:team-a-sops-tenant`) | Machine (ServiceAccount) | The permissions its RoleBindings grant: read the tenant key, write Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
+| **Tenant identity** (`team-a-system:team-a-sops-tenant`) | Machine (ServiceAccount) | The permissions its RoleBindings grant: own the tenant key and its backups; write and watch Secrets in granted namespaces. | Be used by workloads (no token automount; lives in the key namespace). |
 
 ### 3.2 Boundaries
 
@@ -122,7 +122,7 @@ flowchart TB
 
     subgraph TNS["Tenant namespace — controlled by tenant admin"]
         TEN["SopsTenant #lt;tenant#gt;"]
-        KEY["Secret #lt;tenant#gt;<br/>private key"]
+        KEY["Secret #lt;tenant#gt;-sops-keys<br/>private key, and its backups"]
         SA["ServiceAccount #lt;tenant#gt;-sops-tenant<br/>tenant identity"]
     end
 
@@ -133,7 +133,7 @@ flowchart TB
 
     OP -->|creates| SA
     CA -.->|"RoleBinding in the tenant namespace:<br/>may use the tenant ServiceAccount"| OP
-    CA -.->|"RoleBinding in the tenant namespace: may read its key<br/>RoleBinding in each application namespace: may write Secrets"| SA
+    CA -.->|"RoleBinding in the tenant namespace: owns its key<br/>RoleBinding in each application namespace: writes and watches Secrets"| SA
     TA -->|creates| TEN
     TA -->|"shares public key"| DEV
     DEV -->|"encrypts, commits"| FILE
@@ -141,7 +141,7 @@ flowchart TB
     GITOPS -->|"applies (encrypted)"| SS
     OP -->|impersonates| SA
     SA -->|reads| KEY
-    SA -->|"writes, cannot read"| OUT
+    SA -->|"writes, watches metadata"| OUT
     SS -.->|owns| OUT
 ```
 
@@ -157,9 +157,10 @@ flowchart TB
 | Grant a tenant Secret write in a namespace | ✅ | — | — | — | — |
 | Create / delete a `SopsTenant` | — | ✅ | — | — | — |
 | Generate the tenant key | — | triggers | — | — | ⚙️ |
-| Hold and back up the tenant private key | — | ✅ | — | — | — |
+| Back up the tenant private key in the cluster | — | — | — | — | ⚙️ |
+| Restore a deleted or changed key Secret from its backup | — | — | — | — | ⚙️ |
+| Back up the cluster, tenant keys included | ✅ | — | — | — | — |
 | Hold break-glass private keys (offline) | ✅ | — | — | — | — |
-| Rotate the tenant key | — | ✅ | — | — | — |
 | Encrypt a secret | ✅ | ✅ | ✅ | — | — |
 | Decrypt a secret | break-glass only | own tenant | — | — | ⚙️ |
 | Commit a `SopsSecret` to Git | — | ✅ | ✅ | — | — |
@@ -172,7 +173,7 @@ flowchart TB
 | Boundary | Separates | Enforced by |
 |---|---|---|
 | Tenant ↔ tenant | Different keys, different tenant identities | Kubernetes RBAC: each tenant identity is granted only its own namespaces |
-| Key namespace ↔ consumer namespaces | Private keys never leave `team-a-system`; developers have no access there | Kubernetes RBAC |
+| Key namespace ↔ consumer namespaces | Private keys never leave `team-a-system`; developers have no access to Secrets there | Kubernetes RBAC |
 | Namespace ↔ namespace within a tenant | Ciphertext for `team-a-prod` cannot be used in `team-a-dev` | Cryptography: encrypted `scope`, checked after decryption |
 | Git ↔ cluster | Only ciphertext in Git and in the GitOps tool | SOPS encryption |
 | Humans ↔ plaintext | Developers encrypt but cannot decrypt | Public-key cryptography |
@@ -194,9 +195,9 @@ sequenceDiagram
     Note over CA,OP: Onboarding (once per tenant)
     TA->>API: SopsTenant in the tenant namespace
     CA->>API: RoleBindings in the tenant namespace: operator, key owner
-    CA->>API: RoleBinding in each application namespace: Secret writer
+    CA->>API: RoleBinding in each application namespace: sops-tenant-secret-reconciler
     OP->>API: create ServiceAccount #lt;tenant#gt;-sops-tenant
-    OP->>API: create key Secret (as #lt;tenant#gt;-sops-tenant)
+    OP->>API: create key Secret and its backup (as #lt;tenant#gt;-sops-tenant)
     TA->>DEV: public key (.sops.yaml)
 
     Note over CA,OP: Every secret change
@@ -228,11 +229,12 @@ metadata:
   name: team-a                  # key Secret: team-a-system/team-a-sops-keys
   namespace: team-a-system        # tenant namespace (dedicated; holds keys only)
 spec:
-  generateKey: true              # default; generates a post-quantum key if the key Secret is missing
+  generateKey: true              # default; the operator generates the key of a new tenant (§4.4)
 status:
   observedGeneration: 2
   serviceAccountName: team-a-sops-tenant
   keySecretName: team-a-sops-keys
+  publicKey: age1pq1...          # for .sops.yaml; reported, never read (D57)
   usedBy: 4                      # SopsSecrets referencing this tenant
   conditions:
     - type: Ready
@@ -242,44 +244,57 @@ status:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `spec.generateKey` | `true` | Generate a post-quantum age key when reading the key Secret returns `404 Not Found`. Any other error never triggers generation. Set `false` for bring-your-own keys and during disaster recovery. |
+| `spec.generateKey` | `true` | Generate a post-quantum age key for a new tenant: no key Secret, no key backup and no `SopsSecret` referencing the tenant (§4.4). Set `false` to bring your own key. |
+| `status.publicKey` | — | Public key of the tenant key, derived on every reconcile from the key Secret or its newest backup: the value to list in `.sops.yaml` (D39). |
 | `status.serviceAccountName` | — | The tenant's ServiceAccount, `<tenant>-sops-tenant` (D46). |
 | `status.keySecretName` | — | The tenant's key Secret, `<tenant>-sops-keys` (D48). |
 | `status.usedBy` | — | Number of `SopsSecret`s referencing this tenant. |
-| `status.conditions[Ready]` | — | Reasons: `KeyLoaded`, `KeyGenerated`, `KeyMissing`, `KeyInvalid`, `AccessDenied` (tenant not onboarded). |
+| `status.conditions[Ready]` | — | Reasons: `KeyLoaded`, `KeyGenerated`, `KeyMissing` (no usable key Secret and nothing to restore it from, or an unlabelled one; the message says which, §4.4), `KeyInvalid`, `AccessDenied` (tenant not onboarded; the message names the binding). |
 
 Printer columns: `READY`, `REASON`, `USED BY`, `AGE`.
 
+The status is rebuilt on every reconcile from the key Secret, its backups and the `SopsSecret`s of the tenant. The
+operator never reads it to decide anything, so a tenant whose status is lost (restored from a backup, recreated,
+re-synced by GitOps) behaves exactly like before (D57).
+
 ### 4.2 Key Secret
 
-Same name and namespace as the `SopsTenant`.
+Named `<tenant>-sops-keys`, in the namespace of the `SopsTenant` (D48).
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: team-a
+  name: team-a-sops-keys
   namespace: team-a-system
   labels:
-    app.kubernetes.io/managed-by: sops-operator   # only if generated by the operator
+    sops.stakater.com/enabled: "true"
+    app.kubernetes.io/managed-by: sops-operator   # set when the operator creates it (generated or restored)
 type: Opaque
 stringData:
-  age.agekey: |
-    # public key: age1pq1...
+  age.agekey: |            # private keys only; the public key is in SopsTenant status.publicKey
     AGE-SECRET-KEY-PQ-1...
-  age.pub: age1pq1...      # primary public key; written when the operator generates the key
 ```
 
-- `age.agekey` holds one or more identities; the **first** is primary. Several identities allow rotation.
+- `age.agekey` holds one or more identities; the **first** is primary. Further identities, for example a
+  break-glass key, also decrypt.
 - Generated keys are post-quantum hybrid. Bring-your-own keys may mix PQ and X25519 identities. SSH and plugin
   identities make the key `KeyInvalid`.
-- The operator **creates the key only when it is missing and never modifies, overwrites or deletes it** (the tenant identity has only `get` and `create`). An invalid key is reported,
-  not replaced.
-- **No ownerReference**: deleting the tenant never deletes the key.
-- `age.pub` holds the primary public key. The operator writes it when it generates the key (no extra permission:
-  the Secret is created with both fields). It is optional for bring-your-own keys; when present it must match the
-  primary identity, otherwise the tenant reports `KeyInvalid`. The tenant admin copies it into the team's
-  `.sops.yaml`; reading it requires reading the key Secret, so it is not distributed to developers by the cluster.
+- The key Secret holds private keys only. The operator derives the primary public key and reports it in the
+  tenant's `status.publicKey` (D39), where anyone allowed to read the `SopsTenant` finds it for `.sops.yaml` without
+  access to the key Secret. Generated key files have no comment lines. An `age.pub` field is ignored.
+- **Enabled label** (D49): the operator uses `<tenant>-sops-keys` only when it carries
+  `sops.stakater.com/enabled: "true"` and is not an output Secret (no `sops.stakater.com/sopssecret` annotation, no
+  ownerReference). A tenant admin who brings a key adds that one label; an unlabelled Secret makes the tenant
+  report `KeyMissing`, naming the label. A key Secret generated by v0.0.4 (the operator's `managed-by` label,
+  without annotation and owner) is labelled by the operator.
+- The operator keeps an immutable backup of the key and restores the key Secret from the newest backup when it
+  is deleted, changed or loses the `enabled` label (§4.4, D51). The key cannot be replaced by editing the key
+  Secret; key rotation is not yet supported (§8.3).
+- The `SopsSecret` controller reads the key Secret as the tenant identity for every decryption; it never reads the
+  tenant's status (D57). A key Secret that is missing, unreadable, unlabelled or invalid makes the `SopsSecret`
+  report `TenantNotReady`.
+- **No ownerReference**: deleting the tenant never deletes the key or its backups.
 
 ### 4.3 `SopsSecret`
 
@@ -306,11 +321,11 @@ spec:
   type: Opaque
   data: {}                           # binary values (base64), encrypted
   stringData: {}                     # text values, encrypted
-sops: { ... }                        # written by `sops encrypt`
+# written by `sops encrypt`:
+sops:
 status:
   observedGeneration: 1
   lastSyncTime: "2026-10-09T10:00:00Z"
-  secretUID: 6f1c2b8e-0d1a-4c5e-9b7f-2a3d4e5f6a7b   # UID of the Secret this SopsSecret created
   conditions:
     - type: Ready
       status: "True"
@@ -322,27 +337,88 @@ status:
 | `spec.tenantRef` | yes | Tenant whose key decrypts this file. |
 | `spec.scope` | yes | **Encrypted** `<namespace>/<name>` where this ciphertext may be decrypted. Set by the author before encryption. |
 | `spec.deletionPolicy` | no | `Delete`: the output Secret has an ownerReference to the `SopsSecret` and is garbage-collected with it. `Retain`: the output Secret has no ownerReference and stays when the `SopsSecret` is deleted. |
-| `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). The `SopsSecret`'s own labels are not copied. |
+| `spec.template.metadata` | no | Labels and annotations copied to the output Secret (e.g. Reloader annotations). Copied as written; the `SopsSecret`'s own labels and annotations are not copied. Keys starting with `sops.stakater.com/` are dropped. |
 | `spec.type` | no | `Opaque` (default), `kubernetes.io/tls`, `kubernetes.io/dockerconfigjson`, `kubernetes.io/basic-auth`, `kubernetes.io/ssh-auth`. Service-account and bootstrap token types are not allowed. |
 | `spec.data` / `spec.stringData` | at least one | Same semantics as on a Secret. A key may not appear in both. |
 | `sops` | yes | SOPS metadata written by `sops encrypt`. Must contain `mac`, `lastmodified`, `version`, at least one `age` recipient, `encrypted_regex: ^(data|stringData|scope)$` and `mac_only_encrypted: true`. Only age recipients in a single key group are supported; other key types are rejected by the schema. |
 
 Status reasons: `Decrypted`, `Suspended`, `TenantNotFound`, `TenantNotReady`, `AccessDenied`, `NotRecipient`,
-`ScopeMismatch`, `DecryptFailed`, `Conflict`, `ApplyFailed` (e.g. type validation, size limit).
+`ScopeMismatch`, `DecryptFailed`, `Conflict`, `ApplyFailed` (e.g. type validation, size limit). The status only
+reports; it is rebuilt on every reconcile and never read back (D57).
 
 Printer columns: `TENANT`, `READY`, `REASON`, `AGE`.
 
 Behaviour:
 
-- The operator manages only Secrets **it created**. A pre-existing Secret with the same name is a `Conflict`.
+- **Ownership** (D28): a Secret belongs to a `SopsSecret` when it has the `SopsSecret`'s name and namespace and
+  carries `sops.stakater.com/enabled: "true"`. Any other Secret with that name is never changed: `Conflict`. A
+  Secret written by v0.0.4 (`app.kubernetes.io/managed-by: sops-operator` and the annotation
+  `sops.stakater.com/sopssecret` naming the `SopsSecret`) also belongs to it and gets the label on its next write.
 - With `deletionPolicy: Delete`, output Secrets carry an ownerReference to the `SopsSecret` (Argo CD shows them as
-  children; `blockOwnerDeletion` is not set). Output Secrets never carry GitOps tracking labels or annotations
-  (`argocd.argoproj.io/*`, `kustomize.toolkit.fluxcd.io/*`), so GitOps tools do not prune them.
-- `status.secretUID` records the Secret the operator created. Every later write is an update with that UID as a
-  precondition. The API server rejects it (`409`) when the Secret is gone or was replaced; the operator then creates
-  the Secret, which succeeds if it was deleted and fails with `AlreadyExists` → `Conflict` if someone else's Secret
-  holds the name. A `SopsSecret` without `status.secretUID` whose Secret already exists is a `Conflict`.
-- Drift on the output Secret is corrected on the next periodic resync.
+  children; `blockOwnerDeletion` is not set). Labels and annotations come only from the template, copied as written,
+  never from the `SopsSecret` itself, so the GitOps tool's tracking labels and annotations on the `SopsSecret` never
+  reach the Secret and the tool does not claim or prune it. A template is explicit; inheriting would need a list of
+  every tool's tracking keys to leave out.
+- To write, the operator lists Secrets by name (`metadata.name` field selector) as the tenant identity, metadata
+  only, and never reads Secret data. It creates the Secret when the list is empty, updates it at the
+  resourceVersion it listed when it belongs to the `SopsSecret`, and otherwise reports `Conflict`. A Secret
+  replaced between list and update fails the update and is checked again on the next reconcile.
+- Ownership does not depend on status, so a `SopsSecret` whose status is lost, or that is recreated or restored,
+  keeps managing its Secret. A Secret kept by `deletionPolicy: Retain` keeps its label and is taken over by the
+  next `SopsSecret` with the same name (D12).
+- A `SopsSecret` named like the key Secret or a key backup of a `SopsTenant` in its namespace (`<tenant>-sops-keys`
+  or `<tenant>-sops-keys-…`) reports `Conflict` and writes nothing: its output would be the tenant's key.
+- Every output Secret carries `sops.stakater.com/enabled: "true"`, `app.kubernetes.io/managed-by: sops-operator`
+  and the annotation `sops.stakater.com/sopssecret` (the `SopsSecret`, in the same namespace). Its other labels and
+  annotations come only from `spec.template.metadata`.
+- Output Secrets stay mutable, and the operator reverts direct changes (D50). It watches the metadata of its
+  tenant's output Secrets as the tenant identity, one watch per tenant and namespace selected by the `enabled` label,
+  while a `SopsSecret` of the tenant there is `Decrypted`. A deletion or any change, of values, labels or
+  annotations, reconciles the `SopsSecret`, which writes the Secret back in place at once (same UID, so volume
+  mounts refresh). A write that changes nothing does not modify the Secret, so the operator's own writes cause no
+  loop. The periodic resync corrects anything the watch missed.
+
+### 4.4 Key backups
+
+The operator keeps an immutable copy of the tenant key, as the tenant identity, in the tenant namespace:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: team-a-sops-keys-20261109-091200   # <tenant>-sops-keys-<YYYYMMDD-HHMMSS>, UTC
+  namespace: team-a-system
+  labels:
+    sops.stakater.com/enabled: "true"
+    sops.stakater.com/key-backup: "true"
+    app.kubernetes.io/managed-by: sops-operator
+  annotations:
+    sops.stakater.com/public-key: age1pq1...
+immutable: true
+stringData:
+  age.agekey: |
+    AGE-SECRET-KEY-PQ-1...
+```
+
+The operator decides from the key Secret, its backups and the `SopsSecret`s of the tenant, never from status
+(D57):
+
+- **With a backup**, the key Secret must hold the key of the **newest** backup (by the timestamp in its name). A
+  key Secret that is deleted, holds another key or lost the `enabled` label is restored from it, and the operator
+  records a Warning event `KeyRestored`. `status.publicKey` is the newest backup's public key.
+- **Without a backup**, a valid key Secret with the `enabled` label is backed up: on its first load, for a key the
+  tenant admin brought, and on upgrade from v0.0.4.
+- **Without a key Secret and without a backup**, a key is generated only when `generateKey` is not `false` and no
+  `SopsSecret` references the tenant, counted from an uncached list. Otherwise the tenant reports `KeyMissing`; the
+  message gives the number of `SopsSecret`s, whose files a new key could not decrypt. Generation writes the backup
+  first and then the key Secret, so a key that exists anywhere is never generated again.
+- The operator watches the key Secret's metadata as the tenant identity, so a restore happens at once; the periodic
+  resync covers a missed event. Backups are not watched: a deleted backup is written again from the key Secret at
+  the next reconcile, since no backup is left.
+- A `SopsTenant` recreated with an empty status keeps the key the newest backup holds.
+- The tenant admin, the only user with Secret rights in the tenant namespace, can still delete the key Secret and
+  all its backups. That loses the key; cluster backups cover it (§7.2, D55). If they then put another labelled key
+  Secret in place, the operator uses it and backs it up.
 
 ---
 
@@ -350,17 +426,23 @@ Behaviour:
 
 ### 5.1 Flow for a `SopsSecret` in namespace X
 
-1. Resolve `tenantRef` → `team-a-system/team-a`.
-2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:team-a-system:team-a-sops-tenant` create Secrets in X?
-   If not → `AccessDenied`. Done before any decryption.
-3. Read the key Secret **impersonating** `team-a-system:team-a-sops-tenant`.
+1. Resolve `tenantRef` → `team-a-system/team-a`; a missing `SopsTenant` → `TenantNotFound`. A `SopsSecret` named
+   like a key Secret or key backup of a `SopsTenant` in its namespace → `Conflict`.
+2. **Grant check** (SubjectAccessReview): may `system:serviceaccount:team-a-system:team-a-sops-tenant` create,
+   update, list and watch Secrets in X (`sops-tenant-secret-reconciler`)? If not → `AccessDenied`, naming the role
+   and the verbs. Done before any decryption.
+3. Read the key Secret **impersonating** `team-a-system:team-a-sops-tenant`. Missing, unreadable, without the
+   `enabled` label or invalid → `TenantNotReady`. The tenant's status is not consulted (D57).
 4. Verify the file's recipients include the tenant key → else `NotRecipient`.
 5. Decrypt **only** the encrypted `scope` and verify it equals `X/<name>` → else `ScopeMismatch`. No other value of
    a document scoped elsewhere is decrypted. Then decrypt the values and verify the MAC → else `DecryptFailed`.
    Error messages never contain decrypted values (SOPS does not authenticate a value's type tag, and its parse
    errors quote the plaintext).
-6. Create or update the Secret in X **impersonating** `team-a-system:team-a-sops-tenant` (D28). The API server enforces the cluster
-   admin's RoleBinding again.
+6. Create or update the Secret in X **impersonating** `team-a-system:team-a-sops-tenant`, after a metadata-only
+   list by name that shows whether it belongs to the `SopsSecret` (D28); a foreign Secret → `Conflict`. The API
+   server enforces the cluster admin's RoleBinding again.
+7. While the `SopsSecret` is `Decrypted`, watch the metadata of the tenant's labelled Secrets in X as the tenant
+   identity (D50).
 
 ### 5.2 RBAC objects
 
@@ -369,8 +451,8 @@ Shipped as static objects in the OLM bundle:
 | ClusterRole | Rules | Bound by | Where |
 |---|---|---|---|
 | `sops-operator-tenant` | `serviceaccounts`: `create`, `impersonate` | Cluster admin (or tenant admin, D47), to the operator | Each tenant namespace |
-| `sops-key-owner` | `secrets`: `get`, `create` | Cluster admin (or tenant admin, D47) | Tenant namespace |
-| `sops-secret-writer` | `secrets`: `create`, `update` — no read (D28) | Cluster admin | Each namespace the tenant may write to |
+| `sops-key-owner` | `secrets`: `get`, `list`, `watch`, `create`, `update` (§4.4) | Cluster admin (or tenant admin, D47) | Tenant namespace |
+| `sops-tenant-secret-reconciler` | `secrets`: `create`, `update`, `list`, `watch` (D56) | Cluster admin | Each namespace the tenant may write to |
 | `sops-tenant-admin` | full access to `sopstenants`; aggregated to `admin` | — | — |
 | `sops-secret-editor` | full access to `sopssecrets`; aggregated to `edit` | — | — |
 | `sops-viewer` | read `sopstenants`, `sopssecrets`; aggregated to `view` | — | — |
@@ -391,12 +473,13 @@ namespaces hold tenant keys only, so the operator can act as nothing else there.
 Onboarding for tenant `team-a` in tenant namespace `team-a-system`, writing to `team-a-prod`; can be applied
 automatically by Stakater Tenant Operator or Capsule. RoleBinding names are free; only `roleRef` and `subjects`
 matter. The first two RoleBindings grant only permissions the built-in `admin` role already holds in the tenant
-namespace, so the tenant admin may create them too (D47). The Secret-writer RoleBindings are the only grants that
-extend a tenant's reach and stay with the cluster admin.
+namespace, so the tenant admin may create them too (D47). The `sops-tenant-secret-reconciler` RoleBindings are the
+only grants that extend a tenant's reach and stay with the cluster admin.
+
+Once per tenant namespace, the operator may create and use tenant ServiceAccounts in `team-a-system`. The subject
+is the operator's ServiceAccount, in the namespace of its Subscription (`openshift-operators` here):
 
 ```yaml
-# Once per tenant namespace: the operator may create and use tenant ServiceAccounts in team-a-system. The subject
-# is the operator's ServiceAccount, in the namespace of its Subscription (openshift-operators here).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -410,8 +493,11 @@ subjects:
   - kind: ServiceAccount
     name: sops-operator-controller-manager
     namespace: openshift-operators
----
-# Once per tenant: the tenant ServiceAccount owns its key.
+```
+
+Once per tenant, the tenant ServiceAccount owns its key and its backups:
+
+```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -425,17 +511,20 @@ subjects:
   - kind: ServiceAccount
     name: team-a-sops-tenant
     namespace: team-a-system
----
-# One per namespace the tenant may write to.
+```
+
+One per namespace the tenant may write to:
+
+```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: team-a-secret-writer
+  name: team-a-secret-reconciler
   namespace: team-a-prod
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: sops-secret-writer
+  name: sops-tenant-secret-reconciler
 subjects:
   - kind: ServiceAccount
     name: team-a-sops-tenant
@@ -458,14 +547,23 @@ subjects:
 - apiGroups: ["", events.k8s.io]
   resources: [events]
   verbs: [create, patch]
-# permissions (operator namespace)
+- apiGroups: [authentication.k8s.io]          # metrics endpoint authentication
+  resources: [tokenreviews]
+  verbs: [create]
+# permissions (operator namespace): the standard operator-sdk leader-election Role
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [coordination.k8s.io]
   resources: [leases]
-  verbs: [get, list, watch, create, update, patch]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
 ```
 
 The operator has **no** permission on Secrets, Roles or RoleBindings, and none on ServiceAccounts outside the tenant
-tenant namespaces that granted it `sops-operator-tenant`. There it may create and impersonate ServiceAccounts;
+namespaces that granted it `sops-operator-tenant`. There it may create and impersonate ServiceAccounts;
 it can never read, change, delete or mint tokens for any.
 Every Secret access is an impersonated call and appears in the Kubernetes audit log as the operator acting as the
 tenant identity.
@@ -483,11 +581,12 @@ happens, against an explicit grant, by a component other than the one asking.
 |---|---|---|
 | **Never trust, always verify** | Every key read and Secret write is an impersonated API call, checked against RBAC on each request. Every ciphertext is verified (recipient, MAC, scope) before use. | API server, SOPS cryptography |
 | **Explicit grants, default deny** | A tenant can write into a namespace only if the cluster admin created a RoleBinding there. No selectors, labels or naming conventions grant access. No grant → `AccessDenied`. | API server |
-| **Least privilege** | Operator has no Secret or RBAC permissions and no cluster-wide ServiceAccount permissions; it acts only in tenant namespaces that granted it `sops-operator-tenant`. `sops-secret-writer` cannot read Secrets. `sops-key-owner` is bound only in the key namespace. Developers can encrypt but not decrypt. | API server, public-key cryptography |
+| **Least privilege** | Operator has no Secret or RBAC permissions and no cluster-wide ServiceAccount permissions; it acts only in tenant namespaces that granted it `sops-operator-tenant`. `sops-tenant-secret-reconciler` is bound only in granted namespaces, and the operator watches only metadata there. `sops-key-owner` is bound only in the key namespace. Developers can encrypt but not decrypt. | API server, public-key cryptography |
 | **One identity per tenant** | Each tenant acts as its own ServiceAccount; no identity is shared across tenants. | API server |
 | **Separation of duties** | Cluster admin grants access but never handles tenant keys or plaintext. Tenant admin manages keys but cannot grant namespaces. Developer writes secrets but cannot read keys. | API server (RBAC per role) |
 | **Bind data to its destination** | Encrypted `scope` ties every ciphertext to one namespace and name. | SOPS cryptography + operator check |
 | **Assume breach** | Every component's compromise is bounded (§6.4). | Design |
+| **Status reports, never decides** | Status can always be lost (backup restore, recreate, GitOps re-sync, `kubectl replace`). The operator derives state from spec and the objects it manages (existence, data, labels, annotations, creation time, owner references), rebuilds status on every reconcile, and never reads status, its own resource's or another's, to decide anything (D57). | Operator |
 | **Continuous verification** | Grants and keys are re-checked on every reconcile and periodic resync, not cached as decisions. A revoked grant takes effect at the next reconcile. | Operator, API server |
 | **Full auditability** | Impersonated calls appear in the Kubernetes audit log with both the operator and the tenant identity. Decisions are visible in status conditions and events. | API server audit log |
 | **No long-lived credentials besides keys** | The operator authenticates with its auto-rotated projected token. The tenant ServiceAccount has no token automounted. | Kubernetes |
@@ -500,13 +599,15 @@ flowchart LR
     B -->|no| X1["rejected by API server"]
     B -->|yes| C{"2. SubjectAccessReview<br/>is the tenant granted this namespace?"}
     C -->|no| X2["AccessDenied"]
-    C -->|yes| D{"3. Impersonated key read<br/>RBAC: sops-key-owner"}
+    C -->|yes| D{"3. Impersonated key read<br/>RBAC: sops-key-owner<br/>enabled label, valid key"}
     D -->|no| X3["TenantNotReady"]
-    D -->|yes| E{"4. Recipient + MAC<br/>SOPS cryptography"}
-    E -->|fail| X4["NotRecipient / DecryptFailed"]
+    D -->|yes| E{"4. Recipient<br/>age cryptography"}
+    E -->|fail| X4["NotRecipient"]
     E -->|ok| F{"5. Scope matches<br/>namespace/name?"}
     F -->|no| X5["ScopeMismatch"]
-    F -->|yes| G{"6. Impersonated write<br/>RBAC: sops-secret-writer"}
+    F -->|yes| M{"5b. Values and MAC<br/>SOPS cryptography"}
+    M -->|fail| X7["DecryptFailed"]
+    M -->|ok| G{"6. Impersonated write<br/>RBAC: sops-tenant-secret-reconciler"}
     G -->|no| X6["AccessDenied"]
     G -->|yes| H["Secret written"]
 ```
@@ -515,9 +616,9 @@ flowchart LR
 |---|---|---|---|
 | 1 | Caller may create `SopsSecret` in the namespace | API server (RBAC) | Yes |
 | 2 | Tenant is granted the namespace | Operator (SubjectAccessReview) | No — early, clear failure; check 6 is authoritative |
-| 3 | Tenant identity may read its key | API server (RBAC via impersonation) | Yes |
-| 4 | File encrypted for this tenant and untampered | SOPS / age cryptography | Yes |
-| 5 | Ciphertext bound to this namespace and name | Operator, on a cryptographically protected value | Yes, given a correct operator |
+| 3 | Tenant identity may read its key; the key Secret is labelled and valid | API server (RBAC via impersonation); operator | Yes |
+| 4 | File encrypted for this tenant | age cryptography | Yes |
+| 5 | Ciphertext bound to this namespace and name, checked before any other value is decrypted; then the values decrypt and the file is untampered (MAC) | Operator, on a cryptographically protected value; SOPS | Yes, given a correct operator |
 | 6 | Tenant identity may write Secrets in the namespace | API server (RBAC via impersonation) | Yes |
 
 ### 6.3 What must be trusted
@@ -537,8 +638,8 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Compromised | Attacker gains | Attacker does not gain |
 |---|---|---|
 | Developer account | Can apply `SopsSecret`s with values of their choosing in their namespaces | Keys; other namespaces' plaintext; copied ciphertext is rejected by scope |
-| Tenant admin account | Own tenant's private key; Secret write in the namespaces granted to the tenant | Other tenants; new namespace grants |
-| Tenant identity token | Same as the tenant's grants | Other tenants |
+| Tenant admin account | Own tenant's private key and its backups, which they can also delete; Secret write in the namespaces granted to the tenant | Other tenants; new namespace grants |
+| Tenant identity token | Same as the tenant's grants, including reading the Secrets in its granted namespaces | Other tenants |
 | Git repository or GitOps tool | Ciphertext only; ability to apply or replay `SopsSecret`s it can already apply | Plaintext or keys |
 | Operator | Can act as any ServiceAccount in tenant namespaces it was granted, within each tenant's grants; can create ServiceAccounts there, which grant nothing until bound | Any Secret outside tenant grants; RBAC changes; new grants; ServiceAccount tokens |
 | Cluster admin | Everything (inherent) | — |
@@ -550,7 +651,6 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Remove a namespace RoleBinding | Next reconcile → `AccessDenied`. The already-written Secret remains (the operator can no longer delete it); the cluster admin removes it if required. |
 | Delete the tenant's key-owner RoleBinding | All `SopsSecret`s of the tenant → `TenantNotReady`; nothing more is decrypted. |
 | Remove a recipient from a file (`sops updatekeys`) | That key can no longer decrypt the new version of the file. |
-| Remove an identity from the key Secret | Files encrypted only for that identity → `NotRecipient`. |
 
 ---
 
@@ -566,9 +666,14 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Developer edits `scope` or splices ciphertext between files | Requires the private key; per-file data keys, path-bound values and the MAC make splicing fail. |
 | Developer reads keys | Key Secrets live in the dedicated tenant namespace; developers have no access. |
 | Tenant SA token stolen from a consumer namespace | No SA exists in consumer namespaces; the tenant SA lives in the tenant namespace with `automountServiceAccountToken: false`. |
-| Operator overwrites a Secret it does not own | Only manages Secrets it created; pre-existing Secrets → `Conflict`. |
+| Operator overwrites a Secret it does not own | Only a Secret with the `SopsSecret`'s name that carries the `enabled` label (or v0.0.4's marks) is written; any other → `Conflict` (D28). |
+| Someone labels an unrelated Secret `sops.stakater.com/enabled` so a `SopsSecret` of the same name overwrites it | Adding the label needs `update` on that Secret, which already allows changing it; the `SopsSecret` must still decrypt for that namespace and name. |
+| A `SopsSecret` named like the tenant's key Secret or a key backup | `Conflict`; nothing is written (§4.3). |
+| User edits or deletes an output Secret or the key Secret | The watch reverts it at once: the output Secret from its `SopsSecret` (D50), the key Secret from its backup (D51). |
+| A `SopsSecret` writes a Secret posing as a key or a key backup | Labels and annotations starting with `sops.stakater.com/` in `spec.template.metadata` are dropped, and an output Secret is never used as a key (D49). |
 | Operator compromise reads all Secrets | No Secret RBAC; impersonation only in tenant namespaces that granted it, limited to tenant grants. |
-| GitOps tool prunes output Secrets | Tracking labels never copied; ownerReference to the `SopsSecret`. |
+| Status of a `SopsTenant` or `SopsSecret` is lost, replaced or edited | No decision reads status (D57): keys are restored from backups, ownership follows from the Secret's labels, and status is rebuilt at the next reconcile. |
+| GitOps tool prunes output Secrets | Only the template's labels and annotations are copied, not the `SopsSecret`'s own with the tool's tracking keys; ownerReference to the `SopsSecret`. |
 | Plaintext committed to Git | Pre-commit `sops filestatus` / `sops-checker`; documented workflow. |
 
 ### 7.2 Accepted risks
@@ -579,8 +684,10 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 | Tenant admins can read their own private key. | Own tenant only. Removed later by the OpenBao backend. |
 | Anyone allowed to write `SopsSecret`s in a namespace can apply their own values (public key encryption). | Same power as writing a Secret; controlled by RBAC on `sopssecrets`. |
 | Replay of an older, validly encrypted `SopsSecret`. | Equivalent to a Git revert; controlled by GitOps and RBAC on manual applies. |
-| Drift on output Secrets is corrected only at the next resync. | Configurable interval. |
-| `sops-key-owner` grants `get` on all Secrets in the tenant namespace, so tenants sharing a namespace can read each other's keys. | Tenant namespace is dedicated to keys; per-tenant key access is planned for tenants sharing a namespace. |
+| A direct change to an output Secret is visible until the watch reverts it, typically within a second; with the watch down, until the next resync. | No admission webhook (D50); configurable resync interval. |
+| `sops-key-owner` grants `get`, `list`, `watch`, `create` and `update` on all Secrets in the tenant namespace, so tenants sharing a namespace can read or replace each other's keys. | Tenant namespace is dedicated to keys; per-tenant key access is planned for tenants sharing a namespace. |
+| The tenant admin can delete the key Secret and all its backups, which loses the key; another key they then put in place is used and backed up. A backup they create with a newer name is restored into the key Secret the same way. | They are the only users with Secret rights in the tenant namespace and own the key; cluster backups cover it (D55). |
+| The tenant identity can read every Secret in the namespaces granted `sops-tenant-secret-reconciler` (`list` and `watch` return contents), and so can the operator acting as it. | Needed to watch output Secrets (D56). The operator requests metadata only and never logs Secret contents; grant only namespaces the tenant may see. |
 | Plaintext in output Secrets. | Outside the operator: enable etcd encryption at rest; restrict `get secrets` in consumer namespaces. |
 
 ---
@@ -592,7 +699,7 @@ Zero trust minimises, but cannot remove, the trusted computing base:
 1. Cluster admin applies the onboarding RoleBindings for the tenant (§5.2).
 2. Tenant admin creates the `SopsTenant` → operator creates the `<tenant>-sops-tenant` ServiceAccount and generates
    the key → `Ready/KeyGenerated`. A missing RoleBinding → `Ready/AccessDenied`, naming it.
-3. Tenant admin reads `age.pub` from the key Secret and commits it to the team's `.sops.yaml`.
+3. Tenant admin reads `status.publicKey` from the `SopsTenant` and commits it to the team's `.sops.yaml`.
 
 ### 8.2 Developer: create or change a secret
 
@@ -623,29 +730,36 @@ git add prod/db-creds.sops.yaml && git commit -m "add db-creds"
 - Developers cannot `sops edit` (requires the private key). To change a value, rewrite and re-encrypt the file.
 - Pre-commit: `sops filestatus <file>` must report `{"encrypted":true}`.
 
-### 8.3 Key rotation (manual)
+### 8.3 Key rotation
 
-1. Tenant admin prepends a new identity to `age.agekey`.
-2. Recipients in `.sops.yaml` are updated; a key holder runs `sops updatekeys -y <file>` for each file.
-3. When every `SopsSecret` is `Decrypted` with the new key, remove the old identity.
+Not yet supported. The key Secret always holds the key of its newest backup: a key Secret that is edited or
+replaced by hand is restored from that backup (§4.4), so the key cannot be swapped this way.
 
 ### 8.4 Migration from existing Secrets
 
-No adoption. Either replace the old Secret with a `SopsSecret` of the same name in one commit (seconds of absence;
-running pods unaffected), or create the `SopsSecret` under a new name, switch workloads, then remove the old Secret.
+A Secret with the same name is not adopted unless it carries the `enabled` label (D12); otherwise the `SopsSecret`
+reports `Conflict`. Either replace the old Secret with a `SopsSecret` of the same name in one commit (seconds of
+absence; running pods unaffected), or create the `SopsSecret` under a new name, switch workloads, then remove the
+old Secret. Someone allowed to update the old Secret can instead add the label
+`sops.stakater.com/enabled: "true"` to it; the `SopsSecret` then replaces its values, labels and annotations.
+
+Output Secrets written by v0.0.4 are labelled on their next write, and a Secret kept by `deletionPolicy: Retain`
+is taken over by the next `SopsSecret` with its name.
 
 ### 8.5 Disaster recovery
 
-Restore key Secrets **before** `SopsTenant`s, or set `generateKey: false`, so no new key is generated in place of the
-lost one. Break-glass recipients allow recovery of every file if a tenant key is lost.
+Restore key Secrets and their backups **before** `SopsTenant`s, or set `generateKey: false`, so no new key is
+generated in place of the lost one. Status need not be restored: a `SopsTenant` recreated with an empty status
+restores its key from the newest backup (§4.4), and a `SopsSecret` restored without status keeps managing its
+Secret (§4.3). Break-glass recipients allow recovery of every file if a tenant key is lost.
 
 ---
 
 ## 9. Delivery
 
 - **Language/framework**: Go, operator-sdk (go/v4 plugin), controller-runtime, `getsops/sops/v3`, `filippo.io/age`. Tools pinned and checksum-verified by `hack/bootstrap-tools.sh`: operator-sdk v1.42.3, opm v1.74.0.
-- **Distribution**: OLM only. Bundle + file-based catalog images; channels `alpha` → `stable`; install mode
-  `AllNamespaces`; no webhooks and no OLM dependencies (compatible with OLM v0 `Subscription` and OLM v1
+- **Distribution**: OLM only. Bundle + file-based catalog images; channel `alpha` (further channels, such as `stable`, are added in `catalog/channels.yaml`); install mode
+  `AllNamespaces`; no webhooks (D50) and no OLM dependencies (compatible with OLM v0 `Subscription` and OLM v1
   `ClusterExtension`). Validation with CEL in the CRDs.
 - **Bundle**: generated by `make bundle IMG=<image>` from `config/manifests` (base CSV, CRDs, operator RBAC, the
   tenant ClusterRoles of §5.2, samples, scorecard configuration) and validated with the `operatorframework` suite.
@@ -663,7 +777,7 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   `linux/arm64`, the bundle referencing the operator by digest, and the catalog, tags them `vX.Y.Z`, attaches SBOM
   and provenance, signs them with cosign (keyless, GitHub OIDC), verifies the signatures and that the images can
   be pulled anonymously, then creates the git tag and GitHub release. When every listed version is already
-  published (e.g. promoting a version from `alpha` to `stable`), only the catalog is republished, tagged with the
+  published (e.g. promoting a version to another channel), only the catalog is republished, tagged with the
   highest listed version; a published operator or bundle version is never overwritten. More than one unpublished
   version, or a registry that cannot be read, fails the release.
 - **Configuration**: flags, with environment defaults settable through `Subscription.spec.config.env`:
@@ -677,15 +791,22 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   e2e tests are organised by **use case**: one file and one top-level test per use case, named after the feature
   or rule it checks (`TestTenantOnboarding` in `tenant_onboarding_test.go`, `TestSecretDecryption`,
   `TestSecretDeletion`, `TestExistingSecretMigration`, `TestNamespaceIsolation`, `TestSopsCLIWorkflow` with the
-  pinned `sops` and `yq` CLIs, `TestKeyRotation`, `TestAccessRevocation`, `TestSelfHealing`,
-  `TestOperatorRestart`; the operator runs with a 10s resync interval during e2e), one subtest per expected
+  pinned `sops` and `yq` CLIs, `TestSecretOwnership`, `TestKeyProtection`, `TestKeyWithoutStatus`,
+  `TestAccessRevocation`, `TestSelfHealing`, `TestOperatorRestart`; the operator runs with a 10s resync interval during e2e), one subtest per expected
   behaviour named `shall …`, and golden files stored as `test/e2e/testdata/<Test>/<shall_…>/<kind>-<label>.yaml`.
   Unit and envtest tests follow the same convention: one top-level test per feature (`TestSecretWriter`,
-  `TestSecretOwnership`, …) with `shall …` subtests.
+  `TestSecretOwnership`, …) with `shall …` subtests. `make test-scripts` runs `scripts/test.sh`, which tests
+  `encrypt.sh` with a throwaway key, without a cluster.
+  Every envtest package starts its API server through `internal/testenv`, which stops it on SIGINT and SIGTERM
+  and, before starting, stops `etcd` and `kube-apiserver` processes from the envtest assets directory whose
+  parent has exited (a test binary that was killed or timed out leaves them running with PID 1 as parent).
+  Processes of a test that is still running are never touched, so packages can run in parallel.
   There is one e2e flow, the way customers install: `make test-e2e` builds the operator and
   bundle images and a catalog that lists only that bundle (a fresh install; upgrades along the channel graph
   are tested per release), pushes them to a local registry (`localhost:5011`), installs OLM v0 on a dedicated kind
   cluster and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`.
+  `make test-e2e E2E_RUN='<regex>'` runs only the matching e2e tests (`go test -run`); the kind cluster is kept
+  for reruns and removed with `make cleanup-test-e2e`.
   Nothing from `config/` is applied, so the tenant ClusterRoles must come from the bundle. Each run uses a
   CatalogSource named after its image tag (OLM caches catalog contents by name) and first removes the cluster
   RBAC of the previous install (OLM keeps it after the CSV is deleted). `make scorecard` runs the operator-sdk
@@ -695,8 +816,9 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
   manual approval, creates a tenant and a SopsSecret, approves OLM's InstallPlans up to the target version, and
   checks that the upgraded operator decrypts a change into the same Secret with the same tenant key. The table is
   derived from the channel graph and edited in every change that edits the graph.
-- **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs lint, envtest tests and a check that
-  generated files are current, builds the image without any write token, and pushes it to
+- **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs, in order: a check that generated
+  files are current, lint, envtest tests and `make lint-scripts test-scripts`; the image build without any write
+  token; the OLM e2e tests, `make test-upgrade` and `make scorecard` on kind; and only then the push of the image to
   `ghcr.io/stakater/sops-operator:pr-<number>-<sha7>` from a separate job that holds the only write token
   (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request code. Actions are
   pinned by commit SHA and kept current by Dependabot. A `push` workflow on `main` publishes
@@ -716,30 +838,30 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D2 | Build a new operator | Existing operators require cluster-wide Secret RBAC or lack tenant isolation and ciphertext scoping. |
 | D3 | Go + operator-sdk, distributed via OLM only | Operator ecosystem fit (OpenShift, OperatorHub). Helm can be generated from `config/` later. |
 | D4 | v1 backend: age key in a Kubernetes Secret; OpenBao later | No infrastructure dependency; backend stays pluggable. |
-| D5 | `SopsTenant` is namespaced; its key Secret is `<tenant>-sops-keys` (D48); generated if missing (`generateKey`) | Self-service via namespace RBAC; predictable key location. |
+| D5 | `SopsTenant` is namespaced; its key Secret is `<tenant>-sops-keys` (D48); generated for a new tenant (`generateKey`, D18) | Self-service via namespace RBAC; predictable key location. |
 | D6 | Generated keys are age post-quantum hybrid | Ciphertext lives in Git history indefinitely ("harvest now, decrypt later"). |
-| D7 | No public key or `.sops.yaml` in the CR | Public key is derivable from the key Secret; repos own their `.sops.yaml`. |
+| D7 | No `.sops.yaml` in the CR; the public key is only reported in status (D39) | Repos own their `.sops.yaml`; the public key is derived from the key Secret, never configured. |
 | D8 | Namespace access is granted only by cluster admin RoleBindings to the tenant ServiceAccount | Single source of truth enforced by the API server; no binding CRD, no selectors. |
 | D9 | Operator has zero standing privileges; all Secret access through impersonation | Compromise of the operator does not expose or allow tampering with arbitrary Secrets. |
 | D10 | SubjectAccessReview before decrypting | Nothing is decrypted for namespaces the tenant cannot write to; clear status. |
 | D11 | One `SopsSecret` → one Secret with the same name in the same namespace | Simplest mapping; mirrors a Secret manifest. |
-| D12 | No adoption, merge or create-once; foreign Secret → `Conflict` | GitOps is one-way with one owner per Secret. |
+| D12 | No adoption of foreign Secrets, no merge or create-once: a `SopsSecret` writes only a Secret of its name that carries the `enabled` label or v0.0.4's marks (D28); any other → `Conflict`. A Secret kept by `deletionPolicy: Retain` is reclaimed by the next `SopsSecret` with the same name. | GitOps is one-way with one owner per Secret. The label is the operator's mark, so a retained Secret is still the operator's and a recreated `SopsSecret` continues where the old one stopped. |
 | D13 | `deletionPolicy: Delete \| Retain` | Standard GitOps prune plus a safety net. |
 | D14 | `data` and `stringData`, no `immutable` | Binary and text values; Secret manifests convert with minimal change. Immutable conflicts with updates from Git. |
 | D15 | Required encrypted `spec.scope` | Prevents copying ciphertext to another namespace or name of the same tenant. |
 | D16 | `sops` metadata is mutable; integrity comes from SOPS cryptography | Legitimate edits rewrite it; whole-file replacement and replay are accepted risks. |
 | D17 | Operator has no Git access | Avoids becoming a GitOps engine and holding Git credentials next to keys. |
-| D18 | Key generated only on `404 Not Found`; never overwritten or deleted (RBAC: `get`, `create` only). To replace a bad key, delete it and let it be generated again. | Ease of use; a wrong generation is recoverable by restoring the old key. |
+| D18 | A key is generated only when there is no key Secret and no backup, `generateKey` is not `false`, and no `SopsSecret` references the tenant (uncached list); the operator replaces the key in the key Secret only to restore it from the newest backup (D51), and never deletes it | Ease of use without ever generating a key in place of one a `SopsSecret` may depend on. A `SopsSecret` of the tenant proves a key existed; an uncached list keeps a cache that has not synced from hiding it. |
 | D19 | No finalizer on `SopsTenant`; no ownerReference on the key | The key must survive tenant deletion; recreating the tenant reuses it. |
 | D20 | Service-account and bootstrap token Secret types are not allowed | They are cluster credentials, not application secrets. |
 | D21 | `suspend` annotation and `status.lastSyncTime`; no data hash in status | Operational control and visibility without leaking low-entropy values. |
-| D22 | GitOps tracking labels are never copied to output Secrets | Prevents GitOps tools from pruning operator-managed Secrets. |
+| D22 | Output Secrets take labels and annotations only from `spec.template.metadata`, copied as written (minus `sops.stakater.com/`), never from the `SopsSecret` itself | The GitOps tool's tracking keys on the `SopsSecret` never reach the Secret, so the tool does not prune it; a template is explicit and needs no list of tracking keys to leave out. |
 | D23 | e2e on kind; CI on pull requests and pushes | Reproducible locally and in CI. |
 | D24 | Authoritative enforcement lives in the API server and in cryptography; operator-side checks exist for early, clear failures (except the scope check) | Keeps the trusted computing base small (§6.3). |
 | D25 | Module `github.com/stakater/sops-operator`; images `ghcr.io/stakater/sops-operator`, `-bundle`, `-catalog` | Stakater organization. |
 | D26 | Several `SopsTenant`s may share a namespace; each has its own ServiceAccount and grants (D46) | Reach can differ per tenant; key access is still namespace-wide (`sops-key-owner`), so separate key namespaces until per-tenant key access exists. |
-| D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); e2e on 1.31 and the latest release | CEL validation features; current enterprise coverage. |
-| D28 | `sops-secret-writer` is write-only; ownership is tracked by storing the created Secret's UID in status and sending it as a precondition on every update; a rejected update falls back to create, and `AlreadyExists` → `Conflict`. | Consumer namespaces' Secrets are never readable by the tenant identity or the operator. |
+| D27 | Minimum Kubernetes 1.31 (OpenShift 4.18+); envtest on 1.31, e2e on the oldest kind node image of the pinned kind release (1.34) | CEL validation features; current enterprise coverage. |
+| D28 | A Secret belongs to a `SopsSecret` when it has the `SopsSecret`'s name and namespace and carries the `enabled` label (D49); one written by v0.0.4 (`managed-by` and the annotation `sops.stakater.com/sopssecret` naming the `SopsSecret`) also belongs to it and is labelled on its next write. The writer lists Secrets by name as the tenant identity, metadata only, and updates at the resourceVersion it read; it never reads Secret data. Replaces the UID kept in `status.secretUID`. | Status can be lost (D57); the label is on the object it describes. A `SopsSecret` whose status is lost, or that is recreated or restored, keeps its Secret, and the watch of D50 needs only metadata. Updating at the read version never overwrites a Secret replaced in between. |
 | D29 | Files are key-sorted byte-wise (`yq 'sort_keys(..)'`) before encryption; the operator rebuilds the document as byte-sorted JSON | The SOPS MAC is order-dependent and the API server returns keys sorted byte-wise. |
 | D30 | `Retain` means "no ownerReference"; no finalizer on `SopsSecret` | Deletion needs no Secret access and no extra verbs. |
 | D31 | Only age recipients in one key group; `encrypted_regex` and `mac_only_encrypted` enforced by the CRD schema | Unsupported files are rejected at apply time, not at decryption. |
@@ -748,9 +870,9 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D34 | Own CI workflows instead of the shared Stakater pipeline; PR images pushed with `GITHUB_TOKEN` from an isolated job | Pull-request code never runs with a write token and no long-lived registry secret is needed; the shared pipeline exposed its registry token to PR code. |
 | D35 | The scope is verified before any other value is decrypted; decryption errors carry fixed messages | Copied ciphertext with a tampered type tag must not leak plaintext through error messages. |
 | D36 | `stringData` accepts only quoted strings | Unquoted scalars are reformatted by SOPS before encryption, which would silently change values. |
-| D37 | `status.secretUID` is written with a merge patch without optimistic locking | A stale resourceVersion must not lose the only proof of ownership (D28). |
-| D38 | The SopsSecret reconciler reads SopsSecrets uncached (API reader) | A cache that has not seen the last status write would report `Conflict` for the operator's own Secret (found by e2e). |
-| D39 | The primary public key is stored as `age.pub` in the key Secret at generation; no separate public object | The tenant admin needs it once to set up `.sops.yaml`; no extra RBAC, and the operator still cannot modify the key. A mismatching `age.pub` is `KeyInvalid`. |
+| D37 | Superseded by D28 (v0.0.5). Was: `status.secretUID` is written with a merge patch without optimistic locking. | Ownership no longer lives in status. |
+| D38 | Superseded by D28 (v0.0.5). Was: the SopsSecret reconciler reads SopsSecrets uncached (API reader). | Ownership no longer depends on the last status write, so the cache suffices. |
+| D39 | The key Secret holds only private keys (`age.agekey`, no comment lines); the primary public key is reported in `SopsTenant` `status.publicKey`, derived on every reconcile; an `age.pub` field is ignored and no longer written | One place per kind of key, nothing to keep in sync. Reading the public key needs only `get` on the `SopsTenant`, not on a Secret that also holds the private key. |
 | D40 | The source SopsSecret is recorded on the output Secret as the annotation `sops.stakater.com/sopssecret`, not a label | Object names can exceed the 63-character label value limit; a label made such Secrets invalid (found by testing ESO's long-name case). |
 | D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
 | D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
@@ -758,8 +880,15 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | D44 | A push to `main` publishes only what `catalog/channels.yaml` lists, and only when `catalog/` changes; the version comes from the channels file, not from git tags or the Makefile | Version rollout is a reviewed change to one file; no image is pushed for unreleased code and no published version is overwritten (Hestia's flow pushes images on every merge under the next version's tag). |
 | D45 | The operator creates each tenant's ServiceAccount (create only, never update or delete); the cluster admin creates only RoleBindings | Onboarding is RoleBindings only, and the identity exists as an object the bindings refer to. An unbound ServiceAccount grants nothing. |
 | D46 | Each tenant's ServiceAccount is `<tenant>-sops-tenant`; the operator creates and impersonates ServiceAccounts only in tenant namespaces where `sops-operator-tenant` is bound to it | Tenants sharing a namespace need their own identities. RBAC cannot restrict impersonation to a name pattern, so a per-tenant name needs a per-namespace grant instead of a cluster-wide one; this also removes the operator's cluster-wide ServiceAccount permissions. Tenant names are at most 63 characters (label value). |
-| D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-secret-writer` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
-| D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret. |
+| D47 | The tenant admin may create the two tenant-namespace RoleBindings (`sops-operator-tenant` to the operator, `sops-key-owner` to the tenant ServiceAccount); `sops-tenant-secret-reconciler` stays with the cluster admin | Both grant only what the built-in `admin` role already holds in that namespace, so a namespace admin may create them (tested in envtest); they extend nobody's reach. Namespaces a tenant may write to remain the cluster admin's decision. |
+| D48 | The key Secret is `<tenant>-sops-keys`, not the tenant's own name | A Secret named only after the tenant says nothing about its content and can clash with an application Secret of the same name; the suffix matches `<tenant>-sops-tenant`. A fixed name per tenant also allows a later key-owner grant limited to that one Secret and its backups. |
+| D49 | One label, `sops.stakater.com/enabled: "true"`, marks every Secret the operator owns: output Secrets, the key Secret and key backups. The operator watches, writes and uses as a key only Secrets that carry it, and labels a key Secret an earlier version generated (`managed-by`, no annotation, no owner); the tenant follows from where a Secret is (a key Secret is `<tenant>-sops-keys` in the tenant namespace, an output Secret has its `SopsSecret`'s name in the same namespace). `sops.stakater.com/` labels and annotations in `spec.template.metadata` are dropped. | A tenant admin who brings a key adds one label. The watches and adoption ignore every other Secret, and a `SopsSecret` cannot make its output Secret look like a key or a backup. |
+| D50 | Output Secrets stay mutable; a metadata-only watch per tenant and namespace, as the tenant identity and selected by the `enabled` label, reverts a deletion or any change at once by reconciling the `SopsSecret`. No admission webhook. | A webhook with `failurePolicy: Fail` would block changes to these Secrets, and Kubernetes' own deletions of them, whenever the operator is down, and would send Secret contents to the operator. Reverting keeps the declared state without either; the Secret is updated in place, so its UID stays and volume mounts refresh. |
+| D51 | The operator keeps an immutable backup `<tenant>-sops-keys-<YYYYMMDD-HHMMSS>` (UTC) of the tenant key. With a backup, the key Secret must hold the newest backup's key; a deleted, changed or unlabelled key Secret is restored from it. Without a backup, a valid labelled key Secret is backed up. Generation writes the backup before the key Secret. The key Secret is watched (metadata, as the tenant identity). | A deleted or overwritten key would otherwise freeze every `SopsSecret` of the tenant, and a regenerated key decrypts none of the files in Git. Deciding from the backups, not from a key recorded in status, survives the loss of status (D57). Immutable backups cannot be edited, only deleted. |
+| D52–D54 | Reserved for key rotation (not yet supported) | The numbers stay with the key-rotation design. |
+| D55 | Accepted risk: the tenant admin deleting the key Secret and all its backups loses the key; a key they then put in place is used and backed up | The tenant admin is the only user with Secret rights in the tenant namespace and owns the key. Protecting it from them would need an admission webhook (D50) or a key store outside the namespace (Q11); cluster backups cover it. |
+| D56 | `sops-tenant-secret-reconciler` (`create`, `update`, `list`, `watch` on Secrets) is the one role that grants a namespace; the access check asks for all four verbs | The watch of D50 needs `list` and `watch`. RBAC cannot narrow them by label, so the identity can read the Secrets there; the label narrows only what the operator watches. A namespace bound to a role without them reports `AccessDenied` naming this role, and its Secrets stay as they are. |
+| D57 | Status reports, never decides: status is rebuilt from observation on every reconcile and never drives a decision. The operator derives state from spec and the objects it manages (existence, data, labels, annotations, creation time, owner references) and reads no status, neither its own resource's nor another's; the `SopsSecret` controller reads the key Secret, not the tenant's `Ready` condition. | Status can always be lost: backup restores, recreated resources, GitOps re-syncs and `kubectl replace` drop it. A decision taken from lost status would generate a new key, give up a Secret or block a tenant; one taken from the objects survives. |
 
 ---
 
@@ -772,4 +901,4 @@ lost one. Break-glass recipients allow recovery of every file if a tenant key is
 | Q6 | Should the operator enforce the presence of platform break-glass recipients in every `SopsSecret`? |
 | Q8 | Ship an Argo CD health check for `SopsTenant` and `SopsSecret` in the docs. |
 | Q9 | e2e coverage of OLM v1 (`ClusterExtension`) in addition to OLM v0. |
-| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops-tenant` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret, with the public key in `age.pub` (D39). |
+| Q11 | **KMS key stores (parked).** Zero trust without ESO: a `SopsKeyStore` (provider union, OpenBao Transit first, then Azure Key Vault, AWS/GCP KMS) referenced by `SopsTenant.spec.keyStoreRef`; the private key never leaves the KMS. The operator authenticates as the tenant (`TokenRequest` for `<tenant-ns>:<tenant>-sops-tenant` → Bao Kubernetes/JWT auth → policy limited to `transit/decrypt/<key>`); developers encrypt with encrypt-only Bao access; the offline age break-glass recipient stays. Must pin the Vault address to the configured endpoint before any network call (SOPS allows all hosts by default and the address is inside the file). Open: who owns the Bao connection (cluster admin endpoints + tenant-chosen role/key recommended). Without a key store: the age key Secret and its backups, with the public key in `status.publicKey` (D39). |
