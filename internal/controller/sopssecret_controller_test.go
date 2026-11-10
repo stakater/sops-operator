@@ -118,11 +118,9 @@ func TestSecretDecryption(t *testing.T) {
 		if string(out.Data["password"]) != "hunter2" {
 			t.Fatal("output Secret has the wrong value")
 		}
-		if out.Labels["app"] != "billing" || out.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
-			t.Fatalf("labels = %v", out.Labels)
-		}
-		if _, ok := out.Labels["argocd.argoproj.io/instance"]; ok {
-			t.Fatal("GitOps tracking label was copied")
+		if out.Labels["app"] != "billing" || out.Labels["argocd.argoproj.io/instance"] != "x" ||
+			out.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
+			t.Fatalf("labels = %v, want the template's labels as written", out.Labels)
 		}
 		if len(out.OwnerReferences) != 1 || out.OwnerReferences[0].UID != s.UID ||
 			out.OwnerReferences[0].BlockOwnerDeletion == nil || *out.OwnerReferences[0].BlockOwnerDeletion {
