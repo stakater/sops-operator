@@ -603,18 +603,19 @@ make test               # unit and envtest tests with the RBAC authorizer
 make lint
 make test-scripts       # scripts/encrypt.sh with a throwaway key, no cluster
 make lint-scripts       # shellcheck on scripts/
-make images             # operator, bundle and catalog images of TAG (default dev-<time>), saved to bin/images/<tag>
 make next-version       # the version a merge would release; nothing when there is none
-make test-e2e           # end-to-end tests: OLM installs the images of TAG on kind; results compared with golden files
-make test-upgrade       # upgrade paths through the catalog of TAG: published bundles, then this build
+make images             # operator, bundle and catalog images of TAG and PR_TAG, saved to bin/images/v<version>
+make test-e2e           # end-to-end tests: OLM installs those images on kind; results compared with golden files
+make test-upgrade       # upgrade paths through the same catalog: published bundles, then this build
 make scorecard          # operator-sdk scorecard against the bundle
 make cleanup-test-e2e   # remove the e2e kind cluster
 ```
 
-The version comes from [`catalog/channels.yaml`](catalog/channels.yaml): a build stands in for the highest version it
-lists, as the pre-release `<version>-<tag>`. `TAG` is the only difference between a local build and a pull request
-build; pass the same `TAG` to reuse images already built. The kind cluster pulls them from its local registry, which
-mirrors `ghcr.io`, under the names they are published with.
+`TAG` is the version a build releases, by default the next version in [`catalog/channels.yaml`](catalog/channels.yaml)
+(`make next-version`). `PR_TAG` marks a pre-release build of it: `dev-<time>` locally by default, `pr-<number>-<sha7>`
+in CI, empty for a release. A build's version is `TAG-PR_TAG`, e.g. `0.0.5-pr-19-abc1234`, and its images are tagged
+`v<version>`. Pass the same `TAG` and `PR_TAG` to reuse images already built. The kind cluster pulls them from its local
+registry, which mirrors `ghcr.io`, under the names they are published with.
 
 Run a subset of the end-to-end tests with a `go test -run` pattern:
 
@@ -635,11 +636,11 @@ bin/kustomize build config/default | sed 's#controller:latest#<registry>/sops-op
 kubectl --context <context> apply --server-side -k config/tenant-rbac
 ```
 
-Every pull request builds its operator, bundle and catalog images once (`make images TAG=pr-<number>-<sha7>`), tests
-them on kind and publishes them with that tag. A pull request documents the version it releases in
-[`catalog/channels.yaml`](catalog/channels.yaml), with the version it replaces. Its bundle is the pre-release
-`<version>-<tag>`, and its catalog is the release catalog with that bundle in place of the version. To install a pull
-request build through OLM, add its catalog:
+A pull request documents the version it releases in [`catalog/channels.yaml`](catalog/channels.yaml), with the version
+it replaces. CI builds its operator, bundle and catalog images once (`make images PR_TAG=pr-<number>-<sha7>`), tests
+them on kind and publishes them as `v<version>-pr-<number>-<sha7>`. Its catalog is the release catalog with this build
+in place of the version, so it upgrades along the same path. To install a pull request build through OLM, add its
+catalog:
 
 ```yaml
 apiVersion: operators.coreos.com/v1alpha1
@@ -649,7 +650,7 @@ metadata:
   namespace: openshift-marketplace
 spec:
   sourceType: grpc
-  image: ghcr.io/stakater/sops-operator-catalog:pr-<number>-<sha7>
+  image: ghcr.io/stakater/sops-operator-catalog:v<version>-pr-<number>-<sha7>
   displayName: SOPS Operator (pull request build)
 ```
 

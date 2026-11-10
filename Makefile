@@ -1,9 +1,3 @@
-# VERSION defines the project version for the bundle.
-# Update this value when you upgrade the version of your project.
-# To re-generate a bundle for another specific version without changing the standard setup, you can:
-# - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
-# - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.0.5
 OPERATOR_NAME ?= sops-operator
 CATALOG_DIR_PATH ?= catalog
 DOCKER_REPO_BASE ?= ghcr.io/stakater
@@ -28,25 +22,34 @@ endif
 BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 
 # IMAGE_TAG_BASE is the registry path of the operator image; the bundle and catalog images add -bundle and
-# -catalog, e.g. ghcr.io/stakater/sops-operator-bundle:v$(VERSION).
+# -catalog, e.g. ghcr.io/stakater/sops-operator-bundle:v0.0.5.
 IMAGE_TAG_BASE ?= $(DOCKER_REPO_BASE)/$(OPERATOR_NAME)
 
-# TAG names the images of one build: the only difference between a local build, tagged dev-<time> by
-# default, and a pull request build, which CI tags pr-<number>-<sha7>. The version comes from
-# catalog/channels.yaml (CHANNEL_VERSION below).
-ifeq ($(origin TAG),undefined)
-TAG := dev-$(shell date +%s)
-endif
-export TAG
-OPERATOR_REF = $(IMAGE_TAG_BASE):$(TAG)
-BUNDLE_REF = $(IMAGE_TAG_BASE)-bundle:$(TAG)
-CATALOG_REF = $(IMAGE_TAG_BASE)-catalog:$(TAG)
-# Where make images saves the three images.
-IMAGES_DIR ?= $(LOCALBIN)/images/$(TAG)
+# catalog/channels.yaml decides the version: the highest version it lists is the version the next merge releases.
+CHANNEL_VERSION = $(shell $(YQ) ea 'select(.schema == "olm.channel") | .entries[].name' $(CATALOG_DIR_PATH)/channels.yaml \
+	| grep -v '^---$$' | sed 's/^$(OPERATOR_NAME)\.v//' | sort -uV | tail -n1)
 
-# BUNDLE_IMG defines the image:tag used for the bundle.
-# You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
+# The next version to release: CHANNEL_VERSION while its bundle is not published, nothing once it is, so a
+# published version is never built again. Only "manifest unknown" means unpublished; any other registry error
+# is reported, so an outage is never taken for an unpublished version. Looked up once, when first needed.
+NEXT_VERSION = $(eval NEXT_VERSION := $(shell \
+	if err=$$($(CONTAINER_TOOL) manifest inspect $(BUNDLE_REPO):v$(CHANNEL_VERSION) 2>&1 >/dev/null); then :; \
+	elif echo "$$err" | grep -qiE 'manifest unknown|not found|name unknown'; then echo $(CHANNEL_VERSION); \
+	else echo "cannot tell whether $(BUNDLE_REPO):v$(CHANNEL_VERSION) is published: $$err"; fi))$(NEXT_VERSION)
+
+# TAG is the version a build releases, e.g. 0.0.5; by default the next version. PR_TAG marks a pre-release build of
+# it: pr-<number>-<sha7> in CI, dev-<time> locally by default, empty for a release. The build's version is then
+# TAG-PR_TAG, e.g. 0.0.5-pr-19-abc1234, and its images are tagged v<version>.
+TAG ?= $(NEXT_VERSION)
+ifeq ($(origin PR_TAG),undefined)
+PR_TAG := dev-$(shell date +%s)
+endif
+VERSION = $(TAG)$(if $(PR_TAG),-$(PR_TAG))
+IMG ?= $(IMAGE_TAG_BASE):v$(VERSION)
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
+# Where make images saves the three images.
+IMAGES_DIR ?= $(LOCALBIN)/images/v$(VERSION)
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
@@ -60,8 +63,6 @@ ifeq ($(USE_IMAGE_DIGESTS), true)
 endif
 
 OPERATOR_SDK_VERSION ?= v1.42.3
-# Image URL to use all building/pushing image targets
-IMG ?= $(IMAGE_TAG_BASE):v$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -147,46 +148,37 @@ setup-test-e2e: kind operator-sdk ## Kind cluster with a local registry (localho
 	KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm status >/dev/null 2>&1 \
 		|| KUBECONFIG=$(E2E_KUBECONFIG) $(OPERATOR_SDK) olm install --version $(OLM_VERSION) --timeout 5m
 
-# The version this build stands in for: the highest version catalog/channels.yaml lists, the version a
-# pull request releases. Its bundle is the pre-release BUILD_VERSION, never a release's name or version.
-CHANNEL_VERSION = $(shell $(YQ) ea 'select(.schema == "olm.channel") | .entries[].name' $(CATALOG_DIR_PATH)/channels.yaml \
-	| grep -v '^---$$' | sed 's/^$(OPERATOR_NAME)\.v//' | sort -uV | tail -n1)
-BUILD_VERSION = $(CHANNEL_VERSION)-$(TAG)
-# catalog/channels.yaml with this build in place of CHANNEL_VERSION; the file itself is never changed.
-BUILD_CHANNELS = $(LOCALBIN)/channels-$(TAG).yaml
-
 .PHONY: images
-images: opm yq kustomize operator-sdk ## Build the operator, bundle and catalog images of TAG under their GHCR names and save them to IMAGES_DIR.
-	$(CONTAINER_TOOL) image inspect $(OPERATOR_REF) >/dev/null 2>&1 || $(MAKE) docker-build IMG=$(OPERATOR_REF)
-	$(MAKE) bundle VERSION=$(BUILD_VERSION) IMG=$(OPERATOR_REF)
-	$(MAKE) bundle-build BUNDLE_IMG=$(BUNDLE_REF)
-	RELEASE=$(OPERATOR_NAME).v$(CHANNEL_VERSION) BUILD=$(OPERATOR_NAME).v$(BUILD_VERSION) $(YQ) \
-		'(.. | select(tag == "!!str" and . == strenv(RELEASE))) = strenv(BUILD)' $(CATALOG_DIR_PATH)/channels.yaml \
-		> $(BUILD_CHANNELS)
-	$(MAKE) catalog-render VERSION=$(BUILD_VERSION) CATALOG_CHANNELS=$(BUILD_CHANNELS) BUNDLE_IMG=$(BUNDLE_REF) BUNDLE_DIR=bundle
-	$(MAKE) catalog-build CATALOG_IMG=$(CATALOG_REF)
+images: opm yq kustomize operator-sdk ## Build the operator, bundle and catalog images of TAG and PR_TAG and save them to IMAGES_DIR.
+	@test -n "$(TAG)" || { echo "no next version: list a version that is not published in catalog/channels.yaml" >&2; exit 1; }
+	@$(if $(filter cannot,$(firstword $(TAG))),echo "$(TAG)" >&2; exit 1,true)
+	$(CONTAINER_TOOL) image inspect $(IMG) >/dev/null 2>&1 || $(MAKE) docker-build TAG=$(TAG) PR_TAG=$(PR_TAG)
+	$(MAKE) bundle TAG=$(TAG) PR_TAG=$(PR_TAG)
+	$(MAKE) bundle-build TAG=$(TAG) PR_TAG=$(PR_TAG)
+	$(MAKE) catalog-render TAG=$(TAG) PR_TAG=$(PR_TAG)
+	$(MAKE) catalog-build TAG=$(TAG) PR_TAG=$(PR_TAG)
 	mkdir -p $(IMAGES_DIR)
-	$(CONTAINER_TOOL) save $(OPERATOR_REF) -o $(IMAGES_DIR)/operator.tar
-	$(CONTAINER_TOOL) save $(BUNDLE_REF) -o $(IMAGES_DIR)/bundle.tar
-	$(CONTAINER_TOOL) save $(CATALOG_REF) -o $(IMAGES_DIR)/catalog.tar
+	$(CONTAINER_TOOL) save $(IMG) -o $(IMAGES_DIR)/operator.tar
+	$(CONTAINER_TOOL) save $(BUNDLE_IMG) -o $(IMAGES_DIR)/bundle.tar
+	$(CONTAINER_TOOL) save $(CATALOG_IMG) -o $(IMAGES_DIR)/catalog.tar
 
 .PHONY: e2e-images
-e2e-images: ## Load the images of TAG from IMAGES_DIR (built first when missing) into the kind registry, which the cluster uses as a mirror of ghcr.io.
-	@test -f $(IMAGES_DIR)/catalog.tar || $(MAKE) images
+e2e-images: ## Load the images of TAG and PR_TAG from IMAGES_DIR (built first when missing) into the kind registry, which the cluster uses as a mirror of ghcr.io.
+	@test -f $(IMAGES_DIR)/catalog.tar || $(MAKE) images TAG=$(TAG) PR_TAG=$(PR_TAG)
 	for kind in operator bundle catalog; do $(CONTAINER_TOOL) load -i $(IMAGES_DIR)/$$kind.tar; done
-	for ref in $(OPERATOR_REF) $(BUNDLE_REF) $(CATALOG_REF); do \
+	for ref in $(IMG) $(BUNDLE_IMG) $(CATALOG_IMG); do \
 		$(CONTAINER_TOOL) tag $$ref $(E2E_REGISTRY)/$${ref#*/} && $(CONTAINER_TOOL) push $(E2E_REGISTRY)/$${ref#*/}; \
 	done
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the images of TAG installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
-	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(CATALOG_REF) \
+	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(CATALOG_IMG) \
 		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update) \
 		$(if $(E2E_RUN),-run '$(E2E_RUN)')
 
 .PHONY: test-upgrade
 test-upgrade: setup-test-e2e e2e-images ## Run the upgrade paths of test/e2e/upgrade_test.go through the catalog of TAG (published bundles + this build).
-	KIND_CLUSTER=$(KIND_CLUSTER) E2E_CATALOG_IMG=$(CATALOG_REF) E2E_UPGRADE=true \
+	KIND_CLUSTER=$(KIND_CLUSTER) E2E_CATALOG_IMG=$(CATALOG_IMG) E2E_UPGRADE=true \
 		go test ./test/e2e/ -v -count=1 -timeout 30m -run '^TestUpgrade$$'
 
 .PHONY: cleanup-test-e2e
@@ -372,29 +364,31 @@ bundle-push: ## Push the bundle image.
 	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
 
 
-# The catalog image catalog-build tags.
-CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
-
-# Published bundle images; channel entries other than VERSION are rendered from here.
+# Published bundle images; every listed version other than this build's is rendered from here.
 BUNDLE_REPO ?= $(IMAGE_TAG_BASE)-bundle
-# Channels file catalog-render renders (the upgrade graph); the OLM e2e run passes its own.
-CATALOG_CHANNELS ?= $(CATALOG_DIR_PATH)/channels.yaml
+# Catalog metadata of a pull request build: catalog/* with TAG replaced by VERSION; catalog/ itself never changes.
+PR_CATALOG_DIR = $(LOCALBIN)/catalog/v$(VERSION)
 
 .PHONY: next-version
 next-version: yq ## Print the next version to release: the highest version in catalog/channels.yaml if its bundle is not published, else nothing.
-	@CHANNELS=$(CATALOG_DIR_PATH)/channels.yaml BUNDLE_REPO=$(BUNDLE_REPO) YQ=$(YQ) hack/next-version.sh
+	@$(if $(filter cannot,$(firstword $(NEXT_VERSION))),echo "$(NEXT_VERSION)" >&2; exit 1,echo $(NEXT_VERSION))
 
+# A release renders catalog/* with every bundle published, its own included. A pull request build renders the
+# copy of hack/pr-catalog.sh, with its bundle, which is not published, from ./bundle.
 .PHONY: catalog-render
-catalog-render: opm yq ## Render catalog/release/index.yaml from catalog/channels.yaml (only if VERSION is promoted).
-	CATALOG_DIR=$(CATALOG_DIR_PATH) CHANNELS=$(CATALOG_CHANNELS) VERSION=$(VERSION) BUNDLE_REPO=$(BUNDLE_REPO) BUNDLE_IMG=$(BUNDLE_IMG) BUNDLE_DIR=$(BUNDLE_DIR) \
-		ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) BUNDLE_IMG_RENDER_FLAGS="$(BUNDLE_IMG_RENDER_FLAGS)" \
-		hack/generate-catalog-index.sh
+catalog-render: opm yq ## Render and validate catalog/release/index.yaml for TAG, or for TAG and PR_TAG.
+ifneq ($(PR_TAG),)
+	SOURCE_DIR=$(CATALOG_DIR_PATH) OUT_DIR=$(PR_CATALOG_DIR) PACKAGE=$(OPERATOR_NAME) TAG=$(TAG) VERSION=$(VERSION) \
+		YQ=$(YQ) hack/pr-catalog.sh
+endif
+	SOURCE_DIR=$(if $(PR_TAG),$(PR_CATALOG_DIR),$(CATALOG_DIR_PATH)) OUT_DIR=$(CATALOG_DIR_PATH)/release \
+		VERSION=$(VERSION) BUNDLE_IMG=$(BUNDLE_IMG) BUNDLE_DIR=$(if $(PR_TAG),bundle) BUNDLE_REPO=$(BUNDLE_REPO) \
+		PACKAGE=$(OPERATOR_NAME) ICON=operator-icon.svg OPM=$(OPM) YQ=$(YQ) hack/generate-catalog-index.sh
 
 .PHONY: catalog-build
 catalog-build: ## Build the catalog image from CATALOG_DIR_PATH/release.
 	@test -f $(CATALOG_DIR_PATH)/release/index.yaml || { echo "$(CATALOG_DIR_PATH)/release/index.yaml does not exist:" \
-		"run make catalog-render; it builds no catalog when $(OPERATOR_NAME).v$(VERSION) is not listed in" \
-		"$(CATALOG_CHANNELS)"; exit 1; }
+		"run make catalog-render first"; exit 1; }
 	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) -f catalog.Dockerfile -t $(CATALOG_IMG) .
 
 # Push the catalog image.

@@ -831,8 +831,8 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   and, before starting, stops `etcd` and `kube-apiserver` processes from the envtest assets directory whose
   parent has exited (a test binary that was killed or timed out leaves them running with PID 1 as parent).
   Processes of a test that is still running are never touched, so packages can run in parallel.
-  There is one e2e flow, the way customers install: `make test-e2e TAG=<tag>` uses the operator, bundle and catalog
-  images of `make images` (built first when missing), loads them under their GHCR names into a local registry
+  There is one e2e flow, the way customers install: `make test-e2e` uses the operator, bundle and catalog images of
+  `make images` for the same `TAG` and `PR_TAG` (built first when missing), loads them under their GHCR names into a local registry
   (`localhost:5011`) that the kind cluster uses as a mirror of `ghcr.io`, installs OLM v0 on that dedicated cluster
   and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`. The catalog is
   the channel graph of `catalog/channels.yaml` with this build in place of its highest version, so the fresh
@@ -850,15 +850,17 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   derived from the channel graph and edited in every change that edits the graph.
 - **CI**: own GitHub Actions workflows, no shared pipeline. `pull_request` runs, in order: a check that generated
   files are current, lint, envtest tests and `make lint-scripts test-scripts`; one build, without any write token,
-  of the operator, bundle and catalog images (`make images TAG=pr-<number>-<sha7>`); the OLM e2e tests,
-  `make test-upgrade` and `make scorecard` on kind against those images; and only then the push of the same three
-  images as `ghcr.io/stakater/sops-operator{,-bundle,-catalog}:pr-<number>-<sha7>` from a separate job that holds the
-  only write token (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret) and runs no pull-request
-  code. `TAG` is the only difference between a local build (`dev-<time>`) and a pull request build. The version comes
-  from `catalog/channels.yaml`: the build stands in for the highest version it lists, the version the pull request
-  releases, as the pre-release `<version>-<tag>`, so it never takes the name or version of a release. The catalog is
-  `channels.yaml` unchanged except for that entry's name, so it upgrades from the same versions the release will;
-  the other listed versions are rendered from their published bundles and `opm` validates the graph. The e2e kind
+  of the operator, bundle and catalog images (`make images TAG=<next version> PR_TAG=pr-<number>-<sha7>`); the OLM
+  e2e tests, `make test-upgrade` and `make scorecard` on kind against those images; and only then the push of the
+  same three images as `ghcr.io/stakater/sops-operator{,-bundle,-catalog}:v<version>-pr-<number>-<sha7>` from a
+  separate job that holds the only write token (`GITHUB_TOKEN` with `packages: write`, no long-lived registry secret)
+  and runs no pull-request code. A pull request without a next version in `catalog/channels.yaml` fails the build.
+  `TAG` is the version a build releases (by default `make next-version`) and `PR_TAG` marks a pre-release build of
+  it (`dev-<time>` locally, `pr-<number>-<sha7>` in CI, empty for a release): the build's version is `TAG-PR_TAG`,
+  so a pull request build never takes the name or version of a release. Its catalog metadata is a copy of
+  `catalog/*` with `TAG` replaced by that version (`hack/pr-catalog.sh`), so it has the same graph and upgrade path
+  as the release; the other listed versions are rendered from their published bundles and `opm` validates the
+  graph. The e2e kind
   cluster mirrors `ghcr.io` to its local registry, so it pulls the images under the names they are published with. Actions are
   pinned by commit SHA and kept current by Dependabot. A `push` workflow on `main` publishes
   releases (below).

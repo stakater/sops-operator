@@ -70,6 +70,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -92,31 +94,41 @@ jobs:
             manager-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
             manager-build-${{ runner.os }}-
 
-      # Compile with the Go build cache restored above; inside Docker every dependency would be
-      # compiled from scratch. The image only adds the binary to the distroless base.
-      - name: Build operator image
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 make build MANAGER_BIN=dist/manager-amd64
-          make docker-build IMG="${IMAGE_REPOSITORY}:pr-${PR_NUMBER}-${HEAD_SHA::7}" DOCKER_BUILD_ARGS="--target prebuilt \
-            --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
-            --label org.opencontainers.image.revision=${HEAD_SHA}"
-
       # kustomize, controller-gen, operator-sdk, opm and yq; all pinned in the Makefile.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: bin
           key: images-tools-${{ runner.os }}-${{ hashFiles('Makefile', 'hack/bootstrap-tools.sh') }}
 
+      # The version this pull request releases: the next version catalog/channels.yaml documents.
+      - name: Find the next version
+        id: version
+        run: |
+          tag=$(make -s next-version)
+          [ -n "${tag}" ] || { echo "::error::catalog/channels.yaml lists no new version: add the version this pull request releases and the version it replaces"; exit 1; }
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      # Compile with the Go build cache restored above; inside Docker every dependency would be
+      # compiled from scratch. The image only adds the binary to the distroless base.
+      - name: Build operator image
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 make build MANAGER_BIN=dist/manager-amd64
+          make docker-build TAG="${TAG}" PR_TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" DOCKER_BUILD_ARGS="--target prebuilt \
+            --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
+            --label org.opencontainers.image.revision=${HEAD_SHA}"
+
       # One operator, bundle and catalog image per pull request commit, built here without a write
       # token; the e2e job tests them and the push job publishes them unchanged.
       - name: Build bundle and catalog images
         env:
+          TAG: ${{ steps.version.outputs.tag }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: make images TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
+        run: make images TAG="${TAG}" PR_TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
@@ -156,26 +168,29 @@ jobs:
       # match the committed golden files in test/e2e/testdata (nothing is written without -update).
       - name: Run e2e tests
         env:
+          TAG: ${{ needs.build.outputs.tag }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: make test-e2e TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
+        run: make test-e2e TAG="${TAG}" PR_TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
       # Upgrades along the channel graph of the same catalog: published bundles from GHCR, this build
       # in place of VERSION. Runs on every pull request, since any change ships in the next upgrade.
       - name: Run upgrade tests
         env:
+          TAG: ${{ needs.build.outputs.tag }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: make test-upgrade TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
+        run: make test-upgrade TAG="${TAG}" PR_TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
       - name: Scorecard
         run: make scorecard
 
   # The only job with a write token. It runs no code from the pull request: it pushes the three
-  # images the build job saved and the e2e job tested, under the tag computed here.
+  # images the build job saved and the e2e job tested, v<version>-pr-<number>-<sha7>, after checking that
+  # the version from the build job is a plain X.Y.Z.
   push:
     name: Push images
-    needs: e2e
+    needs: [build, e2e]
     runs-on: ubuntu-24.04
     permissions:
       packages: write
@@ -189,10 +204,12 @@ jobs:
         env:
           DOCKER_CONFIG: ${{ runner.temp }}/docker-config
           GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          tag="pr-${PR_NUMBER}-${HEAD_SHA::7}"
+          [[ "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected version ${TAG}"; exit 1; }
+          tag="v${TAG}-pr-${PR_NUMBER}-${HEAD_SHA::7}"
           echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           for kind in operator bundle catalog; do
             docker load -i "${RUNNER_TEMP}/images/${kind}.tar"

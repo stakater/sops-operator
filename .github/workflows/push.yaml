@@ -73,6 +73,9 @@ jobs:
       id-token: write   # keyless signing with cosign
     env:
       VERSION: ${{ needs.plan.outputs.version }}
+      # The release of VERSION: make builds and names its images v<VERSION>.
+      TAG: ${{ needs.plan.outputs.version }}
+      PR_TAG: ""
       # docker buildx flags every published image gets, passed to make's build targets.
       RELEASE_BUILD_ARGS: >-
         --platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max --push
@@ -115,7 +118,7 @@ jobs:
           for arch in amd64 arm64; do
             GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 make build MANAGER_BIN="dist/manager-${arch}"
           done
-          make docker-build CONTAINER_TOOL="docker buildx" IMG="${REGISTRY}/sops-operator:v${VERSION}" \
+          make docker-build CONTAINER_TOOL="docker buildx" \
             DOCKER_BUILD_ARGS="--target prebuilt ${RELEASE_BUILD_ARGS} --label org.opencontainers.image.version=v${VERSION} \
             --metadata-file ${RUNNER_TEMP}/operator.json"
           ref="${REGISTRY}/sops-operator@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/operator.json")"
@@ -126,17 +129,18 @@ jobs:
       # cluster node, so it is published for every platform the operator runs on.
       - name: Publish bundle image
         run: |
-          make bundle VERSION="${VERSION}" IMG="${OPERATOR_REF}"
-          make bundle-build CONTAINER_TOOL="docker buildx" BUNDLE_IMG="${REGISTRY}/sops-operator-bundle:v${VERSION}" \
+          make bundle IMG="${OPERATOR_REF}"
+          make bundle-build CONTAINER_TOOL="docker buildx" \
             DOCKER_BUILD_ARGS="${RELEASE_BUILD_ARGS} --metadata-file ${RUNNER_TEMP}/bundle.json"
           cosign sign --yes \
             "${REGISTRY}/sops-operator-bundle@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/bundle.json")"
 
-      # Renders every bundle catalog/channels.yaml lists; any bundle that cannot be pulled fails here.
+      # Renders every bundle catalog/channels.yaml lists, this release's from the image just pushed; any bundle
+      # that cannot be pulled, or a broken graph, fails here.
       - name: Publish catalog image
         run: |
-          make catalog-render VERSION="${VERSION}"
-          make catalog-build CONTAINER_TOOL="docker buildx" CATALOG_IMG="${REGISTRY}/sops-operator-catalog:v${VERSION}" \
+          make catalog-render
+          make catalog-build CONTAINER_TOOL="docker buildx" \
             DOCKER_BUILD_ARGS="${RELEASE_BUILD_ARGS} --metadata-file ${RUNNER_TEMP}/catalog.json \
             -t ${REGISTRY}/sops-operator-catalog:latest"
           cosign sign --yes \
