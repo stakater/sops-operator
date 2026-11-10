@@ -123,9 +123,8 @@ func TestSecretDecryption(t *testing.T) {
 			out.Labels[sopsv1alpha1.LabelManagedBy] != sopsv1alpha1.ManagedByValue {
 			t.Fatalf("labels = %v, want the template's labels as written", out.Labels)
 		}
-		if len(out.OwnerReferences) != 1 || out.OwnerReferences[0].UID != s.UID ||
-			out.OwnerReferences[0].BlockOwnerDeletion == nil || *out.OwnerReferences[0].BlockOwnerDeletion {
-			t.Fatalf("ownerReferences = %+v", out.OwnerReferences)
+		if len(out.OwnerReferences) != 0 {
+			t.Fatalf("ownerReferences = %+v, want none", out.OwnerReferences)
 		}
 	})
 
