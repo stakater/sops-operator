@@ -32,12 +32,14 @@ import (
 
 const publicKeyField = "age.pub"
 
-func keySecretName(index string) string { return tenantName + "-sops-keys-" + index }
+// secondKeySecret is the key Secret a tenant admin adds next to the first.
+const secondKeySecret = tenantName + "-sops-keys-1"
 
 func tenantOf(t *testing.T, tenantNamespace string) *sopsv1alpha1.SopsTenant {
 	t.Helper()
 	tenant := &sopsv1alpha1.SopsTenant{}
-	if err := k8s.Get(context.Background(), client.ObjectKey{Namespace: tenantNamespace, Name: tenantName}, tenant); err != nil {
+	key := client.ObjectKey{Namespace: tenantNamespace, Name: tenantName}
+	if err := k8s.Get(context.Background(), key, tenant); err != nil {
 		t.Fatal(err)
 	}
 	return tenant
@@ -93,13 +95,14 @@ func waitForCurrentKey(t *testing.T, tenantNamespace, name, recipient string) {
 func TestTenantKeys(t *testing.T) {
 	t.Parallel()
 
-	t.Run("shall generate the first key in the immutable Secret <tenant>-sops-keys-0 with its public key", func(t *testing.T) {
-		t.Parallel()
-		tenantNS, recipient := onboardedTenant(t, "e2e-keys-generate-tenant")
-		key := tenantKey(t, tenantNS, firstKeySecret)
-		waitForImmutableKey(t, tenantNS, firstKeySecret, key.Data[crypto.KeyFileField], recipient)
-		waitForCurrentKey(t, tenantNS, firstKeySecret, recipient)
-	})
+	t.Run("shall generate the first key in the immutable Secret <tenant>-sops-keys-0 with its public key",
+		func(t *testing.T) {
+			t.Parallel()
+			tenantNS, recipient := onboardedTenant(t, "e2e-keys-generate-tenant")
+			key := tenantKey(t, tenantNS, firstKeySecret)
+			waitForImmutableKey(t, tenantNS, firstKeySecret, key.Data[crypto.KeyFileField], recipient)
+			waitForCurrentKey(t, tenantNS, firstKeySecret, recipient)
+		})
 
 	t.Run("shall make the highest-indexed key current and keep decrypting with the others", func(t *testing.T) {
 		t.Parallel()
@@ -114,9 +117,9 @@ func TestTenantKeys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		createKeySecret(t, tenantNS, keySecretName("1"), keyFile, true)
-		waitForImmutableKey(t, tenantNS, keySecretName("1"), keyFile, second)
-		waitForCurrentKey(t, tenantNS, keySecretName("1"), second)
+		createKeySecret(t, tenantNS, secondKeySecret, keyFile, true)
+		waitForImmutableKey(t, tenantNS, secondKeySecret, keyFile, second)
+		waitForCurrentKey(t, tenantNS, secondKeySecret, second)
 		next := createSopsSecret(t, second, sopsSecret{
 			Name: "new-creds", Namespace: prod, Scope: prod + "/new-creds", TenantNamespace: tenantNS,
 			StringData: map[string]string{"password": password},
@@ -129,8 +132,8 @@ func TestTenantKeys(t *testing.T) {
 	t.Run("shall report KeyInvalid for an invalid highest key instead of falling back", func(t *testing.T) {
 		t.Parallel()
 		tenantNS, _ := onboardedTenant(t, "e2e-keys-invalid-tenant")
-		createKeySecret(t, tenantNS, keySecretName("1"), []byte("not a key"), true)
-		waitForMessage(t, tenantOf(t, tenantNS), sopsv1alpha1.ReasonKeyInvalid, keySecretName("1"))
+		createKeySecret(t, tenantNS, secondKeySecret, []byte("not a key"), true)
+		waitForMessage(t, tenantOf(t, tenantNS), sopsv1alpha1.ReasonKeyInvalid, secondKeySecret)
 	})
 
 	t.Run("shall use a brought key Secret only once it carries the enabled label", func(t *testing.T) {
@@ -163,7 +166,8 @@ func TestTenantKeys(t *testing.T) {
 		waitForCurrentKey(t, tenantNS, firstKeySecret, recipient)
 		wipeStatus(t, tenantNS)
 		waitForCurrentKey(t, tenantNS, firstKeySecret, recipient)
-		err := k8s.Get(context.Background(), client.ObjectKey{Namespace: tenantNS, Name: keySecretName("1")}, &corev1.Secret{})
+		second := client.ObjectKey{Namespace: tenantNS, Name: secondKeySecret}
+		err := k8s.Get(context.Background(), second, &corev1.Secret{})
 		if !apierrors.IsNotFound(err) {
 			t.Fatalf("got %v, want no second key", err)
 		}
@@ -182,7 +186,8 @@ func TestTenantKeys(t *testing.T) {
 		}
 		apply(t, render(t, "sopstenant.yaml", map[string]any{"Name": tenantName, "Namespace": tenantNS}))
 		waitForCurrentKey(t, tenantNS, firstKeySecret, recipient)
-		if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: keySecretName("1")}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		second := client.ObjectKey{Namespace: tenantNS, Name: secondKeySecret}
+		if err := k8s.Get(ctx, second, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 			t.Fatalf("got %v, want no second key", err)
 		}
 	})
