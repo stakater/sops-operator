@@ -794,11 +794,12 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   `bundle/` is a build output and is not committed. The base CSV is regenerated from API markers by `make csv`,
   which also stamps `operator-icon.svg` (Hestia's icon) into it.
 - **Catalog and promotion** (from Hestia): `catalog/package.yaml` and `catalog/channels.yaml` are committed;
-  `channels.yaml` is the upgrade graph. A version is released to a channel by adding `sops-operator.vX.Y.Z` to it
-  (with `replaces` or `skipRange`) in a reviewed change, so any number of channels and parallel version streams
-  can be maintained. `make catalog-render` renders every bundle the channels list (published ones from
-  `ghcr.io/stakater/sops-operator-bundle:vX.Y.Z`) into `catalog/release/index.yaml` and validates it; a version
-  listed in no channel builds no catalog, and a bundle that cannot be rendered fails the build.
+  `channels.yaml` is the upgrade graph. Each channel lists only its newest version, with `skipRange: '<X.Y.Z'`:
+  every older version, and every pull request build of X.Y.Z, upgrades directly to it, with no upgrades in between.
+  A version is released by replacing the entry in a reviewed change. Older versions are not installable from the
+  current catalog; they stay installable from their own catalog images (`sops-operator-catalog:vX.Y.Z`).
+  `make catalog-render` renders the listed bundles into `catalog/release/index.yaml` and validates it with `opm`;
+  a bundle that cannot be rendered fails the build.
 - **Publishing** (`.github/workflows/push.yaml`): `catalog/channels.yaml` is the only source of truth, and one pull
   request releases one version. `make next-version` prints the next version: the highest version `channels.yaml`
   lists, when its bundle is not published yet, and nothing otherwise. A push to `main` with no next version
@@ -835,8 +836,7 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
   `make images` for the same `TAG` and `PR_TAG` (built first when missing), loads them under their GHCR names into a local registry
   (`localhost:5011`) that the kind cluster uses as a mirror of `ghcr.io`, installs OLM v0 on that dedicated cluster
   and subscribes to the catalog, passing `RESYNC_INTERVAL=10s` through `Subscription.spec.config.env`. The catalog is
-  the channel graph of `catalog/channels.yaml` with this build in place of its highest version, so the fresh
-  install takes this build.
+  `catalog/channels.yaml` with this build in place of its version, so the fresh install takes this build.
   `make test-e2e E2E_RUN='<regex>'` runs only the matching e2e tests (`go test -run`); the kind cluster is kept
   for reruns and removed with `make cleanup-test-e2e`.
   Nothing from `config/` is applied, so the tenant ClusterRoles must come from the bundle. Each run uses a
@@ -916,7 +916,7 @@ Break-glass recipients allow recovery of every file if a tenant key is lost.
 | D39 | Each key Secret holds its private keys in `age.agekey` (no comment lines) and the public key of the primary identity in `age.pub`, written once when the Secret is made immutable; the current key's public key is copied to `SopsTenant` `status.publicKey`. An immutable key Secret whose `age.pub` does not match is `KeyInvalid`. | Immutability means the two fields cannot drift. The public key stays with its key, readable when status or the `SopsTenant` is gone; the status copy needs only `get` on the `SopsTenant`, not on a Secret that also holds the private key. |
 | D40 | The source SopsSecret is recorded on the output Secret as the annotation `sops.stakater.com/sopssecret`, not a label | Object names can exceed the 63-character label value limit; a label made such Secrets invalid (found by testing ESO's long-name case). |
 | D41 | The bundle is generated and not committed; the base CSV is | Generated files drift; the base CSV carries hand-written metadata and is checked by CI like other generated files. |
-| D42 | Catalog releases follow Hestia's promotion flow (hand-edited `channels.yaml`, all listed bundles re-rendered) and fail on any bundle that cannot be rendered | Customers run several versions in parallel across channels; releases must be declarative and reviewed, and a missing bundle must never silently remove a version from the upgrade graph. |
+| D42 | Each channel of `catalog/channels.yaml` lists only its newest version, with `skipRange: '<X.Y.Z'`; a release replaces the entry in a reviewed change, and the catalog is rendered from the published bundle and validated with `opm` | Every older version and every pull request build upgrades directly to the newest version, with no upgrades in between to test or keep working. Releases stay declarative and reviewed; older versions remain installable from their own immutable catalog images. |
 | D43 | OLM e2e installs the pull request's bundle from a catalog that lists only that bundle, through a Subscription, not `operator-sdk run bundle` | Tests the path customers use (catalog, channel, OperatorGroup, Subscription config) as a fresh install, independent of which versions `channels.yaml` promotes, and works with kind's standard local registry. Upgrades along the channel graph are tested per release, against the real catalog. |
 | D44 | A push to `main` publishes only what `catalog/channels.yaml` lists, and only when `catalog/` changes; the version comes from the channels file, not from git tags or the Makefile | Version rollout is a reviewed change to one file; no image is pushed for unreleased code and no published version is overwritten (Hestia's flow pushes images on every merge under the next version's tag). |
 | D45 | The operator creates each tenant's ServiceAccount (create only, never update or delete); the cluster admin creates only RoleBindings | Onboarding is RoleBindings only, and the identity exists as an object the bindings refer to. An unbound ServiceAccount grants nothing. |

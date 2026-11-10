@@ -34,15 +34,10 @@ import (
 	"github.com/stakater/sops-operator/internal/crypto"
 )
 
-// upgradePaths are the upgrade tests derived from catalog/channels.yaml: for every version a
-// customer can run, the path OLM takes to the channel head, reduced to the smallest set that
-// traverses every edge. Edit them in the change that edits the channel graph. The fresh install of
-// each channel head is `make test-e2e`.
-var upgradePaths = []struct{ channel, from, to string }{
-	// alpha: v0.0.1 --replaces--> v0.0.2 --replaces--> v0.0.3 --replaces--> v0.0.4 (head). Not tested:
-	// v0.0.1 and v0.0.2 predate per-tenant ServiceAccounts (D46), and v0.0.3 keeps the key in a Secret
-	// named after the tenant (D48); none was deployed beyond trials. Paths start from v0.0.4.
-}
+// upgradePaths are upgrade tests through the catalog of this build: every older version upgrades directly to
+// the newest version (skipRange in catalog/channels.yaml). The fresh install of the newest version is
+// `make test-e2e`.
+var upgradePaths = []struct{ channel, from, to string }{}
 
 const (
 	// installTimeout bounds one InstallPlan: catalog pod, bundle unpack, CSV and Deployment rollout.

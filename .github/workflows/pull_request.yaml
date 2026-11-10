@@ -174,8 +174,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: make test-e2e TAG="${TAG}" PR_TAG="pr-${PR_NUMBER}-${HEAD_SHA::7}" IMAGES_DIR="${RUNNER_TEMP}/images"
 
-      # Upgrades along the channel graph of the same catalog: published bundles from GHCR, this build
-      # in place of VERSION. Runs on every pull request, since any change ships in the next upgrade.
+      # Upgrades through the same catalog: published bundles from GHCR, this build
+      # in place of the version. Runs on every pull request, since any change ships in the next upgrade.
       - name: Run upgrade tests
         env:
           TAG: ${{ needs.build.outputs.tag }}

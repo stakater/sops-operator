@@ -1,13 +1,8 @@
+# Each channel lists only its newest version. skipRange upgrades every older version, and every pull request build
+# of this version, directly to it. A release replaces the entry: the new version X.Y.Z with skipRange '<X.Y.Z'.
 schema: olm.channel
 package: sops-operator
 name: alpha
 entries:
-  - name: sops-operator.v0.0.1
-  - name: sops-operator.v0.0.2
-    replaces: sops-operator.v0.0.1
-  - name: sops-operator.v0.0.3
-    replaces: sops-operator.v0.0.2
-  - name: sops-operator.v0.0.4
-    replaces: sops-operator.v0.0.3
   - name: sops-operator.v0.0.5
-    replaces: sops-operator.v0.0.4
+    skipRange: '<0.0.5'

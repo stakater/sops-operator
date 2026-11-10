@@ -15,6 +15,16 @@ if ! "${YQ}" ea 'select(.schema == "olm.channel") | .entries[].name' "${SOURCE_D
   echo "${SOURCE_DIR}/channels.yaml does not list ${release}" >&2
   exit 1
 fi
+# A pull request build is a pre-release of TAG, below it in semver. skipRange '<TAG' upgrades a cluster from any
+# older version, and from any pull request build of TAG, directly to a newer pull request build and to the release.
+ranges=$(NAME="${release}" "${YQ}" ea \
+  'select(.schema == "olm.channel") | .entries[] | select(.name == strenv(NAME)) | .skipRange // ""' \
+  "${SOURCE_DIR}/channels.yaml" | grep -v '^---$')
+if ! grep -qE "<${TAG//./\\.}([^0-9.]|$)" <<<"${ranges}"; then
+  echo "${release} in ${SOURCE_DIR}/channels.yaml needs skipRange: '<${TAG}', so clusters upgrade to it from" \
+    "every older version and pull request build" >&2
+  exit 1
+fi
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 for file in package.yaml channels.yaml; do

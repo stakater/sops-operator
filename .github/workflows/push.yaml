@@ -136,7 +136,7 @@ jobs:
           cosign sign --yes \
             "${REGISTRY}/sops-operator-bundle@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/bundle.json")"
 
-      # Renders every bundle catalog/channels.yaml lists, this release's from the image just pushed; any bundle
+      # Renders the bundle catalog/channels.yaml lists from the image just pushed; a bundle
       # that cannot be pulled, or a broken graph, fails here.
       - name: Publish catalog image
         run: |

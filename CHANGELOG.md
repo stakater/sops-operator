@@ -27,7 +27,10 @@ they are marked **Breaking** with the steps to take.
 - `make images` builds the operator, bundle and catalog images of one build: `TAG`, the version it releases (by
   default `make next-version`), and `PR_TAG`, which marks a pre-release build of it. Every pull request builds them
   once, tests them on kind and publishes them as `v<version>-pr-<number>-<sha7>`; its catalog has the release's
-  upgrade graph with the build in place of the version. `build` takes `MANAGER_BIN`, and `docker-build`, `bundle-build` and
+  upgrade graph with the build in place of the version.
+- The catalog lists only the newest version, with `skipRange: '<0.0.5'`: every older version, and every pull request
+  build of 0.0.5, upgrades directly to 0.0.5. Older versions stay installable from their own catalog images
+  (`ghcr.io/stakater/sops-operator-catalog:vX.Y.Z`). `build` takes `MANAGER_BIN`, and `docker-build`, `bundle-build` and
   `catalog-build` take `DOCKER_BUILD_ARGS`; the release workflow uses them instead of its own commands.
 
 ### Changed

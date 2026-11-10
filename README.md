@@ -636,10 +636,11 @@ bin/kustomize build config/default | sed 's#controller:latest#<registry>/sops-op
 kubectl --context <context> apply --server-side -k config/tenant-rbac
 ```
 
-A pull request documents the version it releases in [`catalog/channels.yaml`](catalog/channels.yaml), with the version
-it replaces. CI builds its operator, bundle and catalog images once (`make images PR_TAG=pr-<number>-<sha7>`), tests
-them on kind and publishes them as `v<version>-pr-<number>-<sha7>`. Its catalog is the release catalog with this build
-in place of the version, so it upgrades along the same path. To install a pull request build through OLM, add its
+A pull request releases one version: it replaces the entry in [`catalog/channels.yaml`](catalog/channels.yaml) with the
+new version and `skipRange: '<new version>'`, so every older version upgrades directly to it. CI builds its operator,
+bundle and catalog images once (`make images PR_TAG=pr-<number>-<sha7>`), tests them on kind and publishes them as
+`v<version>-pr-<number>-<sha7>`. Its catalog is the release catalog with this build in place of the version, so a
+cluster upgrades from it to a newer pull request build and to the release. To install a pull request build through OLM, add its
 catalog:
 
 ```yaml
