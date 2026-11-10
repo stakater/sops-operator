@@ -87,7 +87,11 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       BUILD: ${{ needs.plan.outputs.build }}
       CATALOG_TAGS: ${{ needs.plan.outputs.catalog_tags }}
-      PLATFORMS: linux/amd64,linux/arm64
+      # docker buildx flags every published image gets, passed to make's build targets.
+      RELEASE_BUILD_ARGS: >-
+        --platform linux/amd64,linux/arm64 --sbom=true --provenance=mode=max --push
+        --label org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        --label org.opencontainers.image.revision=${{ github.sha }}
     steps:
       # Registry credentials live in a per-run directory, used by docker and by opm (catalog-render).
       - name: Isolate registry credentials
@@ -124,14 +128,11 @@ jobs:
         if: env.BUILD == 'true'
         run: |
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build -trimpath -o "dist/manager-${arch}" cmd/main.go
+            GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 make build MANAGER_BIN="dist/manager-${arch}"
           done
-          docker buildx build --target prebuilt --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.version=v${VERSION}" \
-            --metadata-file "${RUNNER_TEMP}/operator.json" --push \
-            -t "${REGISTRY}/sops-operator:v${VERSION}" .
+          make docker-build CONTAINER_TOOL="docker buildx" IMG="${REGISTRY}/sops-operator:v${VERSION}" \
+            DOCKER_BUILD_ARGS="--target prebuilt ${RELEASE_BUILD_ARGS} --label org.opencontainers.image.version=v${VERSION} \
+            --metadata-file ${RUNNER_TEMP}/operator.json"
           ref="${REGISTRY}/sops-operator@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/operator.json")"
           cosign sign --yes "${ref}"
           echo "OPERATOR_REF=${ref}" >> "${GITHUB_ENV}"
@@ -142,11 +143,8 @@ jobs:
         if: env.BUILD == 'true'
         run: |
           make bundle VERSION="${VERSION}" IMG="${OPERATOR_REF}"
-          docker buildx build -f bundle.Dockerfile --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --metadata-file "${RUNNER_TEMP}/bundle.json" --push \
-            -t "${REGISTRY}/sops-operator-bundle:v${VERSION}" .
+          make bundle-build CONTAINER_TOOL="docker buildx" BUNDLE_IMG="${REGISTRY}/sops-operator-bundle:v${VERSION}" \
+            DOCKER_BUILD_ARGS="${RELEASE_BUILD_ARGS} --metadata-file ${RUNNER_TEMP}/bundle.json"
           cosign sign --yes \
             "${REGISTRY}/sops-operator-bundle@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/bundle.json")"
 
@@ -154,11 +152,10 @@ jobs:
       - name: Publish catalog image
         run: |
           make catalog-render VERSION="${VERSION}"
-          docker buildx build -f catalog.Dockerfile --platform "${PLATFORMS}" --sbom=true --provenance=mode=max \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --metadata-file "${RUNNER_TEMP}/catalog.json" --push \
-            $(for tag in ${CATALOG_TAGS}; do printf -- '-t %s ' "${REGISTRY}/sops-operator-catalog:${tag}"; done) .
+          set -- ${CATALOG_TAGS}
+          make catalog-build CONTAINER_TOOL="docker buildx" CATALOG_IMG="${REGISTRY}/sops-operator-catalog:$1" \
+            DOCKER_BUILD_ARGS="${RELEASE_BUILD_ARGS} --metadata-file ${RUNNER_TEMP}/catalog.json \
+            $(shift; for tag in "$@"; do printf -- '-t %s ' "${REGISTRY}/sops-operator-catalog:${tag}"; done)"
           cosign sign --yes \
             "${REGISTRY}/sops-operator-catalog@$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/catalog.json")"
 

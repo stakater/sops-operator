@@ -99,11 +99,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/manager-amd64 cmd/main.go
-          docker build --target prebuilt \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${HEAD_SHA}" \
-            -t "${IMAGE_REPOSITORY}:pr-${PR_NUMBER}-${HEAD_SHA::7}" .
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 make build MANAGER_BIN=dist/manager-amd64
+          make docker-build IMG="${IMAGE_REPOSITORY}:pr-${PR_NUMBER}-${HEAD_SHA::7}" DOCKER_BUILD_ARGS="--target prebuilt \
+            --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
+            --label org.opencontainers.image.revision=${HEAD_SHA}"
 
       # kustomize, controller-gen, operator-sdk, opm and yq; all pinned in the Makefile.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

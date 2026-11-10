@@ -211,13 +211,20 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 ##@ Build
 
+# Where build writes the manager binary; CI builds dist/manager-<arch> for the Dockerfile's prebuilt stage,
+# with GOOS, GOARCH and CGO_ENABLED=0 in the environment.
+MANAGER_BIN ?= bin/manager
+# Extra flags for docker-build, bundle-build and catalog-build, e.g. --target prebuilt, or with
+# CONTAINER_TOOL="docker buildx" the platforms, SBOM, provenance and --push of a release.
+DOCKER_BUILD_ARGS ?=
+
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+build: manifests generate fmt vet ## Build manager binary (MANAGER_BIN).
+	go build -trimpath -o $(MANAGER_BIN) cmd/main.go
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -358,7 +365,7 @@ scorecard: bundle kind ## Run the scorecard suites against ./bundle on the Kind 
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
-	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
@@ -384,7 +391,7 @@ catalog-build: ## Build the catalog image from CATALOG_DIR_PATH/release.
 	@test -f $(CATALOG_DIR_PATH)/release/index.yaml || { echo "$(CATALOG_DIR_PATH)/release/index.yaml does not exist:" \
 		"run make catalog-render; it builds no catalog when $(OPERATOR_NAME).v$(VERSION) is not listed in" \
 		"$(CATALOG_CHANNELS)"; exit 1; }
-	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
+	$(CONTAINER_TOOL) build $(DOCKER_BUILD_ARGS) -f catalog.Dockerfile -t $(CATALOG_IMG) .
 
 # Push the catalog image.
 .PHONY: catalog-push
