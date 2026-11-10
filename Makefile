@@ -162,7 +162,8 @@ endif
 .PHONY: test-e2e
 test-e2e: setup-test-e2e sops yq e2e-images ## Run the e2e tests against the operator installed by OLM (cluster kept for reruns; remove with cleanup-test-e2e).
 	KIND_CLUSTER=$(KIND_CLUSTER) SOPS=$(SOPS) YQ=$(YQ) E2E_CATALOG_IMG=$(E2E_REGISTRY)/sops-operator-catalog:$(E2E_TAG) \
-		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update)
+		go test ./test/e2e/ -v -count=1 -timeout 30m -parallel 12 $(if $(filter true,$(UPDATE_GOLDEN)),-update) \
+		$(if $(E2E_RUN),-run '$(E2E_RUN)')
 
 .PHONY: test-upgrade
 test-upgrade: setup-test-e2e ## Run the upgrade paths of test/e2e/upgrade_test.go through the real channel graph (published bundles + this build).

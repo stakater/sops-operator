@@ -26,9 +26,6 @@ const (
 	ReasonKeyMissing   = "KeyMissing"
 	ReasonKeyInvalid   = "KeyInvalid"
 	ReasonAccessDenied = "AccessDenied"
-	// ReasonKeyMismatch: the key Secret does not hold the key recorded in status.publicKey and there is
-	// no backup of the recorded key to restore it from.
-	ReasonKeyMismatch = "KeyMismatch"
 )
 
 // ReasonKeyRestored is the reason of the Warning event recorded when the operator restores the key

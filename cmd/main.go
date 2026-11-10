@@ -180,6 +180,7 @@ func main() {
 	}
 	if err := (&controller.SopsTenantReconciler{
 		Client:         mgr.GetClient(),
+		APIReader:      mgr.GetAPIReader(),
 		Identities:     identities,
 		Watches:        keyWatches,
 		Recorder:       mgr.GetEventRecorder("sops-operator"),

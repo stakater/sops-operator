@@ -66,26 +66,6 @@ func backupOf(backups []corev1.Secret, recipient string) *corev1.Secret {
 	return nil
 }
 
-// restoreSource returns the backup the key Secret must hold outside a rotation: the backup of the
-// recorded key. A tenant without a recorded key (recreated) keeps a key Secret that one of its
-// backups holds, and otherwise restores the newest backup. key is nil when the key Secret is missing.
-func restoreSource(recorded string, key *corev1.Secret, backups []corev1.Secret) *corev1.Secret {
-	if recorded != "" {
-		return backupOf(backups, recorded)
-	}
-	if key != nil && adopted(key) {
-		for i := range backups {
-			if holdsSame(key, &backups[i]) {
-				return &backups[i]
-			}
-		}
-	}
-	if len(backups) == 0 {
-		return nil
-	}
-	return &backups[len(backups)-1]
-}
-
 // holdsSame reports whether the key Secrets a and b hold the same key file.
 func holdsSame(a, b *corev1.Secret) bool {
 	return bytes.Equal(a.Data[crypto.KeyFileField], b.Data[crypto.KeyFileField])
@@ -101,19 +81,15 @@ func needsRestore(key, from *corev1.Secret) bool {
 // unless backups already has one. The name carries the time of r's clock in UTC; a name taken by a
 // backup of another key written in the same second fails, and the retry takes the next second.
 func (r *SopsTenantReconciler) ensureBackup(ctx context.Context, tc client.Client, t *sopsv1alpha1.SopsTenant,
-	backups []corev1.Secret, keyFile []byte, recipient string) error {
-	if backupOf(backups, recipient) != nil {
-		return nil
+	backups []corev1.Secret, keyFile []byte, recipient string) (*corev1.Secret, error) {
+	if b := backupOf(backups, recipient); b != nil {
+		return b, nil
 	}
 	b := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sopsv1alpha1.TenantKeyBackupName(t.Name, r.now()),
-			Namespace: t.Namespace,
-			Labels: map[string]string{
-				sopsv1alpha1.LabelManagedBy: sopsv1alpha1.ManagedByValue,
-				sopsv1alpha1.LabelEnabled:   sopsv1alpha1.EnabledValue,
-				sopsv1alpha1.LabelKeyBackup: "true",
-			},
+			Name:        sopsv1alpha1.TenantKeyBackupName(t.Name, r.now()),
+			Namespace:   t.Namespace,
+			Labels:      backupLabels(),
 			Annotations: map[string]string{sopsv1alpha1.AnnotationPublicKey: recipient},
 		},
 		Immutable: ptr.To(true),
@@ -121,9 +97,9 @@ func (r *SopsTenantReconciler) ensureBackup(ctx context.Context, tc client.Clien
 		Data:      map[string][]byte{crypto.KeyFileField: keyFile},
 	}
 	if err := tc.Create(ctx, b); err != nil {
-		return fmt.Errorf("back up the key %s in %s/%s: %w", recipient, t.Namespace, b.Name, err)
+		return nil, fmt.Errorf("back up the key %s in %s/%s: %w", recipient, t.Namespace, b.Name, err)
 	}
-	return nil
+	return b, nil
 }
 
 // writeKey writes the key file of backup from into the key Secret: it creates the Secret when key is

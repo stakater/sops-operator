@@ -17,6 +17,8 @@ import (
 
 	sopsv1alpha1 "github.com/stakater/sops-operator/api/v1alpha1"
 	"github.com/stakater/sops-operator/internal/controller"
+	"k8s.io/utils/ptr"
+
 	"github.com/stakater/sops-operator/internal/crypto"
 	"github.com/stakater/sops-operator/internal/identity"
 )
@@ -133,6 +135,7 @@ func TestSecretDecryption(t *testing.T) {
 		tenantNS, recipient := onboardedTenant(t, prod)
 		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
 		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		operator, err := client.NewWithWatch(env.OperatorConfig, client.Options{Scheme: env.Scheme})
 		if err != nil {
 			t.Fatal(err)
@@ -152,16 +155,21 @@ func TestSecretDecryption(t *testing.T) {
 		}
 	})
 
-	t.Run("shall report TenantNotReady for a key Secret without the enabled label", func(t *testing.T) {
+	t.Run("shall report TenantNotReady for a brought key Secret without the enabled label", func(t *testing.T) {
 		ctx := context.Background()
+		tenantNS := env.Namespace(t, "tenant")
 		prod := env.Namespace(t, "prod")
-		tenantNS, recipient := onboardedTenant(t, prod)
-		var key corev1.Secret
-		if err := env.Admin.Get(ctx, client.ObjectKey{Namespace: tenantNS, Name: sopsv1alpha1.TenantKeySecretName(tenantName)}, &key); err != nil {
+		env.Onboard(t, tenantNS, tenantName, prod)
+		keyFile, recipient, err := crypto.GenerateKeyFile()
+		if err != nil {
 			t.Fatal(err)
 		}
+		key := keySecret(tenantNS, string(keyFile))
 		key.Labels = nil
-		if err := env.Admin.Update(ctx, &key); err != nil {
+		if err := env.Admin.Create(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Admin.Create(ctx, newTenant(tenantNS, ptr.To(false))); err != nil {
 			t.Fatal(err)
 		}
 		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v1"})
