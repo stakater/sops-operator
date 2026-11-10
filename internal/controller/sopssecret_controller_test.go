@@ -477,7 +477,7 @@ func TestSecretOwnership(t *testing.T) {
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 	})
 
-	t.Run("shall label and update a Secret written by v0.0.4", func(t *testing.T) {
+	t.Run("shall take over a Secret written by v0.0.4 only once it carries the enabled label", func(t *testing.T) {
 		ctx := context.Background()
 		prod := env.Namespace(t, "prod")
 		tenantNS, recipient := onboardedTenant(t, prod)
@@ -494,11 +494,16 @@ func TestSecretOwnership(t *testing.T) {
 		}
 		s := encryptedSopsSecret(t, recipient, tenantNS, prod, "db", prod+"/db", map[string]any{"password": "v2"})
 		create(t, s)
+		eventuallyReason(t, s, sopsv1alpha1.ReasonConflict)
+		if got := string(outputSecret(t, prod).Data["password"]); got != "v1" {
+			t.Fatalf("password = %q, want the Secret unchanged until it is labelled", got)
+		}
+		labelled := outputSecret(t, prod)
+		update(t, labelled, func() { labelled.Labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue })
 		eventuallyReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		out := outputSecret(t, prod)
-		if out.UID != old.UID || string(out.Data["password"]) != "v2" ||
-			out.Labels[sopsv1alpha1.LabelEnabled] != sopsv1alpha1.EnabledValue {
-			t.Fatalf("Secret %s labels %v, want %s updated to v2 and labelled enabled", out.UID, out.Labels, old.UID)
+		if out.UID != old.UID || string(out.Data["password"]) != "v2" {
+			t.Fatalf("Secret %s, want %s updated to v2", out.UID, old.UID)
 		}
 	})
 

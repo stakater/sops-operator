@@ -81,7 +81,7 @@ func TestSecretDeletion(t *testing.T) {
 		}
 	})
 
-	t.Run("shall remove the owner reference of a Secret written by v0.0.4", func(t *testing.T) {
+	t.Run("shall take over a Secret written by v0.0.4 only once it carries the enabled label", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		prod := namespace(t, "e2e-oldowner-prod")
@@ -111,6 +111,13 @@ func TestSecretDeletion(t *testing.T) {
 			t.Fatal(err)
 		}
 		update(t, s, func() { delete(s.Annotations, sopsv1alpha1.AnnotationSuspend) })
+		waitForMessage(t, s, sopsv1alpha1.ReasonConflict, sopsv1alpha1.LabelEnabled)
+		if got := string(outputSecret(t, prod).Data["password"]); got != "from v0.0.4" {
+			t.Fatalf("password = %q, want the Secret unchanged until it is labelled", got)
+		}
+		labelled := outputSecret(t, prod)
+		update(t, labelled, func() { labelled.Labels[sopsv1alpha1.LabelEnabled] = sopsv1alpha1.EnabledValue })
+		waitForNewSync(t, s, s.Status.LastSyncTime)
 		waitForReason(t, s, sopsv1alpha1.ReasonDecrypted)
 		out := outputSecret(t, prod)
 		if out.UID != old.UID || len(out.OwnerReferences) != 0 || string(out.Data["password"]) != password {
